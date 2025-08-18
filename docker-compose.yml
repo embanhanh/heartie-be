@@ -1,0 +1,37 @@
+version: '3.8'
+services:
+  # Dịch vụ API NestJS
+  api:
+    build: .
+    ports:
+      - '3000:3000'
+    depends_on:
+      - db
+    environment:
+      # Truyền biến môi trường vào container
+      PORT: 3000
+      DB_HOST: db # "db" là tên service của database
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE: ${DB_DATABASE}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION_TIME: ${JWT_EXPIRATION_TIME}
+    env_file:
+      - .env
+
+  # Dịch vụ Database PostgreSQL
+  db:
+    image: postgres:14-alpine
+    container_name: my_postgres_db
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
