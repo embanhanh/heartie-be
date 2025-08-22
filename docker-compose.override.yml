@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  api:
+    volumes:
+      - .:/app # Mount code local vào trong container
+      - /app/node_modules # Giữ node_modules của container, không bị ghi đè
+    command: yarn start:dev # Ghi đè lệnh mặc định thành chạy hot reload
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE: ${DB_DATABASE}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION_TIME: ${JWT_EXPIRATION_TIME}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_REFRESH_EXPIRATION_TIME: ${JWT_REFRESH_EXPIRATION_TIME}

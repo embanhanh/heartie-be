@@ -8,8 +8,8 @@ async function bootstrap() {
 
   // Cấu hình Swagger
   const config = new DocumentBuilder()
-    .setTitle('My Professional API')
-    .setDescription('The API description')
+    .setTitle('Heartie API')
+    .setDescription('Heartie API')
     .setVersion('1.0')
     .addBearerAuth() // Thêm nút "Authorize" để test API cần token
     .build();
