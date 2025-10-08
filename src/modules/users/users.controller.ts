@@ -1,49 +1,60 @@
 import {
-  Controller,
-  Post,
   Body,
+  Controller,
+  Delete,
   Get,
+  NotFoundException,
   Param,
   ParseIntPipe,
-  NotFoundException,
   Patch,
-  Delete,
+  Post,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
-import { CreateUserDto } from './dto/create-users.dto';
-import { ApiOperation } from '@nestjs/swagger';
+import { CreateUserDto } from './dto/create-user.dto';
+import { ApiOkResponse, ApiOperation, ApiTags, ApiCreatedResponse } from '@nestjs/swagger';
+import { UserResponseDto } from './dto/user-response.dto';
+import { UserSafe } from './types/user-safe.type';
 
+@ApiTags('Users')
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  private mapToResponseDto(user: UserSafe): UserResponseDto {
+    return UserResponseDto.from(user);
+  }
+
   // Tạo user mới
   @ApiOperation({ summary: 'Tạo user mới' })
+  @ApiCreatedResponse({ type: () => UserResponseDto })
   @Post()
-  async create(@Body() createUserDto: CreateUserDto) {
-    return this.usersService.create(createUserDto);
+  async create(@Body() createUserDto: CreateUserDto): Promise<UserResponseDto> {
+    const user = await this.usersService.create(createUserDto);
+    return this.mapToResponseDto(user);
   }
 
   // Lấy user theo id
   @ApiOperation({ summary: 'Lấy user theo id' })
+  @ApiOkResponse({ type: () => UserResponseDto })
   @Get(':id')
-  async findOne(@Param('id', ParseIntPipe) id: number) {
+  async findOne(@Param('id', ParseIntPipe) id: number): Promise<UserResponseDto> {
     const user = await this.usersService.findOneById(id);
     if (!user) {
       throw new NotFoundException(`Không tìm thấy user với id ${id}`);
     }
-    return user;
+    return this.mapToResponseDto(user);
   }
 
   // Lấy user theo email
   @ApiOperation({ summary: 'Lấy user theo email' })
+  @ApiOkResponse({ type: () => UserResponseDto })
   @Get('email/:email')
-  async findByEmail(@Param('email') email: string) {
+  async findByEmail(@Param('email') email: string): Promise<UserResponseDto> {
     const user = await this.usersService.findOneByEmail(email);
     if (!user) {
       throw new NotFoundException(`Không tìm thấy user với email ${email}`);
     }
-    return user;
+    return this.mapToResponseDto(user);
   }
 
   // Set refresh token cho user (ví dụ gọi trong AuthService)
