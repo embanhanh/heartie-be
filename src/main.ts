@@ -8,6 +8,18 @@ import * as express from 'express';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  const corsOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  app.enableCors({
+    origin: corsOrigins.length ? corsOrigins : true,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+  });
+
   app.use('/uploads', express.static(join(__dirname, '..', 'uploads')));
 
   // Cấu hình Swagger
@@ -33,4 +45,4 @@ async function bootstrap() {
     console.log(`Server is running on port ${port}`);
   });
 }
-bootstrap();
+void bootstrap();
