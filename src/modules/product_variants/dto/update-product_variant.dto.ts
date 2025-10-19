@@ -1,3 +1,4 @@
-export class UpdateProductVariantDto {
-  name?: string;
-}
+import { PartialType } from '@nestjs/swagger';
+import { CreateProductVariantDto } from './create-product_variant.dto';
+
+export class UpdateProductVariantDto extends PartialType(CreateProductVariantDto) {}

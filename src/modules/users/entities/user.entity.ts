@@ -3,9 +3,20 @@ import {
   CreateDateColumn,
   Entity,
   Index,
+  JoinColumn,
+  ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { Branch } from '../../branches/entities/branch.entity';
+
+export enum UserRole {
+  CUSTOMER = 'CUSTOMER',
+  SHOP_OWNER = 'SHOP_OWNER',
+  ADMIN = 'ADMIN',
+  BRANCH_MANAGER = 'BRANCH_MANAGER',
+  STAFF = 'STAFF',
+}
 
 @Entity({ name: 'users' })
 @Index(['email'], { unique: true })
@@ -31,6 +42,19 @@ export class User {
 
   @Column({ type: 'varchar', length: 255, select: false, nullable: true, default: null })
   hashedRefreshToken?: string | null;
+
+  @Column({ type: 'enum', enum: UserRole, default: UserRole.CUSTOMER })
+  role: UserRole;
+
+  @Column({ type: 'boolean', default: true })
+  isActive: boolean;
+
+  @Column({ type: 'int', nullable: true })
+  branchId?: number | null;
+
+  @ManyToOne(() => Branch, (branch) => branch.users, { onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'branchId' })
+  branch?: Branch | null;
 
   @CreateDateColumn({ type: 'timestamp with time zone' })
   createdAt: Date;

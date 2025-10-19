@@ -1,135 +1,56 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
-  IsArray,
-  IsBoolean,
+  IsEnum,
   IsInt,
   IsNotEmpty,
+  IsOptional,
+  IsPositive,
   IsString,
-  Min,
-  Max,
-  ValidateNested,
-  IsNumber,
+  MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ApiProperty } from '@nestjs/swagger';
-import {
-  ConfigurableOptionDto,
-  UrlImageItemDto,
-  // SpecificationAttributeDto,
-  SpecificationDto,
-} from './nested.dtos';
+import { ProductStatus } from '../entities/product.entity';
 
 export class CreateProductDto {
-  @ApiProperty({ example: '2934570153249' })
+  @ApiProperty({ example: 'Combo áo sơ mi nam tay dài' })
   @IsString()
   @IsNotEmpty()
-  sku: string;
-
-  @ApiProperty({
-    example:
-      'dép-lê-cho-bé-trai-3---12-tuổi-hình-xe-tăng-nhựa-dẻo-mềm-êm-quai-ngang-chống-trơn-trượt-cho-bé-d38-2934570153249',
-  })
-  @IsString()
-  @IsNotEmpty()
-  slug: string;
-
-  @ApiProperty({ example: 'Dép lê cho bé trai 3 - 12 tuổi hình xe tăng…' })
-  @IsString()
-  @IsNotEmpty()
+  @MaxLength(255)
   name: string;
 
-  @ApiProperty({ example: 'configurable' })
+  @ApiPropertyOptional({ example: 1, description: 'FK -> brands.id' })
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  @Type(() => Number)
+  brandId?: number;
+
+  @ApiPropertyOptional({ example: 2, description: 'FK -> categories.id' })
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  @Type(() => Number)
+  categoryId?: number;
+
+  @ApiPropertyOptional({ example: 'Chất liệu cotton cao cấp, form rộng.' })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  type: string;
+  description?: string;
 
-  @ApiProperty({ example: 'OEM' })
+  @ApiPropertyOptional({ example: 'https://example.com/images/product.jpg' })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  brand: string;
+  @MaxLength(500)
+  image?: string;
 
-  @ApiProperty()
-  @IsString()
-  @IsNotEmpty()
-  description: string;
+  @ApiPropertyOptional({ example: ProductStatus.ACTIVE, enum: ProductStatus })
+  @IsOptional()
+  @IsEnum(ProductStatus)
+  status?: ProductStatus;
 
-  @ApiProperty({ type: [UrlImageItemDto] })
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => UrlImageItemDto)
-  urlImage: UrlImageItemDto[];
-
-  // decimal(10,2) nhận number; service sẽ toFixed(2) khi lưu
-  @ApiProperty({ example: 0 })
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
-  @Type(() => Number)
-  originalPrice: number;
-
-  @ApiProperty({ example: 0 })
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
-  @Type(() => Number)
-  discount: number;
-
-  @ApiProperty({ example: 0 })
+  @ApiPropertyOptional({ example: 25 })
+  @IsOptional()
   @IsInt()
-  @Min(0)
   @Type(() => Number)
-  stockQuantity: number;
-
-  @ApiProperty({ example: 0.0 })
-  @IsNumber({ maxDecimalPlaces: 1 })
-  @Min(0)
-  @Max(5)
-  @Type(() => Number)
-  rating: number;
-
-  @ApiProperty({ example: false })
-  @IsBoolean()
-  isFeatured: boolean;
-
-  @ApiProperty({ example: true })
-  @IsBoolean()
-  isActive: boolean;
-
-  @ApiProperty({ example: 1 })
-  @IsInt()
-  @Min(1)
-  @Type(() => Number)
-  minOrderQuantity: number;
-
-  @ApiProperty({ example: 10 })
-  @IsInt()
-  @Min(1)
-  @Type(() => Number)
-  maxOrderQuantity: number;
-
-  @ApiProperty({ example: 0 })
-  @IsInt()
-  @Min(0)
-  @Type(() => Number)
-  soldQuantity: number;
-
-  @ApiProperty({ type: [String], example: [] })
-  @IsArray()
-  @IsString({ each: true })
-  shippingInfo: string[];
-
-  @ApiProperty({ type: [SpecificationDto] })
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => SpecificationDto)
-  specifications: SpecificationDto[];
-
-  @ApiProperty({ type: [ConfigurableOptionDto] })
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => ConfigurableOptionDto)
-  configurable_options: ConfigurableOptionDto[];
-
-  @ApiProperty({ type: [Number], example: [1, 2] })
-  @IsArray()
-  @IsInt({ each: true })
-  @Type(() => Number)
-  categories: number[];
+  stock?: number;
 }

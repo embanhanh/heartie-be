@@ -1,17 +1,17 @@
 // banner.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
 import {
-  IsString,
-  IsNotEmpty,
-  IsOptional,
-  IsUrl,
   IsDateString,
+  IsEnum,
+  IsNotEmpty,
   IsNumber,
-  IsIn,
-  Min,
+  IsOptional,
+  IsString,
   Length,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { BannerStatus } from '../entities/banner.entity';
 
 export class CreateBannerDto {
   @ApiProperty({
@@ -26,16 +26,15 @@ export class CreateBannerDto {
   title: string;
 
   @ApiProperty({
-    description: 'URL hình ảnh banner',
-    example: 'https://example.com/banner.jpg',
-    required: true,
+    description: 'Đường dẫn ảnh hiện tại (nếu không upload file mới)',
+    example: 'uploads/banners/banner.jpg',
+    required: false,
     maxLength: 500,
   })
   @IsString()
-  @IsNotEmpty()
-  @IsUrl({}, { message: 'URL image must be a valid URL' })
-  @Length(1, 500, { message: 'URL image must not exceed 500 characters' })
-  urlImage: string;
+  @Length(0, 500, { message: 'Image path must not exceed 500 characters' })
+  @IsOptional()
+  image?: string;
 
   @ApiProperty({
     description: 'Mô tả banner',
@@ -64,7 +63,6 @@ export class CreateBannerDto {
     maxLength: 500,
   })
   @IsString()
-  @IsUrl({}, { message: 'Link must be a valid URL' })
   @Length(0, 500, { message: 'Link must not exceed 500 characters' })
   @IsOptional()
   link?: string;
@@ -89,15 +87,14 @@ export class CreateBannerDto {
 
   @ApiProperty({
     description: 'Trạng thái banner',
-    example: 'ACTIVE',
-    enum: ['ACTIVE', 'INACTIVE', 'EXPIRED'],
+    example: BannerStatus.ACTIVE,
+    enum: BannerStatus,
     required: false,
-    default: 'ACTIVE',
+    default: BannerStatus.ACTIVE,
   })
-  @IsString()
-  @IsIn(['ACTIVE', 'INACTIVE', 'EXPIRED'])
+  @IsEnum(BannerStatus)
   @IsOptional()
-  status?: string;
+  status?: BannerStatus;
 
   @ApiProperty({
     description: 'Thứ tự hiển thị (càng nhỏ càng ưu tiên)',

@@ -1,10 +1,16 @@
 import {
-  Entity,
-  PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  Entity,
+  PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+
+export enum BannerStatus {
+  ACTIVE = 'ACTIVE',
+  INACTIVE = 'INACTIVE',
+  EXPIRED = 'EXPIRED',
+}
 
 @Entity('banners')
 export class Banner {
@@ -15,7 +21,7 @@ export class Banner {
   title: string;
 
   @Column({ type: 'varchar', length: 500 })
-  urlImage: string;
+  image: string;
 
   @Column({ type: 'text', nullable: true })
   description: string | null;
@@ -35,8 +41,8 @@ export class Banner {
   @Column({ type: 'date' })
   endDate: Date;
 
-  @Column({ type: 'varchar', length: 20, default: 'ACTIVE' })
-  status: string; // ACTIVE, INACTIVE, EXPIRED
+  @Column({ type: 'varchar', length: 20, default: BannerStatus.ACTIVE })
+  status: BannerStatus;
 
   @Column({ type: 'int', default: 0 })
   displayOrder: number;

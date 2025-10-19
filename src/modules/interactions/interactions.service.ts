@@ -6,6 +6,7 @@ import { Interaction, InteractionType } from './entities/interaction.entity';
 import { ProductVariant } from '../product_variants/entities/product_variant.entity';
 import { User } from '../users/entities/user.entity';
 import { CreateInteractionDto } from './dto/create-interaction.dto';
+import { AnalyticsService } from '../analytics/analytics.service';
 
 @Injectable()
 export class InteractionsService {
@@ -18,6 +19,7 @@ export class InteractionsService {
 
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    private readonly analyticsService: AnalyticsService,
   ) {}
 
   async create(createDto: CreateInteractionDto): Promise<Interaction> {
@@ -66,6 +68,10 @@ export class InteractionsService {
     const interaction = this.interactionRepository.create({ ...createDto });
 
     const savedInteraction = await this.interactionRepository.save(interaction);
+
+    await this.analyticsService.recordInteraction(createDto.idProductVariant, createDto.type, {
+      occurredAt: savedInteraction.createdAt,
+    });
 
     // // Update product popularity score (async)
     // this.updateProductPopularityScore(createDto.idProductVariant).catch(console.error);

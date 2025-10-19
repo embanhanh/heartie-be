@@ -1,5 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsNumber, IsUrl, IsNotEmpty } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, MaxLength } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateCategoryDto {
   @ApiProperty({
@@ -12,23 +13,24 @@ export class CreateCategoryDto {
   @IsNotEmpty()
   name: string;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     description: 'ID danh mục cha (nếu có)',
     example: 1,
-    required: false,
     type: Number,
   })
   @IsOptional()
-  @IsNumber()
-  parentCategory?: number;
+  @IsInt()
+  @IsPositive()
+  @Type(() => Number)
+  parentId?: number;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     description: 'URL ảnh đại diện cho danh mục',
     example: 'https://example.com/images/category.jpg',
-    required: true,
     type: String,
-    format: 'url',
   })
-  @IsUrl()
-  urlImage: string;
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  image?: string;
 }
