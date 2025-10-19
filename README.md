@@ -107,18 +107,22 @@ Other noteworthy files:
 
 Fill in a `.env` file at the project root (copy `.env.example` and adjust):
 
-| Variable                      | Description          | Default (dev)   |
-| ----------------------------- | -------------------- | --------------- |
-| `PORT`                        | API listening port   | `3001`          |
-| `DB_HOST`                     | PostgreSQL host      | `localhost`     |
-| `DB_PORT`                     | PostgreSQL port      | `5432`          |
-| `DB_USERNAME`                 | Database user        | `thongdinh`     |
-| `DB_PASSWORD`                 | Database password    | `thongdinh`     |
-| `DB_DATABASE`                 | Database name        | `heartie_db`    |
-| `JWT_SECRET`                  | Access token secret  | `access_token`  |
-| `JWT_EXPIRATION_TIME`         | Access token TTL     | `3600s`         |
-| `JWT_REFRESH_SECRET`          | Refresh token secret | `refresh_token` |
-| `JWT_REFRESH_EXPIRATION_TIME` | Refresh token TTL    | `7d`            |
+| Variable                      | Description                                           | Default (dev)   |
+| ----------------------------- | ----------------------------------------------------- | --------------- |
+| `PORT`                        | API listening port                                    | `3001`          |
+| `DB_HOST`                     | PostgreSQL host                                       | `localhost`     |
+| `DB_PORT`                     | PostgreSQL port                                       | `5432`          |
+| `DB_USERNAME`                 | Database user                                         | `thongdinh`     |
+| `DB_PASSWORD`                 | Database password                                     | `thongdinh`     |
+| `DB_DATABASE`                 | Database name                                         | `heartie_db`    |
+| `JWT_SECRET`                  | Access token secret                                   | `access_token`  |
+| `JWT_EXPIRATION_TIME`         | Access token TTL                                      | `3600s`         |
+| `JWT_REFRESH_SECRET`          | Refresh token secret                                  | `refresh_token` |
+| `JWT_REFRESH_EXPIRATION_TIME` | Refresh token TTL                                     | `7d`            |
+| `OPENAI_API_KEY`              | OpenAI API key for AI content generation              | —               |
+| `OPENAI_AD_MODEL`             | (Optional) OpenAI model, defaults to `gpt-4o-mini`    | —               |
+| `FACEBOOK_PAGE_ID`            | Target Facebook Page ID for publishing ads            | —               |
+| `FACEBOOK_PAGE_ACCESS_TOKEN`  | Long-lived Page access token with publish permissions | —               |
 
 > ℹ️ The app fails fast if JWT secrets are missing. Ensure these env vars are set before starting Nest.
 
@@ -159,20 +163,41 @@ docker compose up --build
 - API becomes available on `http://localhost:3000` (mapped from container port 3000).
 - To follow logs: `docker compose logs -f api`.
 
+### Seed data
+
+Once the database is reachable (local server or Docker), populate baseline records:
+
+```bash
+yarn seed
+```
+
+By default this seeds every registered module (currently brands, attributes, the full fashion category tree, and demo branches). To target a specific module, pass its name as an argument:
+
+```bash
+yarn seed brands
+yarn seed attributes
+yarn seed categories
+yarn seed branches
+yarn seed brands categories attributes branches
+```
+
+Existing data is preserved (idempotent upsert). The brand seeder loads Nike, Adidas, Gucci, Zara, H&M, Uniqlo, Chanel, Dior, Levi’s, and Puma, the attribute seeder inserts baseline attributes (Màu sắc, Kích thước, Chất liệu), the category seeder creates the full men’s/women’s fashion hierarchy described above, and the branch seeder provisions the primary Hồ Chí Minh, Hà Nội, and Đà Nẵng locations (with coordinates and phone numbers).
+
 ## Available scripts
 
-| Command            | Purpose                                              |
-| ------------------ | ---------------------------------------------------- |
-| `yarn dev`         | Start Nest in watch mode (`nest start --watch`).     |
-| `yarn start`       | Start Nest in non-watch dev mode.                    |
-| `yarn start:debug` | Start with inspector + watch for debugging.          |
-| `yarn start:prod`  | Run the compiled app from `dist/`.                   |
-| `yarn build`       | Compile TypeScript to `dist/` using Nest CLI.        |
-| `yarn lint`        | Run ESLint (auto-fix enabled) on src/apps/libs/test. |
-| `yarn test`        | Execute unit tests via Jest.                         |
-| `yarn test:e2e`    | Run end-to-end tests (`test/app.e2e-spec.ts`).       |
-| `yarn format`      | Format code with Prettier.                           |
-| `yarn gen:module`  | Scaffold a new Nest module using the helper script.  |
+| Command            | Purpose                                                |
+| ------------------ | ------------------------------------------------------ |
+| `yarn dev`         | Start Nest in watch mode (`nest start --watch`).       |
+| `yarn start`       | Start Nest in non-watch dev mode.                      |
+| `yarn start:debug` | Start with inspector + watch for debugging.            |
+| `yarn start:prod`  | Run the compiled app from `dist/`.                     |
+| `yarn build`       | Compile TypeScript to `dist/` using Nest CLI.          |
+| `yarn lint`        | Run ESLint (auto-fix enabled) on src/apps/libs/test.   |
+| `yarn test`        | Execute unit tests via Jest.                           |
+| `yarn test:e2e`    | Run end-to-end tests (`test/app.e2e-spec.ts`).         |
+| `yarn format`      | Format code with Prettier.                             |
+| `yarn gen:module`  | Scaffold a new Nest module using the helper script.    |
+| `yarn seed`        | Run the seeding script (optionally pass module names). |
 
 ## API reference
 

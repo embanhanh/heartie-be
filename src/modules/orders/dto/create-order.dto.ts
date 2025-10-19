@@ -1,133 +1,127 @@
-import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsNumber,
-  IsNotEmpty,
-  IsString,
-  // IsDateString,
-  IsOptional,
-  Min,
-  IsEnum,
-  IsDate,
-} from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-
-export enum OrderStatus {
-  PENDING = 'Pending',
-  PROCESSING = 'Processing',
-  SHIPPED = 'Shipped',
-  DELIVERED = 'Delivered',
-  CANCELLED = 'Cancelled',
-}
-
-export enum PaymentMethod {
-  CREDIT_CARD = 'Credit Card',
-  DEBIT_CARD = 'Debit Card',
-  BANK_TRANSFER = 'Bank Transfer',
-  CASH_ON_DELIVERY = 'Cash on Delivery',
-  E_WALLET = 'E-Wallet',
-}
-
-export enum ShippingMethod {
-  STANDARD = 'Standard Delivery',
-  EXPRESS = 'Express Delivery',
-  OVERNIGHT = 'Overnight Delivery',
-  PICKUP = 'Store Pickup',
-}
+import {
+  IsDate,
+  IsEnum,
+  IsInt,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsPositive,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator';
+import { OrderStatus, PaymentMethod } from '../entities/order.entity';
 
 export class CreateOrderDto {
-  @ApiProperty({
-    description: 'Ngày đặt hàng',
-    example: '2024-08-24T10:30:00Z',
-    required: true,
-  })
-  @Type(() => Date)
-  @IsDate()
-  orderDate: Date;
-
-  @ApiProperty({
-    description: 'ID địa chỉ giao hàng',
-    example: 1,
-    required: true,
-  })
-  @IsNumber()
-  @IsNotEmpty()
-  idAddress: number;
-
-  @ApiProperty({
-    description: 'Phương thức thanh toán',
-    example: 'Credit Card',
-    enum: PaymentMethod,
-    required: true,
-  })
-  @IsEnum(PaymentMethod)
-  @IsNotEmpty()
-  paymentMethod: PaymentMethod;
-
-  @ApiProperty({
-    description: 'Giá sản phẩm',
-    example: 250000,
-    required: true,
-  })
-  @IsNumber()
-  @IsNotEmpty()
-  @Min(0)
-  productsPrice: number;
-
-  @ApiProperty({
-    description: 'Phí vận chuyển',
-    example: 30000,
-    required: true,
-  })
-  @IsNumber()
-  @IsNotEmpty()
-  @Min(0)
-  shippingPrice: number;
-
-  @ApiProperty({
-    description: 'Tổng giá trị đơn hàng',
-    example: 280000,
-    required: true,
-  })
-  @IsNumber()
-  @IsNotEmpty()
-  @Min(0)
-  totalPrice: number;
-
-  @ApiProperty({
-    description: 'Ngày dự kiến giao hàng',
-    example: '2024-08-26T10:30:00Z',
-    required: true,
-  })
-  @Type(() => Date)
-  @IsDate()
-  expectedDeliveryDate: Date;
-
-  @ApiProperty({
-    description: 'Trạng thái đơn hàng',
-    example: 'Processing',
-    enum: OrderStatus,
-    required: true,
-  })
-  @IsEnum(OrderStatus)
-  @IsNotEmpty()
-  status: OrderStatus;
-
-  @ApiProperty({
-    description: 'Phương thức vận chuyển',
-    example: 'Standard Delivery',
-    enum: ShippingMethod,
-    required: true,
-  })
-  @IsEnum(ShippingMethod)
-  @IsNotEmpty()
-  shippingMethod: ShippingMethod;
-
-  @ApiProperty({
-    description: 'Tùy chọn chuyển khoản',
-    example: 'Bank Transfer',
-    required: false,
-  })
-  @IsString()
+  @ApiPropertyOptional({ example: 'ORD-20251010-0001' })
   @IsOptional()
-  transferOption?: string;
+  @IsString()
+  @MaxLength(50)
+  orderNumber?: string;
+
+  @ApiPropertyOptional({ example: 5, description: 'FK -> users.id' })
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  @Type(() => Number)
+  userId?: number;
+
+  @ApiPropertyOptional({ example: 2, description: 'FK -> branches.id' })
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  @Type(() => Number)
+  branchId?: number;
+
+  @ApiProperty({ example: 350000, description: 'Tổng tiền hàng trước ưu đãi' })
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Type(() => Number)
+  subTotal: number;
+
+  @ApiPropertyOptional({ example: 50000, description: 'Tổng tiền giảm giá' })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Type(() => Number)
+  discountTotal?: number;
+
+  @ApiPropertyOptional({ example: 15000, description: 'Phí vận chuyển' })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Type(() => Number)
+  shippingFee?: number;
+
+  @ApiPropertyOptional({ example: 20000, description: 'Thuế' })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Type(() => Number)
+  taxTotal?: number;
+
+  @ApiPropertyOptional({ example: 335000, description: 'Tổng tiền phải thanh toán' })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Type(() => Number)
+  totalAmount?: number;
+
+  @ApiPropertyOptional({ example: 'Giao trong giờ hành chính' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+
+  @ApiPropertyOptional({ enum: PaymentMethod, example: PaymentMethod.CASH })
+  @IsOptional()
+  @IsEnum(PaymentMethod)
+  paymentMethod?: PaymentMethod;
+
+  @ApiPropertyOptional({ example: '2025-10-15T10:30:00Z' })
+  @IsOptional()
+  @Type(() => Date)
+  @IsDate()
+  expectedDeliveryDate?: Date;
+
+  @ApiPropertyOptional({ example: '2025-10-12T12:30:00Z' })
+  @IsOptional()
+  @Type(() => Date)
+  @IsDate()
+  paidAt?: Date;
+
+  @ApiPropertyOptional({ example: '2025-10-16T09:00:00Z' })
+  @IsOptional()
+  @Type(() => Date)
+  @IsDate()
+  deliveredAt?: Date;
+
+  @ApiPropertyOptional({ example: '2025-10-13T08:00:00Z' })
+  @IsOptional()
+  @Type(() => Date)
+  @IsDate()
+  cancelledAt?: Date;
+
+  @ApiPropertyOptional({ enum: OrderStatus, example: OrderStatus.PENDING })
+  @IsOptional()
+  @IsEnum(OrderStatus)
+  status?: OrderStatus;
+
+  @ApiPropertyOptional({
+    description: 'Thông tin địa chỉ giao hàng tại thời điểm đặt hàng',
+    example: { fullName: 'Nguyễn Văn A', phone: '0901234567', address: '123 Lê Lợi, Quận 1' },
+  })
+  @IsOptional()
+  @IsObject()
+  shippingAddressJson?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description: 'Thông tin địa chỉ thanh toán tại thời điểm đặt hàng',
+    example: { fullName: 'Nguyễn Văn A', taxCode: '0123456789', address: '123 Lê Lợi, Quận 1' },
+  })
+  @IsOptional()
+  @IsObject()
+  billingAddressJson?: Record<string, unknown>;
 }

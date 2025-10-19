@@ -5,9 +5,10 @@ import { InteractionsController } from './interactions.controller';
 import { Interaction } from './entities/interaction.entity';
 import { ProductVariant } from '../product_variants/entities/product_variant.entity';
 import { User } from '../users/entities/user.entity';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Interaction, ProductVariant, User])],
+  imports: [TypeOrmModule.forFeature([Interaction, ProductVariant, User]), AnalyticsModule],
   controllers: [InteractionsController],
   providers: [InteractionsService],
 })

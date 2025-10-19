@@ -20,7 +20,8 @@ async function bootstrap() {
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
   });
 
-  app.use('/uploads', express.static(join(__dirname, '..', 'uploads')));
+  const uploadsPath = join(process.cwd(), 'uploads');
+  app.use('/uploads', express.static(uploadsPath));
 
   // Cấu hình Swagger
   const config = new DocumentBuilder()

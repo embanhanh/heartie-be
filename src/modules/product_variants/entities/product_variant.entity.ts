@@ -1,89 +1,58 @@
 import {
-  Entity,
-  PrimaryGeneratedColumn,
   Column,
-  Index,
-  ManyToOne,
+  CreateDateColumn,
+  Entity,
   JoinColumn,
-  Unique,
+  ManyToOne,
+  OneToMany,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
 } from 'typeorm';
-import { Product } from 'src/modules/products/entities/product.entity';
+import { Product } from '../../products/entities/product.entity';
+import { ProductVariantInventory } from '../../inventory/entities/product-variant-inventory.entity';
+import { VariantAttributeValue } from '../../variant_attribute_values/entities/variant-attribute-value.entity';
 
-export enum InventoryStatus {
-  AVAILABLE = 'available',
-  OUT_OF_STOCK = 'out_of_stock',
-  PREORDER = 'preorder',
+export enum ProductVariantStatus {
+  ACTIVE = 'active',
+  INACTIVE = 'inactive',
 }
 
-// Dùng transformer để đọc numeric -> number
-const decimalToNumber = {
-  to: (value?: number | null) => value,
-  from: (value: string | null) => (value != null ? Number(value) : null),
-};
-
-@Entity('product_variants')
-@Unique('uq_variant_per_product_sku', ['productId', 'sku'])
+@Entity({ name: 'product_variants' })
 export class ProductVariant {
   @PrimaryGeneratedColumn()
   id: number;
 
-  // FK -> products.id
-  @Index()
-  @Column({ type: 'int', name: 'product' })
+  @Column({ type: 'int' })
   productId: number;
 
-  @ManyToOne(() => Product, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'product', referencedColumnName: 'id' })
+  @ManyToOne(() => Product, (product) => product.variants, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'productId' })
   product: Product;
 
-  @Index()
-  @Column({ type: 'varchar', length: 191 })
-  sku: string;
-
-  @Column({ type: 'varchar', length: 255 })
-  name: string;
-
-  // Giá bán (đồng) – dùng numeric(10,2)
-  @Column('decimal', {
-    precision: 10,
-    scale: 2,
-    default: 0,
-    transformer: decimalToNumber,
-  })
+  @Column({ type: 'numeric', precision: 12, scale: 2 })
   price: number;
 
-  // % giảm giá hoặc số tiền? JSON cho thấy rate => giữ number (0-100)
-  @Column('decimal', {
-    name: 'discount_rate',
-    precision: 5,
-    scale: 2,
-    default: 0,
-    transformer: decimalToNumber,
-  })
-  discountRate: number;
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  image?: string;
 
-  @Column({ type: 'int', default: 0 })
-  stockQuantity: number;
+  @Column({ type: 'numeric', precision: 8, scale: 3, nullable: true })
+  weight?: number;
 
-  @Column({
-    type: 'enum',
-    enum: InventoryStatus,
-    name: 'inventory_status',
-    default: InventoryStatus.AVAILABLE,
-  })
-  inventoryStatus: InventoryStatus;
+  @Column({ type: 'varchar', length: 20, default: ProductVariantStatus.ACTIVE })
+  status: ProductVariantStatus;
 
-  // các lựa chọn (mongo có option1/option2)
-  @Column({ type: 'varchar', length: 255, nullable: true })
-  option1: string | null;
+  @Column({ type: 'jsonb', default: () => "'{}'" })
+  extra: Record<string, unknown>;
 
-  @Column({ type: 'varchar', length: 255, nullable: true })
-  option2: string | null;
+  @CreateDateColumn({ type: 'timestamp with time zone' })
+  createdAt: Date;
 
-  // trường tự do trong JSON: "do_kinh" (độ kính?) – để nullable
-  @Column({ type: 'varchar', length: 255, name: 'nearsightedness', nullable: true })
-  nearsightedness: string | null;
+  @UpdateDateColumn({ type: 'timestamp with time zone' })
+  updatedAt: Date;
 
-  @Column({ type: 'text', nullable: true })
-  imageUrl: string | null;
+  @OneToMany(() => ProductVariantInventory, (inventory) => inventory.variant)
+  inventories: ProductVariantInventory[];
+
+  @OneToMany(() => VariantAttributeValue, (variantValue) => variantValue.variant)
+  attributeValues: VariantAttributeValue[];
 }

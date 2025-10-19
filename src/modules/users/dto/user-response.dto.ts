@@ -17,6 +17,15 @@ export class UserResponseDto {
   @ApiProperty()
   phoneNumber: string;
 
+  @ApiProperty({ enum: ['CUSTOMER', 'SHOP_OWNER', 'ADMIN', 'BRANCH_MANAGER', 'STAFF'] })
+  role: string;
+
+  @ApiProperty({ description: 'Associated branch id', nullable: true })
+  branchId?: number | null;
+
+  @ApiProperty({ description: 'Active flag', default: true })
+  isActive: boolean;
+
   @ApiProperty({ type: String, format: 'date-time' })
   createdAt: Date;
 
@@ -30,6 +39,9 @@ export class UserResponseDto {
     dto.lastName = user.lastName;
     dto.email = user.email;
     dto.phoneNumber = user.phoneNumber;
+    dto.role = user.role;
+    dto.branchId = user.branchId ?? null;
+    dto.isActive = user.isActive;
     dto.createdAt = user.createdAt;
     dto.updatedAt = user.updatedAt;
     return dto;

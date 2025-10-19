@@ -1,46 +1,69 @@
 import {
-  Entity,
-  Column,
-  PrimaryGeneratedColumn,
-  CreateDateColumn,
-  UpdateDateColumn,
   BeforeInsert,
   BeforeUpdate,
+  Column,
+  CreateDateColumn,
+  Entity,
+  JoinColumn,
+  ManyToOne,
+  OneToMany,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 import slugify from 'slugify';
+import { Product } from '../../products/entities/product.entity';
 
 @Entity('categories')
 export class Category {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'varchar', length: 255, unique: true })
+  @Column({ type: 'varchar', length: 255 })
   name: string;
 
-  @Column({ type: 'bigint', nullable: true })
-  parentCategory: number | null;
-
-  @CreateDateColumn({ type: 'timestamp' })
-  createdAt: Date;
-
-  @UpdateDateColumn({ type: 'timestamp' })
-  updatedAt: Date;
-
-  @Column({ unique: true, type: 'varchar', length: 255, nullable: true })
-  slug: string;
+  @Column({ type: 'varchar', length: 255, unique: true, nullable: true })
+  slug?: string | null;
 
   @Column({ type: 'varchar', length: 500, nullable: true })
-  urlImage: string;
+  image?: string | null;
+
+  @Column({ type: 'int', nullable: true })
+  parentId?: number | null;
+
+  @ManyToOne(() => Category, (category) => category.children, { onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'parentId' })
+  parent?: Category | null;
+
+  @OneToMany(() => Category, (category) => category.parent)
+  children: Category[];
+
+  @OneToMany(() => Product, (product) => product.category)
+  products: Product[];
+
+  @CreateDateColumn({ type: 'timestamp with time zone' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ type: 'timestamp with time zone' })
+  updatedAt: Date;
 
   @BeforeInsert()
   @BeforeUpdate()
   generateSlug() {
-    if (this.name) {
-      // chỉ sinh slug mới nếu slug chưa có hoặc name thay đổi
-      this.slug = slugify(this.name, {
-        lower: true,
-        strict: true,
-      });
+    if (!this.name) {
+      this.slug = null;
+      return;
     }
+
+    const baseSlug = slugify(this.name, {
+      lower: true,
+      strict: true,
+    });
+
+    if (this.parentId) {
+      this.slug = `${baseSlug}-${this.parentId}`;
+      return;
+    }
+
+    this.slug = baseSlug;
   }
 }

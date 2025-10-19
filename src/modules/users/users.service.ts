@@ -1,17 +1,20 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import { Injectable, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { User } from './entities/user.entity';
+import { User, UserRole } from './entities/user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UserSafe } from './types/user-safe.type';
+import { BaseService } from '../../common/services/base.service';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
-export class UsersService {
+export class UsersService extends BaseService<User> {
   constructor(
     @InjectRepository(User)
-    private usersRepository: Repository<User>,
-  ) {}
+    private readonly userRepository: Repository<User>,
+  ) {
+    super(userRepository, 'user');
+  }
 
   private sanitizeUser(user: User | null): UserSafe | null {
     if (!user) {
@@ -24,8 +27,8 @@ export class UsersService {
 
   async create(createUserDto: CreateUserDto): Promise<UserSafe> {
     const [existingUserByEmail, existingUserByPhone] = await Promise.all([
-      this.usersRepository.findOne({ where: { email: createUserDto.email } }),
-      this.usersRepository.findOne({ where: { phoneNumber: createUserDto.phoneNumber } }),
+      this.userRepository.findOne({ where: { email: createUserDto.email } }),
+      this.userRepository.findOne({ where: { phoneNumber: createUserDto.phoneNumber } }),
     ]);
 
     if (existingUserByEmail) {
@@ -38,12 +41,22 @@ export class UsersService {
 
     const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
 
-    const newUser = this.usersRepository.create({
+    if (createUserDto.role === UserRole.BRANCH_MANAGER || createUserDto.role === UserRole.STAFF) {
+      if (!createUserDto.branchId) {
+        throw new BadRequestException(
+          'Branch assignment is required for staff and branch managers',
+        );
+      }
+    }
+
+    const newUser = this.userRepository.create({
       ...createUserDto,
+      role: createUserDto.role ?? UserRole.CUSTOMER,
+      branchId: createUserDto.branchId ?? null,
       password: hashedPassword,
     });
 
-    const savedUser = await this.usersRepository.save(newUser);
+    const savedUser = await this.userRepository.save(newUser);
     const safeUser = this.sanitizeUser(savedUser);
     if (!safeUser) {
       throw new Error('Không thể khởi tạo người dùng mới');
@@ -52,12 +65,12 @@ export class UsersService {
   }
 
   async findOneByEmail(email: string): Promise<UserSafe | null> {
-    const user = await this.usersRepository.findOne({ where: { email } });
+    const user = await this.userRepository.findOne({ where: { email } });
     return this.sanitizeUser(user);
   }
 
   async findOneByEmailWithSecrets(email: string): Promise<User | null> {
-    return this.usersRepository
+    return this.userRepository
       .createQueryBuilder('user')
       .addSelect(['user.password', 'user.hashedRefreshToken'])
       .where('user.email = :email', { email })
@@ -65,12 +78,12 @@ export class UsersService {
   }
 
   async findOneById(id: number): Promise<UserSafe | null> {
-    const user = await this.usersRepository.findOne({ where: { id } });
+    const user = await this.userRepository.findOne({ where: { id } });
     return this.sanitizeUser(user);
   }
 
   async findOneByIdWithRefreshToken(id: number): Promise<User | null> {
-    return this.usersRepository
+    return this.userRepository
       .createQueryBuilder('user')
       .addSelect('user.hashedRefreshToken')
       .where('user.id = :id', { id })
@@ -79,13 +92,13 @@ export class UsersService {
 
   async setCurrentRefreshToken(refreshToken: string, userId: number): Promise<void> {
     const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
-    await this.usersRepository.update(userId, {
+    await this.userRepository.update(userId, {
       hashedRefreshToken,
     });
   }
 
   async removeRefreshToken(userId: number): Promise<void> {
-    await this.usersRepository.update(userId, {
+    await this.userRepository.update(userId, {
       hashedRefreshToken: null,
     });
   }
