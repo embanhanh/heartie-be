@@ -1,16 +1,6 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
-import {
-  ArrayMaxSize,
-  ArrayMinSize,
-  IsArray,
-  IsInt,
-  IsOptional,
-  IsString,
-  Length,
-  Min,
-  ValidateIf,
-} from 'class-validator';
+import { IsArray, IsInt, IsOptional, IsString, Length, Min } from 'class-validator';
 
 function transformToArray(value?: unknown): string[] | undefined {
   if (value === undefined || value === null || value === '') {
@@ -48,8 +38,8 @@ export class GenerateAdsAiDto {
   @Min(1)
   productId?: number;
 
-  @ApiProperty({ description: 'Tên sản phẩm/dịch vụ', minLength: 2, required: false })
-  @ValidateIf((dto: GenerateAdsAiDto) => !dto.productId)
+  @ApiPropertyOptional({ description: 'Tên sản phẩm/dịch vụ', minLength: 2 })
+  @IsOptional()
   @IsString()
   @Length(2, 255)
   productName?: string;
@@ -70,8 +60,6 @@ export class GenerateAdsAiDto {
   })
   @IsOptional()
   @IsArray()
-  @ArrayMinSize(1)
-  @ArrayMaxSize(10)
   @Transform(({ value }) => transformToArray(value), { toClassOnly: true })
   features?: string[];
 
@@ -81,8 +69,6 @@ export class GenerateAdsAiDto {
   })
   @IsOptional()
   @IsArray()
-  @ArrayMinSize(1)
-  @ArrayMaxSize(10)
   @Transform(({ value }) => transformToArray(value), { toClassOnly: true })
   benefits?: string[];
 
@@ -95,6 +81,11 @@ export class GenerateAdsAiDto {
   @IsOptional()
   @IsString()
   objective?: string;
+
+  @ApiPropertyOptional({ description: 'Ngữ cảnh chiến dịch (ví dụ: dịp ra mắt, ưu đãi nội bộ)' })
+  @IsOptional()
+  @IsString()
+  campaignContext?: string;
 
   @ApiPropertyOptional({ description: 'Ghi chú bổ sung cho AI' })
   @IsOptional()

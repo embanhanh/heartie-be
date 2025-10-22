@@ -58,6 +58,7 @@ export class AdsAiController {
         scheduledAt: { type: 'string', format: 'date-time', nullable: true },
         prompt: { type: 'string', nullable: true },
         image: { type: 'string', format: 'binary', nullable: true },
+        postType: { type: 'string', enum: ['link', 'photo'], nullable: true },
         hashtags: {
           type: 'array',
           items: { type: 'string' },
@@ -101,6 +102,7 @@ export class AdsAiController {
         scheduledAt: { type: 'string', format: 'date-time', nullable: true },
         prompt: { type: 'string', nullable: true },
         image: { type: 'string', format: 'binary', nullable: true },
+        postType: { type: 'string', enum: ['link', 'photo'], nullable: true },
         hashtags: {
           type: 'array',
           items: { type: 'string' },

@@ -4,10 +4,10 @@ import {
   ArrayMaxSize,
   IsArray,
   IsDateString,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
-  IsUrl,
   Length,
   Min,
 } from 'class-validator';
@@ -92,7 +92,7 @@ export class CreateAdsAiDto {
 
   @ApiPropertyOptional({ description: 'Đường dẫn khi người dùng click CTA' })
   @IsOptional()
-  @IsUrl()
+  @IsString()
   ctaUrl?: string;
 
   @ApiPropertyOptional({ description: 'Nội dung chính của quảng cáo' })
@@ -138,6 +138,14 @@ export class CreateAdsAiDto {
   @IsOptional()
   @IsString()
   image?: string;
+
+  @ApiPropertyOptional({
+    description: 'Kiểu bài đăng Facebook sẽ sử dụng',
+    enum: ['link', 'photo'],
+  })
+  @IsOptional()
+  @IsIn(['link', 'photo'])
+  postType?: 'link' | 'photo';
 
   @ApiPropertyOptional({ description: 'Prompt tuỳ chỉnh đã sử dụng để tạo nội dung AI' })
   @IsOptional()

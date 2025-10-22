@@ -13,6 +13,11 @@ export enum AdsAiStatus {
   FAILED = 'FAILED',
 }
 
+export enum AdsAiPostType {
+  LINK = 'link',
+  PHOTO = 'photo',
+}
+
 @Entity('ads_ai_campaigns')
 export class AdsAiCampaign {
   @PrimaryGeneratedColumn()
@@ -38,6 +43,9 @@ export class AdsAiCampaign {
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   callToAction: string | null;
+
+  @Column({ type: 'varchar', length: 10, default: AdsAiPostType.LINK })
+  postType: AdsAiPostType;
 
   @Column({ type: 'varchar', length: 500, nullable: true })
   ctaUrl: string | null;

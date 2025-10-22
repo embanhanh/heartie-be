@@ -7,13 +7,13 @@ import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import axios, { AxiosError, AxiosInstance } from 'axios';
 import { join } from 'path';
 import { existsSync, promises as fsPromises, createReadStream } from 'fs';
-import FormData from 'form-data';
+import * as FormData from 'form-data';
 import { BaseService } from 'src/common/services/base.service';
 import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
 import { Product } from '../products/entities/product.entity';
 import { ProductVariantStatus } from '../product_variants/entities/product_variant.entity';
-import { AdsAiCampaign, AdsAiStatus } from './entities/ads-ai-campaign.entity';
+import { AdsAiCampaign, AdsAiPostType, AdsAiStatus } from './entities/ads-ai-campaign.entity';
 import { CreateAdsAiDto } from './dto/create-ads-ai.dto';
 import { UpdateAdsAiDto } from './dto/update-ads-ai.dto';
 import { AdsAiQueryDto } from './dto/ads-ai-query.dto';
@@ -45,7 +45,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
   }
 
   async generateCreative(dto: GenerateAdsAiDto): Promise<GeneratedAdContent> {
-    const { prompt, product, productName } = await this.buildPrompt(dto);
+    const { prompt, product, productName, hasExplicitProductName } = await this.buildPrompt(dto);
     const modelName = this.configService.get<string>('GEMINI_AD_MODEL') ?? 'gemini-1.5-flash';
     const model = this.getGeminiModel(modelName);
 
@@ -70,6 +70,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
         dto,
         product,
         productName,
+        hasExplicitProductName,
       });
 
       return {
@@ -113,6 +114,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       description: dto.description ?? null,
       hashtags: this.normalizeStoredHashtags(dto.hashtags),
       image: imagePath ?? null,
+      postType: this.normalizePostTypeInput(dto.postType),
       status,
       scheduledAt,
     });
@@ -153,6 +155,10 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     if (dto.callToAction !== undefined) {
       ad.callToAction = dto.callToAction ?? null;
     }
+    if (dto.postType !== undefined) {
+      ad.postType = this.normalizePostTypeInput(dto.postType);
+    }
+
     if (dto.ctaUrl !== undefined) {
       ad.ctaUrl = dto.ctaUrl ?? null;
     }
@@ -306,34 +312,22 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     }
 
     const message = this.composeFacebookMessage(ad, note);
-    if (!message) {
+    if (!message && ad.postType === AdsAiPostType.LINK) {
       throw new BadRequestException('Nội dung đăng tải đang trống');
     }
 
-    const mediaId = await this.tryUploadImageToFacebook(ad.image, pageId, accessToken);
-
-    const params = new URLSearchParams();
-    params.append('message', message);
-    params.append('access_token', accessToken);
-
-    if (ad.ctaUrl) {
-      params.append('link', ad.ctaUrl);
-    }
-
-    if (mediaId) {
-      params.append('attached_media', JSON.stringify([{ media_fbid: mediaId }]));
-    }
+    const baseUrl =
+      this.configService.get<string>('FB_GRAPH_API_URL') ?? 'https://graph.facebook.com/v24.0';
 
     try {
-      const baseUrl =
-        this.configService.get<string>('FB_GRAPH_API_URL') ?? 'https://graph.facebook.com/v24.0';
+      let postId: string | null = null;
 
-      const response = await this.httpClient.post<{ id: string }>(
-        `${baseUrl}/${pageId}/feed`,
-        params,
-      );
+      if (ad.postType === AdsAiPostType.PHOTO) {
+        postId = await this.publishPhotoPost(ad, message, pageId, accessToken, baseUrl);
+      } else {
+        postId = await this.publishLinkPost(ad, message, pageId, accessToken, baseUrl);
+      }
 
-      const postId = response.data?.id ?? null;
       ad.facebookPostId = postId;
       ad.status = AdsAiStatus.PUBLISHED;
       ad.publishedAt = new Date();
@@ -347,6 +341,69 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       await this.markAsFailed(ad, normalized.failureReason);
       throw new BadRequestException(normalized.clientMessage);
     }
+  }
+
+  private async publishLinkPost(
+    ad: AdsAiCampaign,
+    message: string,
+    pageId: string,
+    accessToken: string,
+    baseUrl: string,
+  ): Promise<string | null> {
+    const params = new URLSearchParams();
+    params.append('access_token', accessToken);
+    params.append('message', message);
+
+    if (ad.ctaUrl) {
+      params.append('link', ad.ctaUrl);
+    }
+
+    // if (ad.headline) {
+    //   params.append('name', ad.headline);
+    // }
+
+    const response = await this.httpClient.post<{ id: string }>(
+      `${baseUrl}/${pageId}/feed`,
+      params,
+    );
+
+    return response.data?.id ?? null;
+  }
+
+  private async publishPhotoPost(
+    ad: AdsAiCampaign,
+    message: string,
+    pageId: string,
+    accessToken: string,
+    baseUrl: string,
+  ): Promise<string | null> {
+    if (!ad.image) {
+      throw new BadRequestException('Chiến dịch dạng ảnh cần có ảnh đính kèm.');
+    }
+
+    const normalizedPath = ad.image.replace(/^upload\//, 'uploads/');
+    const absolutePath = join(process.cwd(), normalizedPath);
+
+    if (!existsSync(absolutePath)) {
+      throw new BadRequestException('Không tìm thấy file ảnh để đăng lên Facebook.');
+    }
+
+    const form = new FormData();
+    form.append('source', createReadStream(absolutePath));
+    form.append('access_token', accessToken);
+    form.append('published', 'true');
+
+    if (message) {
+      form.append('caption', message);
+    }
+
+    const response = await this.httpClient.post<{ post_id?: string; id?: string }>(
+      `${baseUrl}/${pageId}/photos`,
+      form,
+      { headers: form.getHeaders() },
+    );
+
+    return response.data?.post_id ?? response.data?.id ?? null;
   }
 
   private composeFacebookMessage(ad: AdsAiCampaign, note?: string): string {
@@ -386,45 +443,6 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       .join('\n\n');
   }
 
-  private async tryUploadImageToFacebook(
-    imagePath: string | null | undefined,
-    pageId: string,
-    accessToken: string,
-  ): Promise<string | null> {
-    if (!imagePath) {
-      return null;
-    }
-
-    const normalizedPath = imagePath.replace(/^upload\//, 'uploads/');
-    const absolutePath = join(process.cwd(), normalizedPath);
-
-    if (!existsSync(absolutePath)) {
-      this.logger.warn(`Không tìm thấy ảnh quảng cáo: ${absolutePath}`);
-      return null;
-    }
-
-    const form = new FormData();
-    form.append('source', createReadStream(absolutePath));
-    form.append('published', 'false');
-    form.append('access_token', accessToken);
-
-    try {
-      const baseUrl =
-        this.configService.get<string>('FB_GRAPH_API_URL') ?? 'https://graph.facebook.com/v24.0';
-      const response = await this.httpClient.post<{ id: string }>(
-        `${baseUrl}/${pageId}/photos`,
-        form,
-        { headers: form.getHeaders() },
-      );
-
-      return response.data?.id ?? null;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Không rõ nguyên nhân';
-      this.logger.error(`Tải ảnh lên Facebook thất bại: ${message}`);
-      return null;
-    }
-  }
-
   private async markAsFailed(ad: AdsAiCampaign, reason: string) {
     ad.status = AdsAiStatus.FAILED;
     ad.failureReason = reason.slice(0, 1000);
@@ -434,6 +452,10 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
   private ensurePublishable(ad: AdsAiCampaign): void {
     if (!ad.primaryText && !ad.headline && !ad.description) {
       throw new BadRequestException('Chiến dịch chưa có nội dung quảng cáo');
+    }
+
+    if (ad.postType === AdsAiPostType.PHOTO && !ad.image) {
+      throw new BadRequestException('Bài đăng dạng ảnh yêu cầu có ít nhất một ảnh đính kèm.');
     }
   }
 
@@ -473,6 +495,17 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     }
 
     return trimmed.replace(/^upload\//, 'uploads/');
+  }
+
+  private normalizePostTypeInput(value?: string | null): AdsAiPostType {
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'photo') {
+        return AdsAiPostType.PHOTO;
+      }
+    }
+
+    return AdsAiPostType.LINK;
   }
 
   private async deleteImageIfExists(image?: string | null) {
@@ -515,21 +548,34 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     return product;
   }
 
-  private async buildPrompt(
-    dto: GenerateAdsAiDto,
-  ): Promise<{ prompt: string; product: Product | null; productName: string }> {
+  private async buildPrompt(dto: GenerateAdsAiDto): Promise<{
+    prompt: string;
+    product: Product | null;
+    productName: string;
+    hasExplicitProductName: boolean;
+  }> {
     const product = await this.resolveProduct(dto.productId, { strict: !!dto.productId });
+    const trimmedProductName = dto.productName?.trim();
+    let resolvedProductName =
+      trimmedProductName && trimmedProductName.length > 0 ? trimmedProductName : null;
 
-    const productName = dto.productName ?? product?.name;
-    if (!productName) {
-      throw new BadRequestException('Vui lòng cung cấp tên sản phẩm hoặc productId hợp lệ');
+    if (!resolvedProductName && product?.name) {
+      resolvedProductName = product.name;
     }
 
-    const sections: string[] = [`Sản phẩm/dịch vụ: ${productName}`];
+    const sections: string[] = [];
+
+    if (resolvedProductName) {
+      sections.push(`Sản phẩm/dịch vụ: ${resolvedProductName}`);
+    } else {
+      sections.push(
+        'Không có tên sản phẩm cụ thể. Hãy tập trung xây dựng câu chuyện, lợi ích và lời kêu gọi dựa trên ngữ cảnh chiến dịch bên dưới.',
+      );
+    }
 
     const productDescription = dto.description ?? product?.description;
     if (productDescription) {
-      sections.push(`Mô tả sản phẩm: ${productDescription}`);
+      sections.push(`Mô tả sản phẩm/chiến dịch: ${productDescription}`);
     }
 
     if (product?.brand?.name) {
@@ -542,10 +588,6 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
 
     if (typeof product?.stock === 'number') {
       sections.push(`Tồn kho hiện tại: ${product.stock}`);
-    }
-
-    if (product?.image) {
-      sections.push(`Ảnh tham khảo: ${product.image}`);
     }
 
     if (product?.variants?.length) {
@@ -592,6 +634,10 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       sections.push(`Mục tiêu chiến dịch: ${dto.objective}`);
     }
 
+    if (dto.campaignContext) {
+      sections.push(`Ngữ cảnh chiến dịch: ${dto.campaignContext}`);
+    }
+
     if (dto.additionalNotes) {
       sections.push(`Ghi chú thêm: ${dto.additionalNotes}`);
     }
@@ -602,20 +648,29 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       '- Ưu tiên diễn giải lợi ích cảm xúc khách hàng nhận được, không chỉ liệt kê tính năng.',
     );
     sections.push('- Tuân thủ đúng tông giọng đã yêu cầu, từ ngữ phải phản ánh phong cách đó.');
-    sections.push('- Lồng ghép tự nhiên thông tin sản phẩm, đối tượng, mô tả đã cung cấp.');
+    sections.push(
+      '- Lồng ghép tự nhiên thông tin sản phẩm (nếu có) hoặc ngữ cảnh/ưu đãi, đối tượng và mô tả đã cung cấp.',
+    );
     sections.push('- Bắt buộc có yếu tố thúc đẩy hành động ngay (khẩn cấp hoặc khan hiếm).');
     sections.push('- Kết thúc bằng lời kêu gọi hành động cụ thể để khách hàng biết phải làm gì.');
     sections.push(
       '- Tự động đề xuất 3-5 hashtag chiến lược liên quan tới sản phẩm, thương hiệu, xu hướng.',
     );
     sections.push(
+      '- Nếu không có tên sản phẩm cụ thể, hãy định vị nội dung xoay quanh lợi ích và bối cảnh chiến dịch.',
+    );
+    sections.push(
       'Trả về JSON có cấu trúc: {"primaryText": string, "headline": string, "description": string, "callToAction": string, "hashtags": string[]}\nKhông thêm ký tự ngoài JSON.',
     );
+
+    const fallbackName =
+      resolvedProductName ?? dto.campaignContext ?? dto.objective ?? 'chiến dịch của bạn';
 
     return {
       prompt: sections.join('\n'),
       product,
-      productName,
+      productName: fallbackName,
+      hasExplicitProductName: Boolean(resolvedProductName),
     };
   }
 
@@ -725,20 +780,27 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
 
   private enforceCreativeRules(
     content: GeneratedContentFields,
-    context: { dto: GenerateAdsAiDto; product: Product | null; productName: string },
+    context: {
+      dto: GenerateAdsAiDto;
+      product: Product | null;
+      productName: string;
+      hasExplicitProductName: boolean;
+    },
   ): GeneratedContentFields {
     const primaryWithHook = this.ensureHook(
       content.primaryText,
       context.dto.tone,
       context.productName,
       context.dto.targetAudience,
+      context.hasExplicitProductName,
+      context.dto.objective,
     );
     const primaryWithBenefits = this.ensureBenefitNarrative(primaryWithHook, context);
     const primaryText = this.normalizeParagraphs(primaryWithBenefits);
 
     const headline = content.headline.trim().length
       ? content.headline.trim()
-      : this.defaultHeadline(context.productName, context.dto.tone);
+      : this.defaultHeadline(context.productName, context.dto.tone, context.hasExplicitProductName);
 
     let description = content.description.trim().length
       ? this.normalizeParagraphs(content.description)
@@ -752,9 +814,13 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
 
     const hashtags = this.ensureHashtags(content.hashtags, {
       productName: context.productName,
+      hasExplicitProductName: context.hasExplicitProductName,
       brandName: context.product?.brand?.name ?? null,
       categoryName: context.product?.category?.name ?? null,
       tone: context.dto.tone ?? null,
+      objective: context.dto.objective ?? null,
+      campaignContext: context.dto.campaignContext ?? null,
+      targetAudience: context.dto.targetAudience ?? null,
     });
 
     return {
@@ -770,7 +836,9 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     primaryText: string,
     tone: string | null | undefined,
     productName: string,
-    targetAudience?: string | null,
+    targetAudience: string | null | undefined,
+    hasExplicitProductName: boolean,
+    objective?: string | null,
   ): string {
     const normalized = this.normalizeParagraphs(primaryText);
     const firstLine = normalized.split('\n')[0]?.trim() ?? '';
@@ -783,17 +851,29 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       return normalized;
     }
 
-    const hook = this.composeHook(tone, productName, targetAudience);
+    const hook = this.composeHook(
+      tone,
+      productName,
+      targetAudience,
+      hasExplicitProductName,
+      objective,
+    );
     return this.normalizeParagraphs(`${hook}\n\n${normalized}`);
   }
 
   private composeHook(
     tone: string | null | undefined,
     productName: string,
-    targetAudience?: string | null,
+    targetAudience: string | null | undefined,
+    hasExplicitProductName: boolean,
+    objective?: string | null,
   ): string {
     const normalizedTone = tone?.toLowerCase() ?? '';
     const audiencePrefix = targetAudience ? `${targetAudience} ơi, ` : '';
+
+    if (!hasExplicitProductName) {
+      return this.composeContextualHook(normalizedTone, audiencePrefix, objective);
+    }
 
     if (normalizedTone.includes('sang')) {
       return `${audiencePrefix}Bạn đã sẵn sàng chạm tới chuẩn mực sang trọng mới với ${productName}?`;
@@ -818,9 +898,46 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     return `${audiencePrefix}Bạn đã sẵn sàng khám phá ${productName} khác biệt thế nào?`;
   }
 
+  private composeContextualHook(
+    normalizedTone: string,
+    audiencePrefix: string,
+    objective?: string | null,
+  ): string {
+    if (normalizedTone.includes('sang')) {
+      return `${audiencePrefix}Bạn đã sẵn sàng đón nhận trải nghiệm sang trọng dành riêng cho bạn?`;
+    }
+
+    if (
+      normalizedTone.includes('năng') ||
+      normalizedTone.includes('động') ||
+      normalizedTone.includes('trẻ')
+    ) {
+      return `${audiencePrefix}Sẵn sàng bùng nổ năng lượng mới cùng chiến dịch đặc biệt này chưa?`;
+    }
+
+    if (
+      normalizedTone.includes('ấm') ||
+      normalizedTone.includes('ngọt') ||
+      normalizedTone.includes('tinh tế')
+    ) {
+      return `${audiencePrefix}Bạn có muốn lan tỏa yêu thương qua thông điệp này ngay hôm nay?`;
+    }
+
+    if (objective) {
+      return `${audiencePrefix}Bạn đã sẵn sàng để ${objective.toLowerCase()} ngay hôm nay chưa?`;
+    }
+
+    return `${audiencePrefix}Bạn đã sẵn sàng đón ưu đãi đặc biệt này?`;
+  }
+
   private ensureBenefitNarrative(
     primaryText: string,
-    context: { dto: GenerateAdsAiDto; product: Product | null; productName: string },
+    context: {
+      dto: GenerateAdsAiDto;
+      product: Product | null;
+      productName: string;
+      hasExplicitProductName: boolean;
+    },
   ): string {
     const benefitRegex =
       /(mang lại|giúp|cảm giác|trải nghiệm|tận hưởng|tôn lên|nâng tầm|lan toả|khơi dậy)/i;
@@ -830,11 +947,13 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
 
     const benefitSource =
       context.dto.benefits?.find((benefit) => benefit && benefit.trim().length > 0) ??
+      context.dto.campaignContext ??
       context.dto.description ??
       context.product?.description ??
       'cảm giác tận hưởng trọn vẹn từng khoảnh khắc của bạn';
 
-    const sentence = `${context.productName} mang lại ${benefitSource.replace(/[.?!]+$/, '')}`;
+    const subject = context.hasExplicitProductName ? context.productName : 'Chiến dịch này';
+    const sentence = `${subject} mang lại ${benefitSource.replace(/[.?!]+$/, '')}`;
     return this.normalizeParagraphs(`${primaryText}\n\n${this.capitalizeSentence(sentence)}`);
   }
 
@@ -905,8 +1024,16 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     return this.capitalizeSentence(withoutPunctuation).replace(/[.!?]+$/g, '');
   }
 
-  private defaultHeadline(productName: string, tone?: string | null): string {
+  private defaultHeadline(
+    productName: string,
+    tone: string | null | undefined,
+    hasExplicitProductName: boolean,
+  ): string {
     const normalizedTone = tone?.toLowerCase() ?? '';
+
+    if (!hasExplicitProductName) {
+      return this.defaultCampaignHeadline(normalizedTone);
+    }
 
     if (normalizedTone.includes('sang')) {
       return `Tinh hoa của ${productName}`;
@@ -922,16 +1049,38 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     return `${productName} – Lựa chọn thông minh hôm nay`;
   }
 
+  private defaultCampaignHeadline(normalizedTone: string): string {
+    if (normalizedTone.includes('sang')) {
+      return 'Tinh hoa ưu đãi dành riêng cho bạn';
+    }
+
+    if (
+      normalizedTone.includes('năng') ||
+      normalizedTone.includes('động') ||
+      normalizedTone.includes('trẻ')
+    ) {
+      return 'Bùng nổ phong cách với ưu đãi giới hạn';
+    }
+
+    return 'Ưu đãi đặc biệt đang chờ bạn';
+  }
+
   private buildBaseDescription(context: {
     dto: GenerateAdsAiDto;
     product: Product | null;
     productName: string;
+    hasExplicitProductName: boolean;
   }): string {
-    const sources = [context.dto.description, context.product?.description].filter(
-      (value): value is string => Boolean(value && value.trim().length > 0),
-    );
+    const sources = [
+      context.dto.description,
+      context.dto.campaignContext,
+      context.product?.description,
+    ].filter((value): value is string => Boolean(value && value.trim().length > 0));
 
-    const base = sources[0] ?? `${context.productName} giúp bạn tỏa sáng mỗi ngày.`;
+    const defaultDescription = context.hasExplicitProductName
+      ? `${context.productName} giúp bạn tỏa sáng mỗi ngày.`
+      : 'Chiến dịch này giúp bạn tỏa sáng mỗi ngày.';
+    const base = sources[0] ?? defaultDescription;
     return this.capitalizeSentence(base);
   }
 
@@ -939,9 +1088,13 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     existing: string[] | null | undefined,
     info: {
       productName: string;
+      hasExplicitProductName: boolean;
       brandName?: string | null;
       categoryName?: string | null;
       tone?: string | null;
+      objective?: string | null;
+      campaignContext?: string | null;
+      targetAudience?: string | null;
     },
   ): string[] {
     const sanitizedExisting = (existing ?? [])
@@ -952,8 +1105,10 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     const combined = [...sanitizedExisting, ...generated];
     const unique = Array.from(new Set(combined));
 
-    const fallbacks = ['#Heartie', '#DealHot', '#MuaSamThongMinh'];
-    for (const fallback of fallbacks) {
+    const fallbackCandidates = info.hasExplicitProductName
+      ? ['#Heartie', '#DealHot', '#MuaSamThongMinh']
+      : ['#Heartie', '#HeartieCampaign', '#DealHot', '#MuaSamThongMinh'];
+    for (const fallback of fallbackCandidates) {
       if (unique.length >= 5) {
         break;
       }
@@ -967,28 +1122,63 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
 
   private generateHashtagCandidates(info: {
     productName: string;
+    hasExplicitProductName: boolean;
     brandName?: string | null;
     categoryName?: string | null;
     tone?: string | null;
+    objective?: string | null;
+    campaignContext?: string | null;
+    targetAudience?: string | null;
   }): string[] {
     const candidates: Array<string | null> = [];
 
-    candidates.push(this.sanitizeHashtag(info.productName));
+    const addCandidate = (value?: string | null): boolean => {
+      if (!value) {
+        return false;
+      }
+      const sanitized = this.sanitizeHashtag(value);
+      if (!sanitized) {
+        return false;
+      }
+      candidates.push(sanitized);
+      return true;
+    };
 
-    if (info.brandName) {
-      candidates.push(this.sanitizeHashtag(info.brandName));
+    if (info.hasExplicitProductName) {
+      addCandidate(info.productName);
+    } else {
+      const contextualSeeds: Array<string | null> = [
+        info.campaignContext ?? null,
+        info.objective ?? null,
+        info.targetAudience ? `${info.targetAudience} Community` : null,
+      ];
+
+      let hasContextSeed = false;
+      for (const seed of contextualSeeds) {
+        if (addCandidate(seed)) {
+          hasContextSeed = true;
+        }
+      }
+
+      if (!hasContextSeed) {
+        addCandidate(info.productName);
+      }
     }
 
-    if (info.categoryName) {
-      candidates.push(this.sanitizeHashtag(`${info.categoryName}Style`));
-    }
+    addCandidate(info.brandName ?? null);
+    addCandidate(info.categoryName ? `${info.categoryName} Style` : null);
 
     if (info.tone) {
-      candidates.push(this.sanitizeHashtag(`${info.tone}Vibes`));
+      addCandidate(`${info.tone} Vibes`);
+      addCandidate(`${info.tone} Mood`);
     }
 
     candidates.push('#HeartieDeals');
     candidates.push('#UuDaiNgay');
+
+    if (!info.hasExplicitProductName) {
+      candidates.push('#HeartieCampaign');
+    }
 
     return candidates.filter((candidate): candidate is string => Boolean(candidate));
   }
