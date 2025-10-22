@@ -3,6 +3,7 @@ import { seedBrands } from './modules/brands.seed';
 import { seedCategories } from './modules/categories.seed';
 import { seedAttributes } from './modules/attributes.seed';
 import { seedBranches } from './modules/branches.seed';
+import { seedBanners } from './modules/banners.seed';
 import type { DataSource } from 'typeorm';
 
 const seedRegistry = {
@@ -10,6 +11,7 @@ const seedRegistry = {
   categories: seedCategories,
   attributes: seedAttributes,
   branches: seedBranches,
+  banners: seedBanners,
 } satisfies Record<string, (dataSource: DataSource) => Promise<void>>;
 
 type SeedKey = keyof typeof seedRegistry;
