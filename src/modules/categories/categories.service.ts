@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { Category } from './entities/category.entity';
@@ -34,6 +34,10 @@ export class CategoriesService {
 
   findAll() {
     return this.repo.find({ order: { createdAt: 'DESC' } });
+  }
+
+  findRootCategories() {
+    return this.repo.find({ where: { parentId: IsNull() }, order: { createdAt: 'DESC' } });
   }
 
   async findOne(id: number) {
