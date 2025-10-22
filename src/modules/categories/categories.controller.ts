@@ -11,7 +11,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
+import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
@@ -62,6 +62,12 @@ export class CategoriesController {
   @Get()
   findAll() {
     return this.service.findAll();
+  }
+
+  @Get('roots')
+  @ApiOperation({ summary: 'Get categories that have no parent (top-level categories)' })
+  findRootCategories() {
+    return this.service.findRootCategories();
   }
 
   @Get(':id')
