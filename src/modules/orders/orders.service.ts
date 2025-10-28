@@ -60,6 +60,80 @@ export class OrdersService {
     return this.repo.save(entity);
   }
 
+  // Get order status by order number and user ID
+  async getOrderStatus(
+    orderNumber: string,
+    userId: number,
+  ): Promise<{ id: number; orderNumber: string; status: OrderStatus; totalAmount: number }> {
+    const order = await this.repo.findOne({ where: { orderNumber, user: { id: userId } } });
+
+    if (!order) {
+      throw new NotFoundException(`Order with number ${orderNumber} not found for user ${userId}`);
+    }
+    return {
+      id: order.id,
+      orderNumber: order.orderNumber,
+      status: order.status,
+      totalAmount: order.totalAmount,
+    };
+  }
+
+  // Get order details for a user
+  async getOrderDetails(orderNumber: string, userId: number): Promise<Order> {
+    const order = await this.repo.findOne({ where: { orderNumber, user: { id: userId } } });
+
+    if (!order) {
+      throw new NotFoundException(`Order with number ${orderNumber} not found for user ${userId}`);
+    }
+    return order;
+  }
+
+  // Get recent orders for a user
+  async listRecentOrders(
+    userId: number,
+    limit = 5,
+  ): Promise<{ orderNumber: string; status: OrderStatus; createdAt: Date }[]> {
+    const orders = await this.repo.find({
+      where: { user: { id: userId } },
+      order: { createdAt: 'DESC' },
+      take: limit,
+    });
+
+    return orders.map((o) => ({
+      orderNumber: o.orderNumber ?? '',
+      status: o.status,
+      createdAt: o.createdAt,
+    }));
+  }
+
+  // Request to cancel an order
+  async requestCancellation(
+    orderNumber: string,
+    userId: number,
+  ): Promise<{ orderNumber: string; status: OrderStatus; message: string }> {
+    const order = await this.repo.findOne({ where: { orderNumber, user: { id: userId } } });
+
+    if (!order) {
+      throw new NotFoundException(`Order with number ${orderNumber} not found for user ${userId}`);
+    }
+
+    if (order.status === OrderStatus.CANCELLED) {
+      return {
+        orderNumber: order.orderNumber ?? '',
+        status: order.status,
+        message: 'Order is already cancelled',
+      };
+    }
+    order.status = OrderStatus.CANCELLED;
+    await this.repo.save(order);
+
+    return {
+      orderNumber: order.orderNumber ?? '',
+      status: order.status,
+      message: 'Order cancellation requested successfully',
+    };
+  }
+
   findAll() {
     return this.repo.find({ relations: { user: true, branch: true } });
   }

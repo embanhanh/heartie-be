@@ -8,15 +8,28 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  UseGuards,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
-import { ApiOkResponse, ApiOperation, ApiTags, ApiCreatedResponse } from '@nestjs/swagger';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+  ApiCreatedResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
 import { UserResponseDto } from './dto/user-response.dto';
 import { UserSafe } from './types/user-safe.type';
+import { AuthGuard } from '@nestjs/passport';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from './entities/user.entity';
 
 @ApiTags('Users')
 @Controller('users')
+@UseGuards(AuthGuard('jwt'))
+@Roles(UserRole.ADMIN)
+@ApiBearerAuth()
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 

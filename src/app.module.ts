@@ -29,12 +29,20 @@ import { UsersModule } from './modules/users/users.module';
 import { VoucherUserDetailsModule } from './modules/voucher_user_details/voucher_user_details.module';
 import { VouchersModule } from './modules/vouchers/vouchers.module';
 import { AdsAiModule } from './modules/ads_ai/ads_ai.module';
+import { ConversationsModule } from './modules/conversations/conversations.module';
+import { MessagesModule } from './modules/messages/messages.module';
+import { CartsModule } from './modules/carts/carts.module';
+import { GeminiModule } from './modules/gemini/gemini.module';
+import { ChatGatewayModule } from './modules/chat_gateway/chat_gateway.module';
+import { ConversationParticipantsModule } from './modules/conversation_participants/conversation_participants.module';
+import geminiConfig from './config/gemini.config';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      load: [geminiConfig],
     }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -76,6 +84,12 @@ import { AdsAiModule } from './modules/ads_ai/ads_ai.module';
     VoucherUserDetailsModule,
     VouchersModule,
     AdsAiModule,
+    GeminiModule,
+    ConversationsModule,
+    MessagesModule,
+    CartsModule,
+    ChatGatewayModule,
+    ConversationParticipantsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -27,6 +27,6 @@ import { createModuleMulterOptions } from 'src/common/utils/upload.util';
   ],
   controllers: [ProductsController],
   providers: [ProductsService],
-  exports: [TypeOrmModule],
+  exports: [TypeOrmModule, ProductsService],
 })
 export class ProductsModule {}

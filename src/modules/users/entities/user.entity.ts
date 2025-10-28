@@ -5,10 +5,12 @@ import {
   Index,
   JoinColumn,
   ManyToOne,
+  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import { Branch } from '../../branches/entities/branch.entity';
+import { ConversationParticipant } from '../../conversation_participants/entities/conversation_participant.entity';
 
 export enum UserRole {
   CUSTOMER = 'CUSTOMER',
@@ -51,6 +53,9 @@ export class User {
 
   @Column({ type: 'int', nullable: true })
   branchId?: number | null;
+
+  @OneToMany(() => ConversationParticipant, (participant) => participant.user)
+  participants: ConversationParticipant[];
 
   @ManyToOne(() => Branch, (branch) => branch.users, { onDelete: 'SET NULL' })
   @JoinColumn({ name: 'branchId' })

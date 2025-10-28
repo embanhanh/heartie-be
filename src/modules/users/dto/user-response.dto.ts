@@ -1,5 +1,13 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UserSafe } from '../types/user-safe.type';
+
+class ConversationParticipantInfo {
+  @ApiProperty({ example: 1 })
+  conversationId: number;
+
+  @ApiPropertyOptional({ example: 1, description: 'ID của user liên kết (nếu có)' })
+  userId?: number | null;
+}
 
 export class UserResponseDto {
   @ApiProperty()
@@ -32,6 +40,12 @@ export class UserResponseDto {
   @ApiProperty({ type: String, format: 'date-time' })
   updatedAt: Date;
 
+  @ApiProperty({
+    description: 'ID of the conversation participant associated with the user',
+    nullable: true,
+  })
+  participants?: ConversationParticipantInfo[];
+
   static from(user: UserSafe): UserResponseDto {
     const dto = new UserResponseDto();
     dto.id = user.id;
@@ -44,6 +58,12 @@ export class UserResponseDto {
     dto.isActive = user.isActive;
     dto.createdAt = user.createdAt;
     dto.updatedAt = user.updatedAt;
+    dto.participants = user.participants.map((participant) => {
+      const info = new ConversationParticipantInfo();
+      info.conversationId = participant.conversationId;
+      info.userId = participant.userId;
+      return info;
+    });
     return dto;
   }
 }

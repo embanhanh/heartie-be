@@ -40,8 +40,9 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOkResponse({ type: () => UserResponseDto })
   me(@Req() req: Request) {
-    const user = req.user as { sub: number };
-    return this.authService.getCurrentUser(user.sub);
+    const user = req.user as { id: number };
+    console.log('Fetching current user with id:', user.id);
+    return this.authService.getCurrentUser(user.id);
   }
 
   @UseGuards(AuthGuard('jwt-refresh'))

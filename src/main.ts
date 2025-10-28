@@ -6,13 +6,16 @@ import { join } from 'path';
 import * as express from 'express';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    // cors: true, // Enable CORS for WebSocket
+  });
 
   const corsOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+  // HTTP CORS configuration
   app.enableCors({
     origin: corsOrigins.length ? corsOrigins : true,
     credentials: true,
@@ -25,8 +28,8 @@ async function bootstrap() {
 
   // Cấu hình Swagger
   const config = new DocumentBuilder()
-    .setTitle('Heartie API')
-    .setDescription('Heartie API')
+    .setTitle('Fashia API')
+    .setDescription('Fashia API')
     .setVersion('1.0')
     .addBearerAuth() // Thêm nút "Authorize" để test API cần token
     .build();

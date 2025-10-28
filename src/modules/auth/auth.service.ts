@@ -7,6 +7,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { UserResponseDto } from '../users/dto/user-response.dto';
 import { AuthTokensDto } from './dto/auth-tokens.dto';
+import { UserRole } from '../users/entities/user.entity';
 
 @Injectable()
 export class AuthService {
@@ -16,17 +17,17 @@ export class AuthService {
     private configService: ConfigService,
   ) {}
 
-  private async buildTokens(userId: number, email: string): Promise<AuthTokensDto> {
+  private async buildTokens(userId: number, email: string, role: UserRole): Promise<AuthTokensDto> {
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(
-        { sub: userId, email },
+        { sub: userId, email, role },
         {
           secret: this.configService.getOrThrow<string>('JWT_SECRET'),
           expiresIn: this.configService.getOrThrow<string>('JWT_EXPIRATION_TIME'),
         },
       ),
       this.jwtService.signAsync(
-        { sub: userId, email },
+        { sub: userId, email, role },
         {
           secret: this.configService.getOrThrow<string>('JWT_REFRESH_SECRET'),
           expiresIn: this.configService.getOrThrow<string>('JWT_REFRESH_EXPIRATION_TIME'),
@@ -41,7 +42,10 @@ export class AuthService {
   }
 
   async register(registerDto: RegisterDto): Promise<UserResponseDto> {
-    const user = await this.usersService.create(registerDto);
+    const user = await this.usersService.create({
+      ...registerDto,
+      role: registerDto.role || UserRole.CUSTOMER, // Default role if not provided
+    });
     return UserResponseDto.from(user);
   }
 
@@ -52,7 +56,7 @@ export class AuthService {
       throw new UnauthorizedException('Thông tin đăng nhập không hợp lệ');
     }
 
-    const tokens = await this.buildTokens(user.id, user.email);
+    const tokens = await this.buildTokens(user.id, user.email, user.role);
     await this.usersService.setCurrentRefreshToken(tokens.refreshToken, user.id);
 
     return tokens;
@@ -70,13 +74,14 @@ export class AuthService {
       throw new ForbiddenException('Access Denied');
     }
 
-    const tokens = await this.buildTokens(user.id, user.email);
+    const tokens = await this.buildTokens(user.id, user.email, user.role);
     await this.usersService.setCurrentRefreshToken(tokens.refreshToken, user.id);
     return tokens;
   }
 
   async getCurrentUser(userId: number): Promise<UserResponseDto> {
     const user = await this.usersService.findOneById(userId);
+
     if (!user) {
       throw new UnauthorizedException('Người dùng không tồn tại');
     }
