@@ -29,9 +29,10 @@ import { UsersModule } from './modules/users/users.module';
 import { VoucherUserDetailsModule } from './modules/voucher_user_details/voucher_user_details.module';
 import { VouchersModule } from './modules/vouchers/vouchers.module';
 import { AdsAiModule } from './modules/ads_ai/ads_ai.module';
+import { CartsModule } from './modules/carts/carts.module';
+import { CartItemsModule } from './modules/cart_items/cart-items.module';
 import { ConversationsModule } from './modules/conversations/conversations.module';
 import { MessagesModule } from './modules/messages/messages.module';
-import { CartsModule } from './modules/carts/carts.module';
 import { GeminiModule } from './modules/gemini/gemini.module';
 import { ChatGatewayModule } from './modules/chat_gateway/chat_gateway.module';
 import { ConversationParticipantsModule } from './modules/conversation_participants/conversation_participants.module';
@@ -84,6 +85,8 @@ import geminiConfig from './config/gemini.config';
     VoucherUserDetailsModule,
     VouchersModule,
     AdsAiModule,
+    CartsModule,
+    CartItemsModule,
     GeminiModule,
     ConversationsModule,
     MessagesModule,

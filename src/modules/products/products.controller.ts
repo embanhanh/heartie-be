@@ -53,6 +53,7 @@ export class ProductsController {
         brandId: { type: 'integer', nullable: true },
         categoryId: { type: 'integer', nullable: true },
         description: { type: 'string', nullable: true },
+        originalPrice: { type: 'number', format: 'float', nullable: true },
         status: { type: 'string', enum: Object.values(ProductStatus), nullable: true },
         attributes: {
           oneOf: [
@@ -129,6 +130,7 @@ export class ProductsController {
         brandId: { type: 'integer', nullable: true },
         categoryId: { type: 'integer', nullable: true },
         description: { type: 'string', nullable: true },
+        originalPrice: { type: 'number', format: 'float', nullable: true },
         status: { type: 'string', enum: Object.values(ProductStatus), nullable: true },
         attributes: {
           oneOf: [

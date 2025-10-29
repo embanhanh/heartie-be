@@ -11,13 +11,13 @@ import { Branch } from 'src/modules/branches/entities/branch.entity';
 import { ProductVariant } from '../../product_variants/entities/product_variant.entity';
 
 @Entity({ name: 'product_variants_inventory' })
-@Unique(['productVariantId', 'branchId'])
+@Unique(['variantId', 'branchId'])
 export class ProductVariantInventory {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'int', name: 'productVariantId' })
-  productVariantId: number;
+  @Column({ type: 'int', name: 'variantId' })
+  variantId: number;
 
   @Column({ type: 'int', name: 'branchId' })
   branchId: number;
@@ -32,7 +32,7 @@ export class ProductVariantInventory {
   updatedAt: Date;
 
   @ManyToOne(() => ProductVariant, (variant) => variant.inventories, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'productVariantId' })
+  @JoinColumn({ name: 'variantId' })
   variant: ProductVariant;
 
   @ManyToOne(() => Branch, (branch) => branch.inventories, { onDelete: 'CASCADE' })

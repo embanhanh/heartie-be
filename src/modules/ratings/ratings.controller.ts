@@ -1,25 +1,41 @@
-import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  UseGuards,
+  Req,
+  Query,
+  ParseIntPipe,
+} from '@nestjs/common';
 import { RatingsService } from './ratings.service';
 import { CreateRatingDto } from './dto/create-rating.dto';
-// import { UpdateRatingDto } from './dto/update-rating.dto';
+import { ApiBearerAuth } from '@nestjs/swagger';
+import { AuthGuard } from '@nestjs/passport';
+import { Request } from 'express';
+import { RatingsQueryDto } from './dto/query-rating.dto';
 
 @Controller('ratings')
 export class RatingsController {
   constructor(private readonly service: RatingsService) {}
 
   @Post()
-  create(@Body() dto: CreateRatingDto) {
-    return this.service.create(dto);
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'))
+  create(@Req() req: Request, @Body() dto: CreateRatingDto) {
+    const user = req.user as { sub: number };
+    return this.service.create(dto, user.sub);
   }
 
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query() query: RatingsQueryDto) {
+    return this.service.findAll(query);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: number) {
-    return this.service.findOne(+id);
+  findOne(@Param('id', ParseIntPipe) id: number) {
+    return this.service.findOne(id);
   }
 
   // @Put(':id')

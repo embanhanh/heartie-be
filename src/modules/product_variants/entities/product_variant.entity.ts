@@ -29,7 +29,16 @@ export class ProductVariant {
   @JoinColumn({ name: 'productId' })
   product: Product;
 
-  @Column({ type: 'numeric', precision: 12, scale: 2 })
+  @Column({
+    type: 'numeric',
+    precision: 12,
+    scale: 2,
+    transformer: {
+      to: (value: number) => value,
+      from: (value: string | number | null) =>
+        value === null ? null : typeof value === 'string' ? parseFloat(value) : value,
+    },
+  })
   price: number;
 
   @Column({ type: 'varchar', length: 500, nullable: true })
