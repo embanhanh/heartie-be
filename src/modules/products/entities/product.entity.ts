@@ -12,6 +12,7 @@ import { Brand } from '../../brands/entities/brand.entity';
 import { Category } from '../../categories/entities/category.entity';
 import { ProductVariant } from '../../product_variants/entities/product_variant.entity';
 import { ProductAttribute } from '../../product_attributes/entities/product-attribute.entity';
+import { Rating } from 'src/modules/ratings/entities/rating.entity';
 
 export enum ProductStatus {
   ACTIVE = 'active',
@@ -38,6 +39,9 @@ export class Product {
   @Column({ type: 'varchar', length: 500, nullable: true })
   image?: string;
 
+  @Column({ type: 'numeric', precision: 12, scale: 2, default: 0 })
+  originalPrice: number;
+
   @Column({ type: 'int', default: 0 })
   stock: number;
 
@@ -63,4 +67,10 @@ export class Product {
 
   @OneToMany(() => ProductAttribute, (productAttribute) => productAttribute.product)
   productAttributes: ProductAttribute[];
+
+  @OneToMany(() => Rating, (rating) => rating.product)
+  ratings: Rating[];
+
+  @Column({ type: 'float', default: 0 })
+  rating: number;
 }

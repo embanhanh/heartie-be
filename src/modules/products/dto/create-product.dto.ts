@@ -6,6 +6,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  IsNumber,
   MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -42,6 +43,12 @@ export class CreateProductDto {
   @IsString()
   @MaxLength(500)
   image?: string;
+
+  @ApiPropertyOptional({ example: 299000 })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Type(() => Number)
+  originalPrice?: number;
 
   @ApiPropertyOptional({ example: ProductStatus.ACTIVE, enum: ProductStatus })
   @IsOptional()

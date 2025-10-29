@@ -31,11 +31,18 @@ type VariantSummary = {
 
 type ProductListItem = Product & {
   priceList: number[];
-  variantImages: VariantSummary[];
+  variants: VariantSummary[];
 };
 
-type ProductAttributeSummary = Attribute & { isRequired: boolean };
-type ProductDetail = Omit<Product, 'productAttributes'> & { attributes: ProductAttributeSummary[] };
+type AttributeValueSummary = Pick<AttributeValue, 'id' | 'value' | 'meta'>;
+type ProductAttributeSummary = Pick<Attribute, 'id' | 'name' | 'type'> & {
+  isRequired: boolean;
+  values: AttributeValueSummary[];
+};
+type ProductDetail = Omit<Product, 'productAttributes'> & {
+  attributes: ProductAttributeSummary[];
+  images: string[];
+};
 
 @Injectable()
 export class ProductsService extends BaseService<Product> {
@@ -75,6 +82,7 @@ export class ProductsService extends BaseService<Product> {
       ...dto,
       status: dto.status ?? ProductStatus.ACTIVE,
       stock: dto.stock ?? 0,
+      originalPrice: this.resolveOriginalPrice(dto.originalPrice, undefined),
     });
 
     return this.productRepo.save(product);
@@ -84,6 +92,7 @@ export class ProductsService extends BaseService<Product> {
     this.logger.debug('createFromForm called');
     this.logger.debug(`payloadSummary: branchId=${payload.branchId}, name=${payload.name ?? ''}`);
 
+    const explicitOriginalPrice = payload.originalPrice ?? null;
     const { branchId, attributes, variants, ...productPayload } = payload;
     const normalizedBrandId = this.normalizeOptionalId(productPayload.brandId);
     const normalizedCategoryId = this.normalizeOptionalId(productPayload.categoryId);
@@ -124,6 +133,8 @@ export class ProductsService extends BaseService<Product> {
       `productImage=${productImage?.fieldname ?? 'none'}, variantImagesCount=${variantImages.size}`,
     );
 
+    const resolvedOriginalPrice = this.resolveOriginalPrice(explicitOriginalPrice, variants);
+
     const productId = await this.productRepo.manager.transaction(async (manager) => {
       const productRepo = manager.getRepository(Product);
       const attributeRepo = manager.getRepository(Attribute);
@@ -144,6 +155,7 @@ export class ProductsService extends BaseService<Product> {
         ? this.resolveStoredPath(productImage)
         : fallbackProductImage;
       productEntity.status = productPayload.status ?? ProductStatus.ACTIVE;
+      productEntity.originalPrice = resolvedOriginalPrice;
       productEntity.stock = 0;
 
       const savedProduct = await productRepo.save(productEntity);
@@ -250,7 +262,7 @@ export class ProductsService extends BaseService<Product> {
         const variantStock = variantPayload.stock ?? 0;
         if (variantStock > 0) {
           const inventoryRecord = inventoryRepo.create({
-            productVariantId: savedVariant.id,
+            variantId: savedVariant.id,
             branchId,
             stock: variantStock,
           });
@@ -354,6 +366,77 @@ export class ProductsService extends BaseService<Product> {
           });
         }
 
+        // Price range filter via variants
+        if (typeof options.priceMin === 'number') {
+          qb.andWhere(
+            `EXISTS (
+              SELECT 1 FROM product_variants vmin
+              WHERE vmin."productId" = product.id
+                AND vmin.price >= :priceMin
+            )`,
+            { priceMin: options.priceMin },
+          );
+        }
+
+        if (typeof options.priceMax === 'number') {
+          qb.andWhere(
+            `EXISTS (
+              SELECT 1 FROM product_variants vmax
+              WHERE vmax."productId" = product.id
+                AND vmax.price <= :priceMax
+            )`,
+            { priceMax: options.priceMax },
+          );
+        }
+
+        // Colors filter: match any variant attribute value against provided colors
+        if (options.colors?.length) {
+          const colorAttrNames = ['color', 'mau', 'màu', 'mau sac', 'màu sắc', 'colorway'];
+
+          qb.andWhere(
+            `EXISTS (
+              SELECT 1
+              FROM product_variants v
+              JOIN variant_attribute_values vav ON vav."variantId" = v.id
+              JOIN attributes a ON a.id = vav."attributeId"
+              JOIN attribute_values av ON av.id = vav."attributeValueId"
+              WHERE v."productId" = product.id
+                AND (
+                  LOWER(av.value) IN (:...colors)
+                  OR LOWER(a.name) IN (:...colorAttrNames) AND LOWER(av.value) IN (:...colors)
+                )
+            )`,
+            {
+              colors: options.colors.map((c) => c.toLowerCase()),
+              colorAttrNames,
+            },
+          );
+        }
+
+        // Sizes filter: match any variant attribute value against provided sizes
+        if (options.sizes?.length) {
+          const sizeAttrNames = ['size', 'kich thuoc', 'kích thước', 'kich co', 'kích cỡ'];
+
+          qb.andWhere(
+            `EXISTS (
+              SELECT 1
+              FROM product_variants v
+              JOIN variant_attribute_values vav ON vav."variantId" = v.id
+              JOIN attributes a ON a.id = vav."attributeId"
+              JOIN attribute_values av ON av.id = vav."attributeValueId"
+              WHERE v."productId" = product.id
+                AND (
+                  LOWER(av.value) IN (:...sizes)
+                  OR LOWER(a.name) IN (:...sizeAttrNames) AND LOWER(av.value) IN (:...sizes)
+                )
+            )`,
+            {
+              sizes: options.sizes.map((s) => s.toLowerCase()),
+              sizeAttrNames,
+            },
+          );
+        }
+
         if (shouldApplySearch) {
           this.applySearch(qb, searchTerm, useSimilarity);
         }
@@ -399,8 +482,9 @@ export class ProductsService extends BaseService<Product> {
         productAttributes: { attribute: true },
         variants: {
           attributeValues: { attribute: true, attributeValue: true },
-          inventories: true,
+          inventories: { branch: true },
         },
+        ratings: true,
       },
     });
 
@@ -409,11 +493,53 @@ export class ProductsService extends BaseService<Product> {
     }
 
     const { productAttributes = [], ...rest } = product;
+
+    const attributeValueMap = new Map<number, Map<number, AttributeValueSummary>>();
+    for (const variant of rest.variants ?? []) {
+      for (const variantAttribute of variant.attributeValues ?? []) {
+        const attributeEntity = variantAttribute.attribute as Attribute | undefined;
+        const attributeValueEntity = variantAttribute.attributeValue as AttributeValue | undefined;
+
+        if (!attributeEntity || !attributeValueEntity) {
+          continue;
+        }
+
+        let valueMap = attributeValueMap.get(attributeEntity.id);
+        if (!valueMap) {
+          valueMap = new Map<number, AttributeValueSummary>();
+          attributeValueMap.set(attributeEntity.id, valueMap);
+        }
+
+        if (!valueMap.has(attributeValueEntity.id)) {
+          valueMap.set(attributeValueEntity.id, {
+            id: attributeValueEntity.id,
+            value: attributeValueEntity.value,
+            meta:
+              attributeValueEntity.meta && typeof attributeValueEntity.meta === 'object'
+                ? attributeValueEntity.meta
+                : {},
+          });
+        }
+      }
+    }
+
     const attributes = productAttributes
       .filter((item): item is ProductAttribute & { attribute: Attribute } =>
         Boolean(item.attribute),
       )
-      .map<ProductAttributeSummary>((item) => ({ ...item.attribute, isRequired: item.isRequired }));
+      .map<ProductAttributeSummary>((item) => {
+        const attribute = item.attribute;
+        const valueMap = attributeValueMap.get(attribute.id);
+        const values = valueMap ? Array.from(valueMap.values()) : [];
+
+        return {
+          id: attribute.id,
+          name: attribute.name,
+          type: attribute.type,
+          isRequired: item.isRequired,
+          values,
+        };
+      });
 
     const normalizedVariants = (rest.variants ?? []).map((variant) => ({
       ...variant,
@@ -426,11 +552,34 @@ export class ProductsService extends BaseService<Product> {
       })),
     }));
 
+    const images: string[] = [];
+    const imageSet = new Set<string>();
+    const pushImage = (candidate?: string | null) => {
+      if (!candidate) {
+        return;
+      }
+
+      const trimmed = candidate.trim();
+      if (!trimmed || imageSet.has(trimmed)) {
+        return;
+      }
+
+      imageSet.add(trimmed);
+      images.push(trimmed);
+    };
+
+    pushImage(rest.image ?? undefined);
+    for (const variant of normalizedVariants) {
+      pushImage(variant.image ?? undefined);
+    }
+
     return {
       ...(rest as Omit<Product, 'productAttributes'>),
       image: rest.image ?? undefined,
+      originalPrice: this.asNumber(rest.originalPrice),
       variants: normalizedVariants,
       attributes,
+      images,
     };
   }
 
@@ -443,6 +592,7 @@ export class ProductsService extends BaseService<Product> {
       throw new BadRequestException(`Payload id (${payloadId}) does not match param id (${id})`);
     }
 
+    const explicitOriginalPrice = payloadWithoutId.originalPrice ?? null;
     const { branchId, attributes, variants, ...productPayload } = payloadWithoutId;
     const normalizedBrandId = this.normalizeOptionalId(productPayload.brandId);
     const normalizedCategoryId = this.normalizeOptionalId(productPayload.categoryId);
@@ -513,6 +663,11 @@ export class ProductsService extends BaseService<Product> {
       }
 
       productEntity.status = productPayload.status ?? productEntity.status ?? ProductStatus.ACTIVE;
+      productEntity.originalPrice = this.resolveOriginalPrice(
+        explicitOriginalPrice,
+        variants,
+        productEntity.originalPrice,
+      );
       productEntity.stock = 0;
 
       const savedProduct = await productRepo.save(productEntity);
@@ -522,7 +677,7 @@ export class ProductsService extends BaseService<Product> {
 
       if (existingVariantIds.length) {
         await variantAttributeRepo.delete({ variantId: In(existingVariantIds) });
-        await inventoryRepo.delete({ productVariantId: In(existingVariantIds) });
+        await inventoryRepo.delete({ variantId: In(existingVariantIds) });
       }
 
       await variantRepo.delete({ productId: savedProduct.id });
@@ -632,7 +787,7 @@ export class ProductsService extends BaseService<Product> {
         const variantStock = variantPayload.stock ?? 0;
         if (variantStock > 0) {
           const inventoryRecord = inventoryRepo.create({
-            productVariantId: savedVariant.id,
+            variantId: savedVariant.id,
             branchId,
             stock: variantStock,
           });
@@ -942,6 +1097,32 @@ export class ProductsService extends BaseService<Product> {
     return Math.trunc(value);
   }
 
+  private resolveOriginalPrice(
+    explicitValue: unknown,
+    variants: Array<{ price: unknown }> | undefined,
+    fallback?: unknown,
+  ): number {
+    const explicit = this.asNumber(explicitValue, Number.NaN);
+    if (Number.isFinite(explicit)) {
+      return explicit;
+    }
+
+    const variantPrices = (variants ?? [])
+      .map((variant) => this.asNumber(variant.price, Number.NaN))
+      .filter((price): price is number => Number.isFinite(price));
+
+    if (variantPrices.length) {
+      return Math.min(...variantPrices);
+    }
+
+    const fallbackValue = this.asNumber(fallback, Number.NaN);
+    if (Number.isFinite(fallbackValue)) {
+      return fallbackValue;
+    }
+
+    return 0;
+  }
+
   protected override getDefaultSorts(): SortParam[] {
     return [{ field: 'createdAt', direction: 'desc' }];
   }
@@ -1000,9 +1181,10 @@ export class ProductsService extends BaseService<Product> {
     return products.map((product) => ({
       ...product,
       image: product.image ?? undefined,
+      originalPrice: this.asNumber(product.originalPrice),
       priceList: priceMap.get(product.id) ?? [],
-      variantImages: variantMap.get(product.id) ?? [],
-    }));
+      variants: variantMap.get(product.id) ?? [],
+    })) as ProductListItem[];
   }
 
   private applySearch(
