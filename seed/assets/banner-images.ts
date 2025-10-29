@@ -21,9 +21,6 @@ const bannerImageAssets: BannerImageAsset[] = [
     </linearGradient>
   </defs>
   <rect fill="url(#summerGradient)" width="1200" height="600" rx="32" />
-  <text x="600" y="220" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="64" fill="#ffffff" font-weight="700">Heartie Summer</text>
-  <text x="600" y="320" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="92" fill="#ffffff" font-weight="800">FLASH SALE</text>
-  <text x="600" y="420" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="36" fill="#ffffff">Giảm giá tới 50% cho bộ sưu tập 2025</text>
 </svg>
 `,
   },
@@ -39,9 +36,6 @@ const bannerImageAssets: BannerImageAsset[] = [
     </linearGradient>
   </defs>
   <rect fill="url(#fallWinterGradient)" width="1200" height="600" rx="32" />
-  <text x="600" y="220" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="64" fill="#f8f9fa" font-weight="700">Bộ sưu tập</text>
-  <text x="600" y="320" text-anchor="middle" font-family="'Playfair Display', 'Times New Roman', serif" font-size="88" fill="#ffffff" font-weight="700">Thu Đông 2025</text>
-  <text x="600" y="420" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="34" fill="#e9ecef">Sang trọng - Ấm áp - Thời thượng</text>
 </svg>
 `,
   },
@@ -56,10 +50,7 @@ const bannerImageAssets: BannerImageAsset[] = [
     </linearGradient>
   </defs>
   <rect fill="url(#memberGradient)" width="1200" height="600" rx="32" />
-  <text x="600" y="210" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="58" fill="#f8f9fa" font-weight="600">Ưu đãi thành viên</text>
-  <text x="600" y="320" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="90" fill="#ffe066" font-weight="800">Thân thiết</text>
-  <text x="600" y="410" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="34" fill="#f1f3f5">Nhận voucher 200K cho đơn từ 1.000.000đ</text>
-</svg>
+  </svg>
 `,
   },
   {
@@ -73,10 +64,7 @@ const bannerImageAssets: BannerImageAsset[] = [
     </linearGradient>
   </defs>
   <rect fill="url(#shippingGradient)" width="1200" height="600" rx="32" />
-  <text x="600" y="220" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="62" fill="#ffffff" font-weight="700">Miễn phí vận chuyển</text>
-  <text x="600" y="320" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="100" fill="#ffffff" font-weight="800">TOÀN QUỐC</text>
-  <text x="600" y="420" text-anchor="middle" font-family="'Montserrat', 'Arial', sans-serif" font-size="34" fill="#e9f5ec">Cho mọi đơn hàng từ 299K trong tháng 7</text>
-</svg>
+  </svg>
 `,
   },
 ];
