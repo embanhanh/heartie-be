@@ -1,6 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsArray, IsInt, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsArray, IsInt, IsNumber, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import { PaginationOptionsDto } from 'src/common/dto/pagination.dto';
 
 function toNumberArray(value: unknown): number[] | undefined {
@@ -49,4 +49,45 @@ export class ProductQueryDto extends PaginationOptionsDto {
   @IsArray()
   @IsInt({ each: true })
   categoryIds?: number[];
+
+  @ApiPropertyOptional({
+    description: 'Lọc theo danh sách màu sắc (truyền ?colors=red,blue,green hoặc lặp lại tham số).',
+    type: [String],
+    example: ['red', 'blue', 'green'],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  colors?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'Lọc theo danh sách kích thước (truyền ?sizes=small,medium,large hoặc lặp lại tham số).',
+    type: [String],
+    example: ['small', 'medium', 'large'],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  sizes?: string[];
+
+  @ApiPropertyOptional({
+    description: 'Lọc sản phẩm có giá >= priceMin.',
+    example: 100000,
+  })
+  @IsOptional()
+  @Transform(({ value }) => (value !== undefined ? Number(value) : undefined))
+  @IsNumber()
+  @Min(0)
+  priceMin?: number;
+
+  @ApiPropertyOptional({
+    description: 'Lọc sản phẩm có giá <= priceMax.',
+    example: 2000000,
+  })
+  @IsOptional()
+  @Transform(({ value }) => (value !== undefined ? Number(value) : undefined))
+  @IsNumber()
+  @Min(0)
+  priceMax?: number;
 }

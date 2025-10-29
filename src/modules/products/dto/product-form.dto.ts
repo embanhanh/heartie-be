@@ -143,6 +143,11 @@ export class ProductFormPayloadDto {
   image?: string | null;
 
   @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Type(() => Number)
+  originalPrice?: number | null;
+
+  @IsOptional()
   @IsEnum(ProductStatus)
   status?: ProductStatus;
 
