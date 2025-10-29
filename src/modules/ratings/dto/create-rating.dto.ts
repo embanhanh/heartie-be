@@ -1,15 +1,6 @@
 // rating.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsNumber,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Min,
-  Max,
-  Length,
-  IsDateString,
-} from 'class-validator';
+import { IsNumber, IsNotEmpty, IsOptional, IsString, Min, Max, Length } from 'class-validator';
 // import { Transform } from 'class-transformer';
 
 export class CreateRatingDto {
@@ -20,16 +11,7 @@ export class CreateRatingDto {
   })
   @IsNumber()
   @IsNotEmpty()
-  idProduct: number;
-
-  @ApiProperty({
-    description: 'ID người dùng',
-    example: 1,
-    required: true,
-  })
-  @IsNumber()
-  @IsNotEmpty()
-  idUser: number;
+  productId: number;
 
   @ApiProperty({
     description: 'Điểm đánh giá (1.0 - 5.0)',
@@ -43,26 +25,6 @@ export class CreateRatingDto {
   @Max(5.0, { message: 'Rating must not exceed 5.0' })
   @IsNotEmpty()
   rating: number;
-
-  // Thêm ngày giờ đánh giá
-  @ApiProperty({
-    description: 'Ngày giờ đánh giá',
-    example: '2024-10-01T12:34:56Z',
-    required: false,
-  })
-  @IsDateString()
-  @IsOptional()
-  createdAt?: string;
-
-  // Thêm ngày sửa đổi đánh giá
-  @ApiProperty({
-    description: 'Ngày giờ sửa đổi đánh giá',
-    example: '2024-10-02T12:34:56Z',
-    required: false,
-  })
-  @IsDateString()
-  @IsOptional()
-  updatedAt?: string;
 
   @ApiProperty({
     description: 'Nhận xét',
