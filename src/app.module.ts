@@ -29,6 +29,8 @@ import { UsersModule } from './modules/users/users.module';
 import { VoucherUserDetailsModule } from './modules/voucher_user_details/voucher_user_details.module';
 import { VouchersModule } from './modules/vouchers/vouchers.module';
 import { AdsAiModule } from './modules/ads_ai/ads_ai.module';
+import { CartsModule } from './modules/carts/carts.module';
+import { CartItemsModule } from './modules/cart_items/cart-items.module';
 
 @Module({
   imports: [
@@ -76,6 +78,8 @@ import { AdsAiModule } from './modules/ads_ai/ads_ai.module';
     VoucherUserDetailsModule,
     VouchersModule,
     AdsAiModule,
+    CartsModule,
+    CartItemsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
