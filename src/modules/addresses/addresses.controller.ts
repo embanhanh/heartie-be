@@ -1,8 +1,10 @@
-import { Controller, Get, Post, Body, Param, Put, Delete } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { AddressesService } from './addresses.service';
-import { CreateAddressDto } from './dto/create-addresse.dto';
-import { UpdateAddresseDto } from './dto/update-addresse.dto';
+import { CreateAddressDto } from './dto/create-address.dto';
+import { UpdateAddressDto } from './dto/update-address.dto';
 
+@ApiTags('addresses')
 @Controller('addresses')
 export class AddressesController {
   constructor(private readonly service: AddressesService) {}
@@ -18,17 +20,17 @@ export class AddressesController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: number) {
-    return this.service.findOne(+id);
+  findOne(@Param('id', ParseIntPipe) id: number) {
+    return this.service.findOne(id);
   }
 
   @Put(':id')
-  update(@Param('id') id: number, @Body() dto: UpdateAddresseDto) {
-    return this.service.update(+id, dto);
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateAddressDto) {
+    return this.service.update(id, dto);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: number) {
-    return this.service.remove(+id);
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.service.remove(id);
   }
 }
