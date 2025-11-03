@@ -22,6 +22,7 @@ import { VariantAttributeValuesModule } from './modules/variant_attribute_values
 import { ProductsModule } from './modules/products/products.module';
 import { PromotionalComboDetailsModule } from './modules/promotional_combo_details/promotional_combo_details.module';
 import { PromotionalCombosModule } from './modules/promotional_combos/promotional_combos.module';
+import { PromotionsModule } from './modules/promotions/promotions.module';
 import { RatingsModule } from './modules/ratings/ratings.module';
 import { StoreInventoriesModule } from './modules/store_inventories/store_inventories.module';
 import { StoresModule } from './modules/stores/stores.module';
@@ -37,6 +38,8 @@ import { GeminiModule } from './modules/gemini/gemini.module';
 import { ChatGatewayModule } from './modules/chat_gateway/chat_gateway.module';
 import { ConversationParticipantsModule } from './modules/conversation_participants/conversation_participants.module';
 import geminiConfig from './config/gemini.config';
+import { OrderItemsModule } from './modules/order_items/order_items.module';
+import { PricingModule } from './modules/pricing/pricing.module';
 
 @Module({
   imports: [
@@ -79,6 +82,7 @@ import geminiConfig from './config/gemini.config';
     OrdersModule,
     PromotionalComboDetailsModule,
     PromotionalCombosModule,
+    PromotionsModule,
     RatingsModule,
     StoreInventoriesModule,
     StoresModule,
@@ -93,6 +97,8 @@ import geminiConfig from './config/gemini.config';
     CartsModule,
     ChatGatewayModule,
     ConversationParticipantsModule,
+    OrderItemsModule,
+    PricingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

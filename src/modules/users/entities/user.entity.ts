@@ -11,6 +11,8 @@ import {
 } from 'typeorm';
 import { Branch } from '../../branches/entities/branch.entity';
 import { ConversationParticipant } from '../../conversation_participants/entities/conversation_participant.entity';
+import { UserCustomerGroup } from '../../user_customer_groups/entities/user-customer-group.entity';
+
 
 export enum UserRole {
   CUSTOMER = 'CUSTOMER',
@@ -60,6 +62,12 @@ export class User {
   @ManyToOne(() => Branch, (branch) => branch.users, { onDelete: 'SET NULL' })
   @JoinColumn({ name: 'branchId' })
   branch?: Branch | null;
+
+  @OneToMany(
+    () => UserCustomerGroup,
+    (userCustomerGroup: UserCustomerGroup) => userCustomerGroup.user,
+  )
+  userCustomerGroups: UserCustomerGroup[];
 
   @CreateDateColumn({ type: 'timestamp with time zone' })
   createdAt: Date;

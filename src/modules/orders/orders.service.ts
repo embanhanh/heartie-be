@@ -1,63 +1,93 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Order, OrderStatus, PaymentMethod } from './entities/order.entity';
+import { FindOptionsRelations, Repository } from 'typeorm';
+import { FulfillmentMethod, Order, OrderStatus, PaymentMethod } from './entities/order.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { User } from '../users/entities/user.entity';
 import { Branch } from '../branches/entities/branch.entity';
+import { OrderItem } from '../order_items/entities/order-item.entity';
+import { Address } from '../addresses/entities/address.entity';
+import { AddressesService } from '../addresses/addresses.service';
+import { CreateAddressDto } from '../addresses/dto/create-address.dto';
+import { PricingService, PricingSummary } from '../pricing/pricing.service';
 
 @Injectable()
 export class OrdersService {
+  private readonly orderRelations: FindOptionsRelations<Order> = {
+    user: true,
+    branch: true,
+    address: true,
+    items: {
+      variant: {
+        product: true,
+      },
+    },
+  };
+
   constructor(
     @InjectRepository(Order)
     private readonly repo: Repository<Order>,
+    @InjectRepository(OrderItem)
+    private readonly orderItemRepo: Repository<OrderItem>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     @InjectRepository(Branch)
     private readonly branchRepo: Repository<Branch>,
+    @InjectRepository(Address)
+    private readonly addressRepo: Repository<Address>,
+    private readonly addressesService: AddressesService,
+    private readonly pricingService: PricingService,
   ) {}
 
   async create(dto: CreateOrderDto) {
-    await this.validateRelations(dto);
-
-    const {
-      orderNumber,
-      status,
-      paymentMethod,
-      subTotal,
-      discountTotal,
-      shippingFee,
-      taxTotal,
-      totalAmount,
-      ...rest
-    } = dto;
-
-    const normalizedSubTotal = subTotal ?? 0;
-    const normalizedDiscount = discountTotal ?? 0;
-    const normalizedShipping = shippingFee ?? 0;
-    const normalizedTax = taxTotal ?? 0;
-
-    const entity = this.repo.create({
-      ...rest,
-      orderNumber: orderNumber ?? this.generateOrderNumber(),
-      status: status ?? OrderStatus.PENDING,
-      paymentMethod: paymentMethod ?? PaymentMethod.CASH,
-      subTotal: normalizedSubTotal,
-      discountTotal: normalizedDiscount,
-      shippingFee: normalizedShipping,
-      taxTotal: normalizedTax,
-      totalAmount:
-        totalAmount ??
-        this.calculateTotalAmount(
-          normalizedSubTotal,
-          normalizedDiscount,
-          normalizedShipping,
-          normalizedTax,
-        ),
+    const resolvedAddressId = await this.resolveAddressId({
+      providedAddressId: dto.addressId,
+      addressPayload: dto.address,
+      userId: dto.userId,
     });
 
-    return this.repo.save(entity);
+    const effectiveAddressId = resolvedAddressId ?? undefined;
+
+    await this.validateRelations({
+      userId: dto.userId,
+      branchId: dto.branchId,
+      addressId: effectiveAddressId,
+    });
+
+    const pricing = await this.pricingService.calculate({
+      items: dto.items,
+      promotionId: dto.promotionId,
+      branchId: dto.branchId,
+      addressId: effectiveAddressId,
+      userId: dto.userId,
+    });
+
+    const entity = this.repo.create({
+      userId: dto.userId ?? null,
+      branchId: dto.branchId ?? null,
+      addressId: resolvedAddressId ?? null,
+      note: dto.note,
+      paymentMethod: dto.paymentMethod ?? PaymentMethod.COD,
+      fulfillmentMethod: dto.fulfillmentMethod ?? FulfillmentMethod.DELIVERY,
+      expectedDeliveryDate: dto.expectedDeliveryDate,
+      paidAt: dto.paidAt,
+      deliveredAt: dto.deliveredAt,
+      cancelledAt: dto.cancelledAt,
+      status: dto.status ?? OrderStatus.PENDING,
+      orderNumber: this.generateOrderNumber(),
+      subTotal: pricing.totals.subTotal,
+      discountTotal: pricing.totals.discountTotal,
+      shippingFee: pricing.totals.shippingFee,
+      taxTotal: pricing.totals.taxTotal,
+      totalAmount: pricing.totals.totalAmount,
+    });
+
+    const savedOrder = await this.repo.save(entity);
+
+    await this.saveOrderItems(savedOrder.id, pricing);
+
+    return this.findOne(savedOrder.id);
   }
 
   // Get order status by order number and user ID
@@ -135,46 +165,125 @@ export class OrdersService {
   }
 
   findAll() {
-    return this.repo.find({ relations: { user: true, branch: true } });
+    return this.repo.find({
+      relations: this.orderRelations,
+      order: { createdAt: 'DESC' },
+    });
   }
 
-  findOne(id: number) {
-    return this.repo.findOne({ where: { id }, relations: { user: true, branch: true } });
-  }
-
-  async update(id: number, dto: UpdateOrderDto) {
-    const order = await this.repo.findOneBy({ id });
+  async findOne(id: number) {
+    const order = await this.repo.findOne({
+      where: { id },
+      relations: this.orderRelations,
+    });
 
     if (!order) {
       throw new NotFoundException(`Order ${id} not found`);
     }
 
-    await this.validateRelations(dto);
+    return order;
+  }
 
-    const merged = this.repo.merge(order, dto);
+  async update(id: number, dto: UpdateOrderDto) {
+    const existing = await this.repo.findOne({
+      where: { id },
+      relations: { items: true },
+    });
 
-    merged.orderNumber = merged.orderNumber ?? this.generateOrderNumber();
-    merged.status = merged.status ?? OrderStatus.PENDING;
-    merged.paymentMethod = merged.paymentMethod ?? PaymentMethod.CASH;
-
-    if (dto.totalAmount === undefined) {
-      merged.totalAmount = this.calculateTotalAmount(
-        merged.subTotal ?? 0,
-        merged.discountTotal ?? 0,
-        merged.shippingFee ?? 0,
-        merged.taxTotal ?? 0,
-      );
+    if (!existing) {
+      throw new NotFoundException(`Order ${id} not found`);
     }
 
-    return this.repo.save(merged);
+    const { items, promotionId, address, ...rest } = dto;
+
+    const targetUserId = rest.userId ?? existing.userId ?? undefined;
+    const targetBranchId = rest.branchId ?? existing.branchId ?? undefined;
+    const resolvedAddressId = await this.resolveAddressId({
+      providedAddressId: rest.addressId,
+      addressPayload: address,
+      userId: targetUserId,
+    });
+
+    const effectiveAddressId = resolvedAddressId ?? existing.addressId ?? undefined;
+
+    await this.validateRelations({
+      userId: targetUserId,
+      branchId: targetBranchId,
+      addressId: effectiveAddressId,
+    });
+
+    let pricing: PricingSummary | null = null;
+
+    if (items && items.length > 0) {
+      pricing = await this.pricingService.calculate({
+        items,
+        promotionId,
+        branchId: targetBranchId,
+        addressId: effectiveAddressId,
+        userId: targetUserId,
+      });
+    }
+
+    const merged = this.repo.merge(existing, rest);
+
+    merged.addressId = resolvedAddressId ?? existing.addressId ?? null;
+
+    merged.status = merged.status ?? OrderStatus.PENDING;
+    merged.paymentMethod = merged.paymentMethod ?? PaymentMethod.COD;
+
+    if (pricing) {
+      merged.subTotal = pricing.totals.subTotal;
+      merged.discountTotal = pricing.totals.discountTotal;
+      merged.shippingFee = pricing.totals.shippingFee;
+      merged.taxTotal = pricing.totals.taxTotal;
+      merged.totalAmount = pricing.totals.totalAmount;
+    }
+
+    const saved = await this.repo.save(merged);
+
+    if (pricing) {
+      await this.orderItemRepo.delete({ orderId: saved.id });
+      await this.saveOrderItems(saved.id, pricing);
+    }
+
+    return this.findOne(saved.id);
   }
 
-  remove(id: number) {
-    return this.repo.delete(id);
+  async remove(id: number) {
+    const existing = await this.repo.findOne({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException(`Order ${id} not found`);
+    }
+
+    await this.repo.delete(id);
+    return { success: true };
   }
 
-  private async validateRelations(payload: { userId?: number; branchId?: number }) {
-    const { userId, branchId } = payload;
+  private async saveOrderItems(orderId: number, pricing: PricingSummary) {
+    if (pricing.items.length === 0) {
+      return;
+    }
+
+    const items = pricing.items.map((item) =>
+      this.orderItemRepo.create({
+        orderId,
+        variantId: item.variantId,
+        quantity: item.quantity,
+        subTotal: item.subTotal,
+        discountTotal: item.discountTotal,
+        totalAmount: item.totalAmount,
+      }),
+    );
+
+    await this.orderItemRepo.save(items);
+  }
+
+  private async validateRelations(payload: {
+    userId?: number;
+    branchId?: number;
+    addressId?: number;
+  }) {
+    const { userId, branchId, addressId } = payload;
 
     if (userId !== undefined) {
       const exists = await this.userRepo.exist({ where: { id: userId } });
@@ -191,15 +300,37 @@ export class OrdersService {
         throw new BadRequestException(`Branch ${branchId} not found`);
       }
     }
+
+    if (addressId !== undefined && addressId !== null) {
+      const exists = await this.addressRepo.exist({ where: { id: addressId } });
+
+      if (!exists) {
+        throw new BadRequestException(`Address ${addressId} not found`);
+      }
+    }
   }
 
-  private calculateTotalAmount(
-    subTotal: number,
-    discountTotal: number,
-    shippingFee: number,
-    taxTotal: number,
-  ) {
-    return subTotal - discountTotal + shippingFee + taxTotal;
+  private async resolveAddressId(params: {
+    providedAddressId?: number;
+    addressPayload?: CreateAddressDto;
+    userId?: number;
+  }): Promise<number | null> {
+    if (params.providedAddressId) {
+      return params.providedAddressId;
+    }
+
+    if (!params.addressPayload) {
+      return null;
+    }
+
+    const payload: CreateAddressDto = {
+      ...params.addressPayload,
+      userId: params.addressPayload.userId ?? params.userId,
+    };
+
+    const created = await this.addressesService.create(payload);
+
+    return created.id;
   }
 
   private generateOrderNumber() {

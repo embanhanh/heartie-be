@@ -1,4 +1,3 @@
-
 CREATE TYPE common_status AS ENUM ('active', 'inactive');
 CREATE TABLE IF NOT EXISTS branches (
   id SERIAL PRIMARY KEY,
@@ -118,33 +117,12 @@ CREATE TABLE variant_attribute_values (
 -- product_variants_inventory: tồn kho từng biến thể sản phẩm theo chi nhánh
 CREATE TABLE IF NOT EXISTS product_variants_inventory (
     id SERIAL PRIMARY KEY,
-    productVariantId INT NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
+    variantId INT NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
     branchId INT NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
     stock INT DEFAULT 0,
     status common_status DEFAULT 'active',
-    UNIQUE(productVariantId, branchId)
+    UNIQUE(variantId, branchId)
 );
-
--- -- product_images: ảnh có thể gắn vào product hoặc variant
--- CREATE TABLE product_images (
---   id SERIAL PRIMARY KEY,
---   product_id INT REFERENCES products(id),
---   variant_id INT REFERENCES product_variants(id),
---   url VARCHAR(500),
---   is_default BOOLEAN DEFAULT false,
---   position INT DEFAULT 0
--- );
-
--- -- tags (nếu dùng)
--- CREATE TABLE tags (
---   id SERIAL PRIMARY KEY,
---   name VARCHAR(100) UNIQUE NOT NULL
--- );
--- CREATE TABLE product_tags (
---   product_id INT REFERENCES products(id),
---   tag_id INT REFERENCES tags(id),
---   PRIMARY KEY(product_id, tag_id)
--- );
 
 -- promotions: thông tin khuyến mãi
 -- Loại khuyến mãi: DISCOUNT (giảm giá theo % hoặc số tiền cố định), COMBO (bán combo sản phẩm), COUPON (mã giảm giá)
@@ -153,7 +131,9 @@ CREATE TABLE IF NOT EXISTS product_variants_inventory (
 -- Áp dụng cho: sản phẩm cụ thể, nhóm khách hàng cụ thể, chi nhánh cụ thể
 -- Lịch sử áp dụng: lưu lại khách hàng đã sử dụng khuyến mã nào, giảm bao nhiêu tiền, đơn hàng nào
 -- =========================================================
-CREATE TYPE promotion_type AS ENUM ('DISCOUNT', 'COMBO', 'COUPON');
+CREATE TYPE promotion_type AS ENUM ('COMBO', 'COUPON'); -- (PHẠM VI: (BRANCH, GLOBAL, CUSTOMER_GROUP) :Combo (Giảm giá combo, Mua x tặng y), Mã giảm giá (giảm giá cho sản phẩm cụ thể, giảm giá theo đơn hàng))
+CREATE TYPE combo_type AS ENUM ('product_combo', 'buy_x_get_y');
+CREATE TYPE coupon_type AS ENUM ('order_total', 'specific_products');
 CREATE TYPE discount_type AS ENUM ('PERCENT', 'FIXED');
 CREATE TYPE apply_scope AS ENUM ('GLOBAL', 'BRANCH', 'CUSTOMER_GROUP');
 -- =========================================================
@@ -163,18 +143,35 @@ CREATE TABLE promotions (
     code          VARCHAR(100) UNIQUE,  -- mã khuyến mãi (nếu có)
     description     TEXT,
     type            promotion_type NOT NULL,
-  discountValue  DECIMAL(10,2) DEFAULT 0,
-  discountType   discount_type DEFAULT 'PERCENT',
-  startDate      TIMESTAMP WITH TIME ZONE NOT NULL,
-  endDate        TIMESTAMP WITH TIME ZONE NOT NULL,
-  minOrderValue DECIMAL(10,2) DEFAULT 0,
-  maxDiscount    DECIMAL(10,2),
-  usageLimit     INT DEFAULT NULL,
-  usedCount      INT DEFAULT 0,
-  applyScope     apply_scope DEFAULT 'GLOBAL',
-  isActive       BOOLEAN DEFAULT TRUE,
-  createdAt      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-  updatedAt      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    comboType       combo_type,
+    couponType      coupon_type,
+    discountValue  DECIMAL(10,2) DEFAULT 0,
+    discountType   discount_type DEFAULT 'PERCENT',
+    startDate      TIMESTAMP WITH TIME ZONE NOT NULL,
+    endDate        TIMESTAMP WITH TIME ZONE NOT NULL,
+    minOrderValue DECIMAL(10,2) DEFAULT 0,
+    maxDiscount    DECIMAL(10,2),
+    usageLimit     INT DEFAULT NULL,
+    usedCount      INT DEFAULT 0,
+    applyScope     apply_scope DEFAULT 'GLOBAL',
+    isActive       BOOLEAN DEFAULT TRUE,
+    createdAt      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updatedAt      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+
+CREATE TYPE promotion_condition_role AS ENUM (
+    'BUY',        -- Điều kiện MUA (cho Combo và BOGO)
+    'GET',        -- Phần thưởng NHẬN (cho BOGO)
+    'APPLIES_TO'  -- Sản phẩm mà Coupon (loại specific_products) áp dụng
+);
+CREATE TABLE promotion_conditions (
+    id              SERIAL PRIMARY KEY,
+    promotionId     BIGINT NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
+    productId      BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    quantity     INT NOT NULL DEFAULT 1,
+    role            promotion_condition_role NOT NULL,
+    UNIQUE(promotionId, productId, role)
 );
 
 -- =========================================================
@@ -184,8 +181,9 @@ CREATE TABLE promotions (
 CREATE TABLE promotion_branches (
     id             SERIAL PRIMARY KEY,
     promotionId    INT NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
-  branchId       INT NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
-  createdAt      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    branchId       INT NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+    createdAt      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(promotionId, branchId)
 );
 
 -- Bảng customer_groups (nhóm khách hàng: VIP, wholesale, new-customer, ...)
@@ -213,30 +211,51 @@ CREATE TABLE promotion_customer_groups (
     id                  SERIAL PRIMARY KEY,
     promotionId         INT NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
     customerGroupId     INT REFERENCES customer_groups(id) ON DELETE CASCADE,
-  createdAt           TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    createdAt           TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- =========================================================
--- Bảng: promotion_products
--- Liên kết sản phẩm được áp dụng khuyến mãi
+-- Bảng: addresses
+-- Lưu thông tin địa chỉ của khách hàng
 -- =========================================================
-CREATE TABLE promotion_products (
-    id              SERIAL PRIMARY KEY,
-    promotionId    INT NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
-  productId      INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-  createdAt      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+CREATE TYPE address_type_enum AS ENUM (
+    'home',  -- Nhà riêng
+    'other'  -- Khác
 );
+CREATE TABLE addresses (
+    -- Khóa chính
+    id BIGSERIAL PRIMARY KEY,
+    
+    -- Liên kết với khách hàng (NULL nếu là khách vãng lai)
+    userId BIGINT REFERENCES users(id) ON DELETE SET NULL,
 
--- =========================================================
--- Bảng: combo_items
--- Lưu thông tin combo (sản phẩm trong combo)
--- =========================================================
-CREATE TABLE combo_items (
-    id              SERIAL PRIMARY KEY,
-    promotionId    INT NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
-  productId      INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    quantity        INT DEFAULT 1,
-  createdAt      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    -- Thông tin người nhận (Bắt buộc)
+    fullName VARCHAR(255) NOT NULL,
+    phoneNumber VARCHAR(20) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+
+    -- Thông tin địa chỉ chi tiết (từ form)
+    street TEXT,
+    ward VARCHAR(100),
+    district VARCHAR(100),
+    province VARCHAR(100) NOT NULL,
+
+    -- Thông tin từ bản đồ (Map)
+    -- DECIMAL(10, 8) cho vĩ độ (latitude)
+    -- DECIMAL(11, 8) cho kinh độ (longitude)
+    lat DECIMAL(10, 8),
+    long DECIMAL(11, 8),
+
+    -- Địa chỉ đầy đủ trả về từ API (ví dụ: "123 Nguyễn Trãi, P. Bến Thành, Q.1...")
+    fullAddress TEXT,
+
+    -- Thông tin bổ sung (cho khách hàng có tài khoản)
+      addressType address_type_enum, -- Sử dụng kiểu ENUM đã tạo
+      isDefault BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Dấu thời gian
+    createdAt TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updatedAt TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ====== orders: Đơn hàng ======
@@ -269,7 +288,7 @@ CREATE TABLE orders (
 CREATE TABLE IF NOT EXISTS order_items (
   id SERIAL PRIMARY KEY,
   orderId INT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-  productVariantId INT REFERENCES product_variants(id),
+  variantId INT REFERENCES product_variants(id),
   quantity INT DEFAULT 1,
   subTotal NUMERIC(12,2) NOT NULL, -- price * quantity
   discountTotal NUMERIC(12,2) NOT NULL DEFAULT 0,
@@ -290,7 +309,7 @@ CREATE TABLE IF NOT EXISTS carts (
 CREATE TABLE IF NOT EXISTS cart_items (
   id SERIAL PRIMARY KEY,
   cartId INT NOT NULL REFERENCES carts(id) ON DELETE CASCADE,
-  productVariantId INT,
+  variantId INT,
   quantity INT DEFAULT 1
 );
 
@@ -302,9 +321,9 @@ CREATE TABLE promotion_logs (
     id              SERIAL PRIMARY KEY,
     promotionId    INT NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
     userId         INT NOT NULL,
-  orderId        INT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    orderId        INT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
     discountAmount DECIMAL(10,2) DEFAULT 0,
-  createdAt      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    createdAt      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- =========================================================
