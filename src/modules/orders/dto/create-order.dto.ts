@@ -1,26 +1,32 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsDate,
   IsEnum,
   IsInt,
-  IsNumber,
-  IsObject,
   IsOptional,
   IsPositive,
   IsString,
   MaxLength,
-  Min,
+  ValidateNested,
 } from 'class-validator';
-import { OrderStatus, PaymentMethod } from '../entities/order.entity';
+import { FulfillmentMethod, OrderStatus, PaymentMethod } from '../entities/order.entity';
+import { CreateAddressDto } from 'src/modules/addresses/dto/create-address.dto';
+
+class OrderItemDto {
+  @ApiProperty({ example: 101, description: 'FK -> product_variants.id' })
+  @IsInt()
+  @IsPositive()
+  variantId: number;
+
+  @ApiProperty({ example: 2, description: 'Số lượng đặt mua' })
+  @IsInt()
+  @IsPositive()
+  quantity: number;
+}
 
 export class CreateOrderDto {
-  @ApiPropertyOptional({ example: 'ORD-20251010-0001' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(50)
-  orderNumber?: string;
-
   @ApiPropertyOptional({ example: 5, description: 'FK -> users.id' })
   @IsOptional()
   @IsInt()
@@ -35,39 +41,15 @@ export class CreateOrderDto {
   @Type(() => Number)
   branchId?: number;
 
-  @ApiProperty({ example: 350000, description: 'Tổng tiền hàng trước ưu đãi' })
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
-  @Type(() => Number)
-  subTotal: number;
-
-  @ApiPropertyOptional({ example: 50000, description: 'Tổng tiền giảm giá' })
+  @ApiPropertyOptional({
+    example: '123456789',
+    description: 'FK -> addresses.id (bigint dạng chuỗi)',
+  })
   @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
+  @IsInt()
+  @IsPositive()
   @Type(() => Number)
-  discountTotal?: number;
-
-  @ApiPropertyOptional({ example: 15000, description: 'Phí vận chuyển' })
-  @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
-  @Type(() => Number)
-  shippingFee?: number;
-
-  @ApiPropertyOptional({ example: 20000, description: 'Thuế' })
-  @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
-  @Type(() => Number)
-  taxTotal?: number;
-
-  @ApiPropertyOptional({ example: 335000, description: 'Tổng tiền phải thanh toán' })
-  @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
-  @Type(() => Number)
-  totalAmount?: number;
+  addressId?: number;
 
   @ApiPropertyOptional({ example: 'Giao trong giờ hành chính' })
   @IsOptional()
@@ -75,10 +57,15 @@ export class CreateOrderDto {
   @MaxLength(1000)
   note?: string;
 
-  @ApiPropertyOptional({ enum: PaymentMethod, example: PaymentMethod.CASH })
+  @ApiPropertyOptional({ enum: PaymentMethod, example: PaymentMethod.COD })
   @IsOptional()
   @IsEnum(PaymentMethod)
   paymentMethod?: PaymentMethod;
+
+  @ApiPropertyOptional({ enum: FulfillmentMethod, example: FulfillmentMethod.DELIVERY })
+  @IsOptional()
+  @IsEnum(FulfillmentMethod)
+  fulfillmentMethod?: FulfillmentMethod;
 
   @ApiPropertyOptional({ example: '2025-10-15T10:30:00Z' })
   @IsOptional()
@@ -109,19 +96,32 @@ export class CreateOrderDto {
   @IsEnum(OrderStatus)
   status?: OrderStatus;
 
-  @ApiPropertyOptional({
-    description: 'Thông tin địa chỉ giao hàng tại thời điểm đặt hàng',
-    example: { fullName: 'Nguyễn Văn A', phone: '0901234567', address: '123 Lê Lợi, Quận 1' },
-  })
+  @ApiPropertyOptional({ example: 99, description: 'FK -> promotions.id' })
   @IsOptional()
-  @IsObject()
-  shippingAddressJson?: Record<string, unknown>;
+  @Type(() => Number)
+  @IsInt()
+  @IsPositive()
+  promotionId?: number;
+
+  @ApiProperty({
+    type: [OrderItemDto],
+    description: 'Danh sách sản phẩm trong đơn hàng',
+    example: [
+      { variantId: 101, quantity: 2 },
+      { variantId: 102, quantity: 1 },
+    ],
+  })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => OrderItemDto)
+  items: OrderItemDto[];
 
   @ApiPropertyOptional({
-    description: 'Thông tin địa chỉ thanh toán tại thời điểm đặt hàng',
-    example: { fullName: 'Nguyễn Văn A', taxCode: '0123456789', address: '123 Lê Lợi, Quận 1' },
+    type: CreateAddressDto,
+    description: 'Thông tin địa chỉ mới nếu chưa có addressId',
   })
   @IsOptional()
-  @IsObject()
-  billingAddressJson?: Record<string, unknown>;
+  @ValidateNested()
+  @Type(() => CreateAddressDto)
+  address?: CreateAddressDto;
 }
