@@ -22,6 +22,7 @@ import { VariantAttributeValuesModule } from './modules/variant_attribute_values
 import { ProductsModule } from './modules/products/products.module';
 import { PromotionalComboDetailsModule } from './modules/promotional_combo_details/promotional_combo_details.module';
 import { PromotionalCombosModule } from './modules/promotional_combos/promotional_combos.module';
+import { PromotionsModule } from './modules/promotions/promotions.module';
 import { RatingsModule } from './modules/ratings/ratings.module';
 import { StoreInventoriesModule } from './modules/store_inventories/store_inventories.module';
 import { StoresModule } from './modules/stores/stores.module';
@@ -31,6 +32,8 @@ import { VouchersModule } from './modules/vouchers/vouchers.module';
 import { AdsAiModule } from './modules/ads_ai/ads_ai.module';
 import { CartsModule } from './modules/carts/carts.module';
 import { CartItemsModule } from './modules/cart_items/cart-items.module';
+import { OrderItemsModule } from './modules/order_items/order_items.module';
+import { PricingModule } from './modules/pricing/pricing.module';
 
 @Module({
   imports: [
@@ -72,6 +75,7 @@ import { CartItemsModule } from './modules/cart_items/cart-items.module';
     OrdersModule,
     PromotionalComboDetailsModule,
     PromotionalCombosModule,
+    PromotionsModule,
     RatingsModule,
     StoreInventoriesModule,
     StoresModule,
@@ -80,6 +84,8 @@ import { CartItemsModule } from './modules/cart_items/cart-items.module';
     AdsAiModule,
     CartsModule,
     CartItemsModule,
+    OrderItemsModule,
+    PricingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

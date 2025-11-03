@@ -9,6 +9,7 @@ import {
 import { User } from '../../users/entities/user.entity';
 import { ProductVariantInventory } from 'src/modules/inventory/entities/product-variant-inventory.entity';
 import { Order } from '../../orders/entities/order.entity';
+import { PromotionBranch } from '../../promotion_branches/entities/promotion-branch.entity';
 
 export enum BranchStatus {
   ACTIVE = 'active',
@@ -55,4 +56,7 @@ export class Branch {
 
   @OneToMany(() => Order, (order) => order.branch)
   orders: Order[];
+
+  @OneToMany(() => PromotionBranch, (promotionBranch) => promotionBranch.branch)
+  promotionBranches: PromotionBranch[];
 }
