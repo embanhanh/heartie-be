@@ -78,7 +78,10 @@ export class UsersService extends BaseService<User> {
   }
 
   async findOneById(id: number): Promise<UserSafe | null> {
-    const user = await this.userRepository.findOne({ where: { id } });
+    const user = await this.userRepository.findOne({
+      where: { id },
+      relations: { participants: true },
+    });
     return this.sanitizeUser(user);
   }
 

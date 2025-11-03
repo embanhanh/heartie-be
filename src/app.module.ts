@@ -32,6 +32,12 @@ import { VouchersModule } from './modules/vouchers/vouchers.module';
 import { AdsAiModule } from './modules/ads_ai/ads_ai.module';
 import { CartsModule } from './modules/carts/carts.module';
 import { CartItemsModule } from './modules/cart_items/cart-items.module';
+import { ConversationsModule } from './modules/conversations/conversations.module';
+import { MessagesModule } from './modules/messages/messages.module';
+import { GeminiModule } from './modules/gemini/gemini.module';
+import { ChatGatewayModule } from './modules/chat_gateway/chat_gateway.module';
+import { ConversationParticipantsModule } from './modules/conversation_participants/conversation_participants.module';
+import geminiConfig from './config/gemini.config';
 import { OrderItemsModule } from './modules/order_items/order_items.module';
 import { PricingModule } from './modules/pricing/pricing.module';
 
@@ -40,6 +46,7 @@ import { PricingModule } from './modules/pricing/pricing.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      load: [geminiConfig],
     }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -84,6 +91,12 @@ import { PricingModule } from './modules/pricing/pricing.module';
     AdsAiModule,
     CartsModule,
     CartItemsModule,
+    GeminiModule,
+    ConversationsModule,
+    MessagesModule,
+    CartsModule,
+    ChatGatewayModule,
+    ConversationParticipantsModule,
     OrderItemsModule,
     PricingModule,
   ],

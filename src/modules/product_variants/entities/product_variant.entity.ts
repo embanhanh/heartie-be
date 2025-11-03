@@ -50,7 +50,7 @@ export class ProductVariant {
   @Column({ type: 'varchar', length: 20, default: ProductVariantStatus.ACTIVE })
   status: ProductVariantStatus;
 
-  @Column({ type: 'jsonb', default: () => "'{}'" })
+  @Column({ type: 'jsonb', default: {} })
   extra: Record<string, unknown>;
 
   @CreateDateColumn({ type: 'timestamp with time zone' })
