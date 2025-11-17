@@ -6,6 +6,8 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UserSafe } from './types/user-safe.type';
 import { BaseService } from '../../common/services/base.service';
 import * as bcrypt from 'bcrypt';
+import { FilterUserDto } from './dto/filter-users.dto';
+import { PaginatedResult, SortParam } from '../../common/dto/pagination.dto';
 
 @Injectable()
 export class UsersService extends BaseService<User> {
@@ -14,6 +16,10 @@ export class UsersService extends BaseService<User> {
     private readonly userRepository: Repository<User>,
   ) {
     super(userRepository, 'user');
+  }
+
+  protected override getDefaultSorts(): SortParam[] {
+    return [{ field: 'createdAt', direction: 'desc' }];
   }
 
   private sanitizeUser(user: User | null): UserSafe | null {
@@ -104,5 +110,52 @@ export class UsersService extends BaseService<User> {
     await this.userRepository.update(userId, {
       hashedRefreshToken: null,
     });
+  }
+
+  async findAll(query: FilterUserDto): Promise<PaginatedResult<UserSafe>> {
+    const { search, email, role, isActive, branchId, createdFrom, createdTo, phoneNumber } = query;
+
+    const result = await this.paginate(query, (qb) => {
+      qb.leftJoinAndSelect('user.participants', 'participants');
+
+      if (search) {
+        const like = `%${search.trim()}%`;
+        qb.andWhere(
+          'user.firstName ILIKE :search OR user.lastName ILIKE :search OR user.email ILIKE :search OR user.phoneNumber ILIKE :search',
+          { search: like },
+        );
+      }
+
+      if (email) {
+        qb.andWhere('user.email ILIKE :email', { email: `%${email.trim()}%` });
+      }
+
+      if (phoneNumber) {
+        qb.andWhere('user.phoneNumber ILIKE :phone', { phone: `%${phoneNumber.trim()}%` });
+      }
+
+      if (role) {
+        qb.andWhere('user.role = :role', { role });
+      }
+
+      if (typeof isActive === 'boolean') {
+        qb.andWhere('user.isActive = :isActive', { isActive });
+      }
+
+      if (typeof branchId === 'number') {
+        qb.andWhere('user.branchId = :branchId', { branchId });
+      }
+
+      this.applyDateFilter(qb, 'createdAt', createdFrom, createdTo);
+    });
+
+    const data = result.data
+      .map((item) => this.sanitizeUser(item))
+      .filter((user): user is UserSafe => Boolean(user));
+
+    return {
+      data,
+      meta: result.meta,
+    };
   }
 }

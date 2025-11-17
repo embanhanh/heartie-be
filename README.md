@@ -107,22 +107,27 @@ Other noteworthy files:
 
 Fill in a `.env` file at the project root (copy `.env.example` and adjust):
 
-| Variable                      | Description                                           | Default (dev)   |
-| ----------------------------- | ----------------------------------------------------- | --------------- |
-| `PORT`                        | API listening port                                    | `3001`          |
-| `DB_HOST`                     | PostgreSQL host                                       | `localhost`     |
-| `DB_PORT`                     | PostgreSQL port                                       | `5432`          |
-| `DB_USERNAME`                 | Database user                                         | `thongdinh`     |
-| `DB_PASSWORD`                 | Database password                                     | `thongdinh`     |
-| `DB_DATABASE`                 | Database name                                         | `heartie_db`    |
-| `JWT_SECRET`                  | Access token secret                                   | `access_token`  |
-| `JWT_EXPIRATION_TIME`         | Access token TTL                                      | `3600s`         |
-| `JWT_REFRESH_SECRET`          | Refresh token secret                                  | `refresh_token` |
-| `JWT_REFRESH_EXPIRATION_TIME` | Refresh token TTL                                     | `7d`            |
-| `OPENAI_API_KEY`              | OpenAI API key for AI content generation              | —               |
-| `OPENAI_AD_MODEL`             | (Optional) OpenAI model, defaults to `gpt-4o-mini`    | —               |
-| `FACEBOOK_PAGE_ID`            | Target Facebook Page ID for publishing ads            | —               |
-| `FACEBOOK_PAGE_ACCESS_TOKEN`  | Long-lived Page access token with publish permissions | —               |
+| Variable                      | Description                                           | Default (dev)        |
+| ----------------------------- | ----------------------------------------------------- | -------------------- |
+| `PORT`                        | API listening port                                    | `3001`               |
+| `DB_HOST`                     | PostgreSQL host                                       | `localhost`          |
+| `DB_PORT`                     | PostgreSQL port                                       | `5432`               |
+| `DB_USERNAME`                 | Database user                                         | `thongdinh`          |
+| `DB_PASSWORD`                 | Database password                                     | `thongdinh`          |
+| `DB_DATABASE`                 | Database name                                         | `heartie_db`         |
+| `REDIS_HOST`                  | Redis host for BullMQ queues                          | `localhost`          |
+| `REDIS_PORT`                  | Redis port                                            | `6379`               |
+| `JWT_SECRET`                  | Access token secret                                   | `access_token`       |
+| `JWT_EXPIRATION_TIME`         | Access token TTL                                      | `3600s`              |
+| `JWT_REFRESH_SECRET`          | Refresh token secret                                  | `refresh_token`      |
+| `JWT_REFRESH_EXPIRATION_TIME` | Refresh token TTL                                     | `7d`                 |
+| `OPENAI_API_KEY`              | OpenAI API key for AI content generation              | —                    |
+| `OPENAI_AD_MODEL`             | (Optional) OpenAI model, defaults to `gpt-4o-mini`    | —                    |
+| `FACEBOOK_PAGE_ID`            | Target Facebook Page ID for publishing ads            | —                    |
+| `FACEBOOK_PAGE_ACCESS_TOKEN`  | Long-lived Page access token with publish permissions | —                    |
+| `GEMINI_API_KEY`              | Google Gemini API key for chat + embeddings           | —                    |
+| `GEMINI_EMBEDDING_MODEL`      | (Optional) Gemini embedding model                     | `text-embedding-004` |
+| `GEMINI_REVIEW_MODEL`         | (Optional) Gemini model for review analysis           | `gemini-1.5-pro`     |
 
 > ℹ️ The app fails fast if JWT secrets are missing. Ensure these env vars are set before starting Nest.
 
@@ -154,6 +159,12 @@ Spin up Postgres only:
 docker compose up -d db
 ```
 
+Redis (BullMQ queues) is also available:
+
+```bash
+docker compose up -d redis
+```
+
 Run both API and DB inside containers:
 
 ```bash
@@ -162,6 +173,8 @@ docker compose up --build
 
 - API becomes available on `http://localhost:3000` (mapped from container port 3000).
 - To follow logs: `docker compose logs -f api`.
+- The `db` service builds from `docker/db/Dockerfile`, which compiles the pgvector extension (and is the place to add more extensions for the whole team).
+- Any SQL dropped in `docker/db/init/*.sql` runs automatically the first time a new data volume is created (for example `docker/db/init/00-extensions.sql` creates `vector`). Add more files there if you need additional extensions or bootstrap logic.
 
 ### Seed data
 
@@ -171,33 +184,73 @@ Once the database is reachable (local server or Docker), populate baseline recor
 yarn seed
 ```
 
-By default this seeds every registered module (currently brands, attributes, the full fashion category tree, and demo branches). To target a specific module, pass its name as an argument:
+By default this seeds every registered module (brands, attributes, categories, branches, banners, and demo users for each role). To target a specific module, pass its name as an argument:
 
 ```bash
 yarn seed brands
 yarn seed attributes
 yarn seed categories
 yarn seed branches
+yarn seed banners
+yarn seed users
+yarn seed products
 yarn seed brands categories attributes branches
 ```
 
-Existing data is preserved (idempotent upsert). The brand seeder loads Nike, Adidas, Gucci, Zara, H&M, Uniqlo, Chanel, Dior, Levi’s, and Puma, the attribute seeder inserts baseline attributes (Màu sắc, Kích thước, Chất liệu), the category seeder creates the full men’s/women’s fashion hierarchy described above, and the branch seeder provisions the primary Hồ Chí Minh, Hà Nội, and Đà Nẵng locations (with coordinates and phone numbers).
+Existing data is preserved (idempotent upsert). The brand seeder loads Nike, Adidas, Gucci, Zara, H&M, Uniqlo, Chanel, Dior, Levi’s, and Puma; the attribute seeder inserts baseline attributes (Màu sắc, Kích thước, Chất liệu); the category seeder creates the full men’s/women’s fashion hierarchy described above; the branch seeder provisions the primary Hồ Chí Minh, Hà Nội, and Đà Nẵng locations (with coordinates and phone numbers); the banner seeder injects a sample hero carousel; and the user seeder provisions one account per role (default password `Fashia@123`).
 
 ## Available scripts
 
-| Command            | Purpose                                                |
-| ------------------ | ------------------------------------------------------ |
-| `yarn dev`         | Start Nest in watch mode (`nest start --watch`).       |
-| `yarn start`       | Start Nest in non-watch dev mode.                      |
-| `yarn start:debug` | Start with inspector + watch for debugging.            |
-| `yarn start:prod`  | Run the compiled app from `dist/`.                     |
-| `yarn build`       | Compile TypeScript to `dist/` using Nest CLI.          |
-| `yarn lint`        | Run ESLint (auto-fix enabled) on src/apps/libs/test.   |
-| `yarn test`        | Execute unit tests via Jest.                           |
-| `yarn test:e2e`    | Run end-to-end tests (`test/app.e2e-spec.ts`).         |
-| `yarn format`      | Format code with Prettier.                             |
-| `yarn gen:module`  | Scaffold a new Nest module using the helper script.    |
-| `yarn seed`        | Run the seeding script (optionally pass module names). |
+| Command                 | Purpose                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `yarn dev`              | Start Nest in watch mode (`nest start --watch`).                             |
+| `yarn start`            | Start Nest in non-watch dev mode.                                            |
+| `yarn start:debug`      | Start with inspector + watch for debugging.                                  |
+| `yarn start:prod`       | Run the compiled app from `dist/`.                                           |
+| `yarn build`            | Compile TypeScript to `dist/` using Nest CLI.                                |
+| `yarn lint`             | Run ESLint (auto-fix enabled) on src/apps/libs/test.                         |
+| `yarn test`             | Execute unit tests via Jest.                                                 |
+| `yarn test:e2e`         | Run end-to-end tests (`test/app.e2e-spec.ts`).                               |
+| `yarn format`           | Format code with Prettier.                                                   |
+| `yarn gen:module`       | Scaffold a new Nest module using the helper script.                          |
+| `yarn seed`             | Run the seeding script (optionally pass module names).                       |
+| `yarn search:reindex`   | Backfill or rebuild Gemini embeddings for all products (stored in pgvector). |
+| `yarn migration:run`    | Apply TypeORM migrations (uses `typeorm.config.ts`).                         |
+| `yarn migration:revert` | Roll back the most recent migration.                                         |
+| - `yarn lint`           | Run ESLint across the project.                                               |
+
+## Semantic search setup
+
+Semantic product search relies on the PostgreSQL `pgvector` extension and Gemini embeddings. Follow these steps before calling the API:
+
+1. **Enable pgvector.** Connect to the store database and run:
+
+   ```sql
+   CREATE EXTENSION IF NOT EXISTS vector;
+   ```
+
+> 💡 **Extension missing?** If you see `vector.control` errors during migration, the server does not have pgvector installed. Install it first (`brew install pgvector` on macOS/Homebrew, `apt install postgresql-16-pgvector` on Debian/Ubuntu, or compile from [github.com/pgvector/pgvector](https://github.com/pgvector/pgvector)) or use `docker compose up -d db` to run the pre-built Postgres image that already ships with pgvector.
+
+If the database already exists (for example staging/production), you can apply the included TypeORM migration instead:
+
+```bash
+yarn migration:run
+```
+
+The migration executes `CREATE EXTENSION IF NOT EXISTS vector;` so the command can be re-run safely when deploying to new environments.
+
+2. **Configure Gemini credentials.** Set `GEMINI_API_KEY` (and optionally override `GEMINI_EMBEDDING_MODEL`).
+3. **Generate embeddings (initial backfill).** Run the command below after enabling pgvector to populate vectors for the current catalog:
+
+   ```bash
+   yarn search:reindex
+   ```
+
+   This loads product metadata, calls Gemini for embeddings, and stores vectors in the `products.embedding` column. New products and updates trigger embedding refresh automatically; rerun the command only when you need to rebuild everything (for example after bulk migrations or model changes).
+
+4. **Query the API.** Use `GET /search/semantic?query=<keywords>&limit=10` to retrieve ranked matches. Each result includes similarity score, variants (with option summaries), and attribute hints.
+
+For large catalogs consider scheduling the reindex command nightly or after bulk imports.
 
 ## API reference
 

@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, BadRequestException, ConflictException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Rating } from './entities/rating.entity';
@@ -8,9 +8,12 @@ import { Product } from '../products/entities/product.entity';
 import { User } from '../users/entities/user.entity';
 import { PaginatedResult } from 'src/common/dto/pagination.dto';
 import { RatingsQueryDto } from './dto/query-rating.dto';
+import { ReviewAnalysisService } from '../review_analysis/review-analysis.service';
 
 @Injectable()
 export class RatingsService {
+  private readonly logger = new Logger(RatingsService.name);
+
   constructor(
     @InjectRepository(Rating)
     private ratingRepository: Repository<Rating>,
@@ -20,6 +23,7 @@ export class RatingsService {
 
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    private readonly reviewAnalysisService: ReviewAnalysisService,
   ) {}
 
   async create(createDto: CreateRatingDto, userId: number): Promise<Rating> {
@@ -72,6 +76,16 @@ export class RatingsService {
     });
 
     const savedRating = await this.ratingRepository.save(rating);
+
+    try {
+      await this.reviewAnalysisService.enqueueAnalysis(savedRating.id);
+    } catch (error) {
+      this.logger.warn(
+        `Failed to enqueue review analysis for rating ${savedRating.id}: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
+      );
+    }
 
     // Update product average rating (optional - có thể làm bằng trigger DB)
     // await this.updateProductAverageRating(createDto.productId);

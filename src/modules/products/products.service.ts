@@ -21,6 +21,8 @@ import { ProductFormPayloadDto } from './dto/product-form.dto';
 import { ProductQueryDto } from './dto/product-query.dto';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
 import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
+import { SemanticSearchService } from '../semantic_search/semantic-search.service';
+import { RankedProductRow } from '../semantic_search/semantic-search.service';
 
 type VariantSummary = {
   id: number;
@@ -44,6 +46,18 @@ type ProductDetail = Omit<Product, 'productAttributes'> & {
   images: string[];
 };
 
+export interface StylistCandidateProduct {
+  id: number;
+  name: string;
+  brand: string | null;
+  category: string | null;
+  minPrice: number | null;
+  maxPrice: number | null;
+  image: string | null;
+  attributes: string[];
+  score: number;
+}
+
 @Injectable()
 export class ProductsService extends BaseService<Product> {
   private readonly logger = new Logger(ProductsService.name);
@@ -57,6 +71,7 @@ export class ProductsService extends BaseService<Product> {
     private readonly brandRepo: Repository<Brand>,
     @InjectRepository(Branch)
     private readonly branchRepo: Repository<Branch>,
+    private readonly semanticSearchService: SemanticSearchService,
   ) {
     super(productRepo, 'product');
   }
@@ -85,7 +100,10 @@ export class ProductsService extends BaseService<Product> {
       originalPrice: this.resolveOriginalPrice(dto.originalPrice, undefined),
     });
 
-    return this.productRepo.save(product);
+    const savedProduct = await this.productRepo.save(product);
+    await this.refreshProductEmbeddingSafely(savedProduct.id);
+
+    return savedProduct;
   }
 
   async createFromForm(payload: ProductFormPayloadDto, files: UploadedFile[] = []) {
@@ -343,6 +361,8 @@ export class ProductsService extends BaseService<Product> {
       return savedProduct.id;
     });
 
+    await this.refreshProductEmbeddingSafely(productId);
+
     return this.findOne(productId);
   }
 
@@ -581,6 +601,136 @@ export class ProductsService extends BaseService<Product> {
       attributes,
       images,
     };
+  }
+
+  async buildStylistCatalogue(
+    focusProductId: number,
+    options?: { limit?: number; includeFocus?: boolean },
+  ): Promise<StylistCandidateProduct[]> {
+    const limit = Math.max(10, Math.min(options?.limit ?? 30, 60));
+    const includeFocus = options?.includeFocus ?? true;
+
+    this.logger.debug(
+      `Stylist catalogue requested for focusId=${focusProductId} (limit=${limit}, includeFocus=${includeFocus})`,
+    );
+
+    let ranking: RankedProductRow[] = [];
+    try {
+      ranking = await this.semanticSearchService.findSimilarProductsByProduct(
+        focusProductId,
+        limit,
+      );
+      this.logger.debug(
+        `Stylist similarity ranking returned ${ranking.length} candidate(s) for product ${focusProductId}`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to compute stylist similarity ranking for product ${focusProductId}: ${message}`,
+      );
+      ranking = [];
+    }
+
+    const rankedEntries: RankedProductRow[] = includeFocus
+      ? [{ id: focusProductId, score: 1 }, ...ranking]
+      : [...ranking];
+
+    const uniqueIds = Array.from(new Set(rankedEntries.map((row) => row.id)));
+    if (!uniqueIds.length) {
+      this.logger.debug(
+        `Stylist catalogue aborted for product ${focusProductId} because no candidate ids were available`,
+      );
+      return [];
+    }
+
+    this.logger.debug(
+      `Stylist catalogue will hydrate ${uniqueIds.length} product id(s) from repository`,
+    );
+
+    type StylistCatalogueRow = {
+      id: number;
+      name: string;
+      brand: string | null;
+      category: string | null;
+      image: string | null;
+      minPrice: string | null;
+      maxPrice: string | null;
+      attributeNames: unknown;
+    };
+
+    const rows = await this.productRepo
+      .createQueryBuilder('product')
+      .leftJoin('product.brand', 'brand')
+      .leftJoin('product.category', 'category')
+      .leftJoin('product.productAttributes', 'productAttribute')
+      .leftJoin('productAttribute.attribute', 'attribute')
+      .leftJoin('product.variants', 'variant')
+      .select('product.id', 'id')
+      .addSelect('product.name', 'name')
+      .addSelect('brand.name', 'brand')
+      .addSelect('category.name', 'category')
+      .addSelect('product.image', 'image')
+      .addSelect('MIN(variant.price)', 'minPrice')
+      .addSelect('MAX(variant.price)', 'maxPrice')
+      .addSelect(
+        `COALESCE(jsonb_agg(DISTINCT attribute.name) FILTER (WHERE attribute.name IS NOT NULL), '[]'::jsonb)`,
+        'attributeNames',
+      )
+      .where('product.id IN (:...ids)', { ids: uniqueIds })
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('product.status = :activeStatus').orWhere('product.id = :focusProductId');
+        }),
+      )
+      .groupBy('product.id')
+      .addGroupBy('product.name')
+      .addGroupBy('brand.name')
+      .addGroupBy('category.name')
+      .addGroupBy('product.image')
+      .setParameters({
+        activeStatus: ProductStatus.ACTIVE,
+        focusProductId,
+      })
+      .getRawMany<StylistCatalogueRow>();
+
+    const rowMap = new Map<number, StylistCandidateProduct>();
+
+    for (const row of rows) {
+      rowMap.set(Number(row.id), {
+        id: Number(row.id),
+        name: row.name,
+        brand: row.brand,
+        category: row.category,
+        minPrice: this.asNullableNumber(row.minPrice),
+        maxPrice: this.asNullableNumber(row.maxPrice),
+        image: row.image,
+        attributes: this.normalizeAttributeNames(row.attributeNames),
+        score: 0,
+      });
+    }
+
+    const catalogue: StylistCandidateProduct[] = [];
+
+    for (const entry of rankedEntries) {
+      const candidate = rowMap.get(entry.id);
+      if (!candidate) {
+        this.logger.debug(
+          `Stylist catalogue skip: product ${entry.id} missing from hydration results (focus=${entry.id === focusProductId})`,
+        );
+        continue;
+      }
+
+      catalogue.push({
+        ...candidate,
+        score: Number.isFinite(entry.score) ? Number(entry.score) : 0,
+      });
+    }
+
+    this.logger.debug(
+      `Stylist catalogue ready for product ${focusProductId} with ${catalogue.length} hydrated candidate(s)`,
+    );
+
+    return catalogue;
   }
 
   async updateFromForm(id: number, payload: ProductFormPayloadDto, files: UploadedFile[] = []) {
@@ -871,7 +1021,18 @@ export class ProductsService extends BaseService<Product> {
       this.logger.log(`Product updated: id=${savedProduct.id}, totalStock=${totalStock}`);
     });
 
+    await this.refreshProductEmbeddingSafely(id);
+
     return this.findOne(id);
+  }
+
+  private async refreshProductEmbeddingSafely(productId: number) {
+    try {
+      await this.semanticSearchService.refreshProductEmbedding(productId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Failed to refresh embedding for product ${productId}: ${message}`);
+    }
   }
 
   async suggestKeywords(keyword: string, limit = 10): Promise<string[]> {
@@ -1079,6 +1240,36 @@ export class ProductsService extends BaseService<Product> {
 
     const parsed = this.asNumber(value, Number.NaN);
     return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  private normalizeAttributeNames(payload: unknown): string[] {
+    if (!payload) {
+      return [];
+    }
+
+    const coerce = (items: unknown[]): string[] =>
+      items
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter((item) => item.length > 0)
+        .slice(0, 6);
+
+    if (Array.isArray(payload)) {
+      return coerce(payload);
+    }
+
+    if (typeof payload === 'string') {
+      try {
+        const parsed: unknown = JSON.parse(payload);
+        if (Array.isArray(parsed)) {
+          return coerce(parsed);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.debug(`Unable to parse attribute names JSON: ${message}`);
+      }
+    }
+
+    return [];
   }
 
   private getAttributeValueKey(attributeId: number, value: string): string {
