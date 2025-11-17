@@ -1,7 +1,9 @@
-import { Module } from '@nestjs/common';
+import { DynamicModule, Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
+import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { DataSource, DataSourceOptions } from 'typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AddressesModule } from './modules/addresses/addresses.module';
@@ -40,6 +42,17 @@ import { ConversationParticipantsModule } from './modules/conversation_participa
 import geminiConfig from './config/gemini.config';
 import { OrderItemsModule } from './modules/order_items/order_items.module';
 import { PricingModule } from './modules/pricing/pricing.module';
+import { SemanticSearchModule } from './modules/semantic_search/semantic-search.module';
+import { enablePostgresVectorType } from './database/postgres-vector.util';
+import { ReviewAnalysisModule } from './modules/review_analysis/review-analysis.module';
+import { AdminCopilotModule } from './modules/admin_copilot/admin-copilot.module';
+import { AiCustomerModule } from './modules/ai_customer/ai-customer.module';
+import { TrendForecastingModule } from './modules/trend_forecasting/trend-forecasting.module';
+import type { SharedBullAsyncConfiguration } from '@nestjs/bullmq';
+
+const BullModuleTyped = BullModule as unknown as {
+  forRootAsync: (config: SharedBullAsyncConfiguration) => DynamicModule;
+};
 
 @Module({
   imports: [
@@ -47,6 +60,17 @@ import { PricingModule } from './modules/pricing/pricing.module';
       isGlobal: true,
       envFilePath: '.env',
       load: [geminiConfig],
+    }),
+    BullModuleTyped.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        connection: {
+          host: configService.get<string>('REDIS_HOST', 'localhost'),
+          port: parseInt(configService.get<string>('REDIS_PORT') || '6379', 10),
+          password: configService.get<string>('REDIS_PASSWORD') || undefined,
+        },
+      }),
     }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -61,6 +85,15 @@ import { PricingModule } from './modules/pricing/pricing.module';
         entities: [__dirname + '/../**/*.entity{.ts,.js}'],
         synchronize: true, // Chỉ dùng trong development, tự động tạo table.
       }),
+      dataSourceFactory: async (options?: DataSourceOptions) => {
+        if (!options) {
+          throw new Error('TypeORM options were not provided');
+        }
+
+        const dataSource = new DataSource(options);
+        enablePostgresVectorType(dataSource);
+        return dataSource.initialize();
+      },
     }),
     ScheduleModule.forRoot(),
     AuthModule,
@@ -99,6 +132,11 @@ import { PricingModule } from './modules/pricing/pricing.module';
     ConversationParticipantsModule,
     OrderItemsModule,
     PricingModule,
+    SemanticSearchModule,
+    ReviewAnalysisModule,
+    TrendForecastingModule,
+    AdminCopilotModule,
+    AiCustomerModule,
   ],
   controllers: [AppController],
   providers: [AppService],

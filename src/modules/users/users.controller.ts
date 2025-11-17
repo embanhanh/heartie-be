@@ -8,6 +8,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
@@ -24,6 +25,8 @@ import { UserSafe } from './types/user-safe.type';
 import { AuthGuard } from '@nestjs/passport';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from './entities/user.entity';
+import { FilterUserDto } from './dto/filter-users.dto';
+import { PaginatedResult } from 'src/common/dto/pagination.dto';
 
 @ApiTags('Users')
 @Controller('users')
@@ -44,6 +47,17 @@ export class UsersController {
   async create(@Body() createUserDto: CreateUserDto): Promise<UserResponseDto> {
     const user = await this.usersService.create(createUserDto);
     return this.mapToResponseDto(user);
+  }
+
+  @ApiOperation({ summary: 'Danh sách user với phân trang và bộ lọc' })
+  @ApiOkResponse({ type: () => UserResponseDto, isArray: false })
+  @Get()
+  async findAll(@Query() query: FilterUserDto): Promise<PaginatedResult<UserResponseDto>> {
+    const result = await this.usersService.findAll(query);
+    return {
+      data: result.data.map((user) => this.mapToResponseDto(user)),
+      meta: result.meta,
+    };
   }
 
   // Lấy user theo id

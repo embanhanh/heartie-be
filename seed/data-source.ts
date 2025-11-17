@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm';
 import { join } from 'path';
 import { Brand } from '../src/modules/brands/entities/brand.entity';
 import { Category } from '../src/modules/categories/entities/category.entity';
+import { enablePostgresVectorType } from '../src/database/postgres-vector.util';
 
 const parseNumber = (value: string | undefined, fallback: number): number => {
   if (!value) {
@@ -29,3 +30,5 @@ export const AppDataSource = new DataSource({
   synchronize: true,
   logging: false,
 });
+
+enablePostgresVectorType(AppDataSource);

@@ -13,7 +13,6 @@ import { Branch } from '../../branches/entities/branch.entity';
 import { ConversationParticipant } from '../../conversation_participants/entities/conversation_participant.entity';
 import { UserCustomerGroup } from '../../user_customer_groups/entities/user-customer-group.entity';
 
-
 export enum UserRole {
   CUSTOMER = 'CUSTOMER',
   SHOP_OWNER = 'SHOP_OWNER',

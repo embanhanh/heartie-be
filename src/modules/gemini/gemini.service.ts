@@ -8,8 +8,13 @@ import {
   Tool,
   FunctionCall,
   FunctionResponsePart,
+  Schema,
   SchemaType,
 } from '@google/generative-ai';
+import {
+  AnalyzeProductReviewParams,
+  AnalyzeProductReviewResult,
+} from './interfaces/review-analysis.interface';
 
 const GEMINI_TOOLS: Tool[] = [
   {
@@ -263,6 +268,10 @@ export interface GeminiChatOptions {
   temperature?: number;
   maxOutputTokens?: number;
   systemPrompt?: string;
+  tools?: Tool[];
+  responseMimeType?: string;
+  retryAttempts?: number;
+  responseSchema?: Schema;
 }
 
 @Injectable()
@@ -270,6 +279,7 @@ export class GeminiService {
   private readonly logger = new Logger(GeminiService.name);
   private geminiClient?: GoogleGenerativeAI;
   private readonly geminiModels = new Map<string, GenerativeModel>();
+  private readonly geminiEmbeddingModels = new Map<string, GenerativeModel>();
   private readonly DEFAULT_SYSTEM_PROMPT = `Bạn là Fia — trợ lý mua sắm thời trang chính thức của thương hiệu Fashia, hoạt động trên website thương mại điện tử của Fashia.
 
 # 1) Sứ mệnh & mục tiêu
@@ -370,13 +380,10 @@ export class GeminiService {
     history: GeminiChatMessage[],
     options?: GeminiChatOptions,
   ): Promise<{ text: string | null; functionCall: FunctionCall | null }> {
-    if (!history.length) {
-      throw new BadRequestException('Chat history must contain at least one message');
-    }
-
     const modelName =
       options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-2.5-flash';
-    const model = this.getModel(modelName);
+    const requestedTools = options?.tools;
+    const model = this.getModel(modelName, requestedTools);
 
     const { generationConfig, systemInstruction } = this.getGenerationOptions(options);
 
@@ -426,6 +433,135 @@ export class GeminiService {
     }
   }
 
+  async generateStructuredContent(prompt: string, options?: GeminiChatOptions): Promise<string> {
+    const trimmedPrompt = prompt?.trim();
+    if (!trimmedPrompt) {
+      throw new BadRequestException('Prompt is required for Gemini generation');
+    }
+
+    const modelName =
+      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-2.5-flash';
+    const requestedTools = options?.tools ?? [];
+    const model = this.getModel(modelName, requestedTools);
+
+    const { generationConfig, systemInstruction } = this.getGenerationOptions(options);
+
+    const contents: Content[] = [
+      {
+        role: 'user',
+        parts: [{ text: trimmedPrompt }],
+      },
+    ];
+
+    const maxAttempts = Math.max(1, options?.retryAttempts ?? 2);
+    let attempt = 0;
+    let lastFailure: { clientMessage: string; logMessage: string; stack?: string } | null = null;
+
+    while (attempt < maxAttempts) {
+      attempt += 1;
+
+      this.logger.debug(`Context: Calling Gemini generateStructuredContent, attempt=${attempt}`);
+
+      try {
+        const result = await model.generateContent({
+          contents,
+          generationConfig,
+          systemInstruction,
+        });
+
+        const text = this.extractStructuredText(result.response);
+        if (text) {
+          if (attempt > 1) {
+            this.logger.warn(`Gemini structured content succeeded after ${attempt} attempt(s).`);
+          }
+          return text;
+        }
+        // No structured text extracted — log detailed candidate info for debugging
+        try {
+          const dbg = result.response as unknown as { candidates?: any[]; text?: () => string };
+          const candidates = Array.isArray(dbg?.candidates) ? dbg.candidates : [];
+          this.logger.debug(`Gemini returned no structured text. candidates=${candidates.length}`);
+          for (let i = 0; i < Math.min(6, candidates.length); i++) {
+            const c = candidates[i] as unknown;
+            let parts = '';
+            if (c && typeof c === 'object') {
+              const obj = c as Record<string, unknown>;
+              const contentVal = obj['content'];
+              const contentParts =
+                contentVal &&
+                typeof contentVal === 'object' &&
+                Array.isArray((contentVal as Record<string, unknown>)['parts'])
+                  ? ((contentVal as Record<string, unknown>)['parts'] as unknown[])
+                  : [];
+              const fallbackParts = Array.isArray(obj['parts']) ? (obj['parts'] as unknown[]) : [];
+
+              const chosen = contentParts.length ? contentParts : fallbackParts;
+              const mapped = chosen
+                .map((p) => {
+                  if (p && typeof p === 'object') {
+                    const t = (p as Record<string, unknown>)['text'];
+                    return typeof t === 'string' ? t : '';
+                  }
+                  return '';
+                })
+                .filter((s) => s.length > 0)
+                .slice(0, 120)
+                .join(' | ');
+              parts = mapped;
+            }
+            this.logger.debug(`candidate[${i}]=${parts}`);
+          }
+        } catch (err) {
+          this.logger.debug(
+            'Failed to dump Gemini candidates for debugging',
+            err instanceof Error ? err.stack : String(err),
+          );
+        }
+
+        this.logger.warn(
+          `Gemini returned empty structured content (attempt ${attempt}/${maxAttempts}).`,
+        );
+        lastFailure = {
+          clientMessage: 'Gemini không phản hồi nội dung phù hợp. Vui lòng thử lại.',
+          logMessage: 'Gemini returned empty structured content response',
+        };
+      } catch (error) {
+        const normalized = this.normalizeGeminiError(error);
+        lastFailure = normalized;
+
+        if (!this.isRetryableGeminiError(error) || attempt >= maxAttempts) {
+          this.logger.error('Gemini generateStructuredContent error:', normalized.logMessage);
+          if (normalized.stack) {
+            this.logger.error('Error stack:', normalized.stack);
+          }
+          this.logger.error(
+            'Full error details:',
+            JSON.stringify(error, Object.getOwnPropertyNames(error), 2),
+          );
+          throw new BadRequestException(normalized.clientMessage);
+        }
+
+        this.logger.warn(
+          `Gemini structured content attempt ${attempt} failed (${normalized.logMessage}); retrying...`,
+        );
+      }
+
+      if (attempt < maxAttempts) {
+        await this.delay(this.getRetryDelay(attempt));
+      }
+    }
+
+    const failureMessage =
+      lastFailure?.clientMessage ?? 'Gemini không phản hồi nội dung phù hợp. Vui lòng thử lại.';
+    if (lastFailure) {
+      this.logger.error('Gemini generateStructuredContent error:', lastFailure.logMessage);
+      if (lastFailure.stack) {
+        this.logger.error('Error stack:', lastFailure.stack);
+      }
+    }
+    throw new BadRequestException(failureMessage);
+  }
+
   async generateContentWithFunctionResponse(
     history: GeminiChatMessage[],
     functionResponse: FunctionResponsePart,
@@ -433,7 +569,8 @@ export class GeminiService {
   ): Promise<{ text: string }> {
     const modelName =
       options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-2.5-flash';
-    const model = this.getModel(modelName);
+    const requestedTools = options?.tools;
+    const model = this.getModel(modelName, requestedTools);
     const { generationConfig, systemInstruction } = this.getGenerationOptions(options);
 
     // Chuyển đổi history
@@ -476,24 +613,304 @@ export class GeminiService {
     }
   }
 
-  private getModel(modelName: string): GenerativeModel {
+  async analyzeProductReview(
+    params: AnalyzeProductReviewParams,
+  ): Promise<AnalyzeProductReviewResult> {
+    const modelName = this.configService.get<string>('GEMINI_REVIEW_MODEL') ?? 'gemini-1.5-pro';
+    const model = this.getModel(modelName);
+
+    const systemPrompt =
+      'Bạn là chuyên gia phân tích đánh giá (review) cho thương hiệu thời trang Fashia. ' +
+      'Đọc kỹ nội dung review của khách hàng và trả về JSON với các trường bắt buộc: ' +
+      '{ sentiment: one_of("positive","negative","neutral"), key_topics: string[], summary: string }.' +
+      'Các key_topics phải là danh sách ngắn gọn (2-4 từ) mô tả chủ đề chính khách nhắc tới. ' +
+      'Summary phải là tiếng Việt, tối đa 2 câu, phản ánh đúng nội dung review.';
+
+    const requestPayload = {
+      review_text: params.comment,
+      rating: params.ratingValue,
+      product_id: params.productId,
+      user_id: params.userId,
+    } satisfies Record<string, unknown>;
+
+    try {
+      const response = await model.generateContent({
+        systemInstruction: {
+          role: 'system',
+          parts: [{ text: systemPrompt }],
+        },
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: JSON.stringify(requestPayload) }],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          topP: 0.8,
+          maxOutputTokens: 512,
+          responseMimeType: 'application/json',
+        },
+      });
+
+      const text = response.response.text();
+      if (!text) {
+        throw new BadRequestException('Gemini did not return review analysis content');
+      }
+
+      const parsed = this.safeParseJson(text);
+
+      const sentiment = this.normalizeSentiment(parsed.sentiment);
+      const keyTopics = this.normalizeKeyTopics(parsed.key_topics ?? parsed.keyTopics);
+      const summary = this.normalizeSummary(parsed.summary);
+
+      return {
+        sentiment,
+        keyTopics,
+        summary,
+        raw: parsed,
+      };
+    } catch (error) {
+      const normalized = this.normalizeGeminiError(error);
+      this.logger.error('Gemini analyzeProductReview error:', normalized.logMessage);
+      if (normalized.stack) {
+        this.logger.error(normalized.stack);
+      }
+      throw new BadRequestException(normalized.clientMessage);
+    }
+  }
+
+  private getModel(modelName: string, tools?: Tool[]): GenerativeModel {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY');
 
     if (!apiKey) {
       throw new BadRequestException('Gemini API key (GEMINI_API_KEY) is not configured');
     }
 
-    if (this.geminiModels.has(modelName)) {
-      return this.geminiModels.get(modelName) as GenerativeModel;
+    const effectiveTools = tools ?? GEMINI_TOOLS;
+    const cacheKey = this.buildModelCacheKey(modelName, effectiveTools);
+
+    if (this.geminiModels.has(cacheKey)) {
+      return this.geminiModels.get(cacheKey) as GenerativeModel;
     }
 
     if (!this.geminiClient) {
       this.geminiClient = new GoogleGenerativeAI(apiKey);
     }
 
-    const model = this.geminiClient.getGenerativeModel({ model: modelName, tools: GEMINI_TOOLS });
-    this.geminiModels.set(modelName, model);
+    const model = this.geminiClient.getGenerativeModel({ model: modelName, tools: effectiveTools });
+    this.geminiModels.set(cacheKey, model);
     return model;
+  }
+
+  private buildModelCacheKey(modelName: string, tools: Tool[]): string {
+    if (!tools.length) {
+      return `${modelName}::no-tools`;
+    }
+
+    const toolKey = tools
+      .map((tool) => {
+        if ('functionDeclarations' in tool && Array.isArray(tool.functionDeclarations)) {
+          return tool.functionDeclarations.map((fn) => fn.name ?? '__anon__').join(',');
+        }
+        return 'custom_tool';
+      })
+      .join('|');
+    return `${modelName}::${toolKey}`;
+  }
+
+  private safeParseJson(payload: string): Record<string, unknown> {
+    try {
+      const parsed: unknown = JSON.parse(payload);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+      throw new Error('Parsed JSON is not an object');
+    } catch (error) {
+      this.logger.error(
+        'Failed to parse Gemini JSON response',
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw new BadRequestException('Gemini trả về dữ liệu không hợp lệ');
+    }
+  }
+
+  private normalizeSentiment(value: unknown): AnalyzeProductReviewResult['sentiment'] {
+    const normalized = String(value).toLowerCase();
+    if (normalized === 'positive' || normalized === 'negative' || normalized === 'neutral') {
+      return normalized;
+    }
+    return 'neutral';
+  }
+
+  private normalizeKeyTopics(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0)
+      .slice(0, 8);
+  }
+
+  private normalizeSummary(value: unknown): string {
+    if (typeof value !== 'string') {
+      return 'Không có tóm tắt khả dụng.';
+    }
+
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : 'Không có tóm tắt khả dụng.';
+  }
+
+  async embedText(text: string, modelName?: string): Promise<number[]> {
+    const trimmed = text?.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    const embeddingModelName =
+      modelName ?? this.configService.get<string>('GEMINI_EMBEDDING_MODEL') ?? 'text-embedding-004';
+
+    const model = this.getEmbeddingModel(embeddingModelName);
+
+    try {
+      const response = await model.embedContent({
+        content: { role: 'user', parts: [{ text: trimmed }] },
+      });
+
+      const values = response.embedding?.values;
+      if (!values || !values.length) {
+        this.logger.warn(`Gemini did not return embedding values for model ${embeddingModelName}`);
+        return [];
+      }
+
+      return values;
+    } catch (error) {
+      const normalized = this.normalizeGeminiError(error);
+      this.logger.error('Gemini embedText error:', normalized.logMessage);
+      if (normalized.stack) {
+        this.logger.error(normalized.stack);
+      }
+      throw new BadRequestException(normalized.clientMessage);
+    }
+  }
+
+  private getEmbeddingModel(modelName: string): GenerativeModel {
+    const apiKey = this.configService.get<string>('GEMINI_API_KEY');
+
+    if (!apiKey) {
+      throw new BadRequestException('Gemini API key (GEMINI_API_KEY) is not configured');
+    }
+
+    if (this.geminiEmbeddingModels.has(modelName)) {
+      return this.geminiEmbeddingModels.get(modelName) as GenerativeModel;
+    }
+
+    if (!this.geminiClient) {
+      this.geminiClient = new GoogleGenerativeAI(apiKey);
+    }
+
+    const model = this.geminiClient.getGenerativeModel({ model: modelName });
+    this.geminiEmbeddingModels.set(modelName, model);
+    return model;
+  }
+
+  private extractStructuredText(response: unknown): string | null {
+    if (!response || typeof response !== 'object') {
+      return null;
+    }
+
+    const typedResponse = response as {
+      text?: () => string | undefined | null;
+      candidates?: Array<{
+        content?: {
+          parts?: Array<{ text?: string | null }>;
+        };
+        parts?: Array<{ text?: string | null }>;
+      }>;
+    };
+
+    try {
+      const direct = typeof typedResponse.text === 'function' ? typedResponse.text()?.trim() : null;
+      if (direct) {
+        return direct;
+      }
+    } catch (error) {
+      this.logger.debug(
+        `Unable to read Gemini response text directly: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    const candidates = Array.isArray(typedResponse.candidates) ? typedResponse.candidates : [];
+
+    for (const candidate of candidates) {
+      const contentParts = Array.isArray(candidate?.content?.parts)
+        ? (candidate.content?.parts as Array<{ text?: string | null }>)
+        : [];
+      const fallbackParts = Array.isArray(candidate?.parts)
+        ? (candidate.parts as Array<{ text?: string | null }>)
+        : [];
+
+      const parts = contentParts.length ? contentParts : fallbackParts;
+
+      const collected = parts
+        .map((part) => (typeof part?.text === 'string' ? part.text.trim() : ''))
+        .filter((segment) => segment.length > 0);
+
+      if (collected.length) {
+        return collected.join('\n');
+      }
+    }
+
+    return null;
+  }
+
+  private isRetryableGeminiError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+
+    const status = (error as { status?: number }).status;
+    if (status && [429, 500, 502, 503, 504].includes(status)) {
+      return true;
+    }
+
+    const code =
+      (error as { code?: string }).code ??
+      (error as { statusText?: string }).statusText ??
+      (error as { error?: { code?: string } }).error?.code;
+
+    if (code && ['RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'ABORTED'].includes(code)) {
+      return true;
+    }
+
+    const message =
+      (error as { message?: string }).message ??
+      (error as { error?: { message?: string } }).error?.message ??
+      '';
+
+    if (typeof message === 'string') {
+      return /temporarily unavailable|overloaded|timeout/i.test(message);
+    }
+
+    return false;
+  }
+
+  private getRetryDelay(attempt: number): number {
+    const base = 250;
+    const maxDelay = 2000;
+    return Math.min(maxDelay, base * Math.max(1, attempt));
+  }
+
+  private async delay(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private getGenerationOptions(options?: GeminiChatOptions): {
@@ -504,6 +921,14 @@ export class GeminiService {
       temperature: options?.temperature ?? 0.6,
       maxOutputTokens: options?.maxOutputTokens ?? 1024,
     };
+
+    if (options?.responseMimeType?.trim()) {
+      generationConfig.responseMimeType = options.responseMimeType;
+    }
+
+    if (options?.responseSchema) {
+      generationConfig.responseSchema = options.responseSchema;
+    }
 
     const systemPrompt =
       options?.systemPrompt ??

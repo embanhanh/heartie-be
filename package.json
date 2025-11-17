@@ -21,7 +21,11 @@
     "prepare": "husky",
     "gen:module": "node scripts/generate-module.js",
     "dev": "nest start --watch",
-    "seed": "ts-node -r tsconfig-paths/register seed/seed-data.ts"
+    "seed": "ts-node -r tsconfig-paths/register seed/seed-data.ts",
+    "search:reindex": "ts-node -r tsconfig-paths/register scripts/reindex-embeddings.ts",
+    "typeorm": "node --require ts-node/register --require tsconfig-paths/register ./node_modules/typeorm/cli.js -d typeorm.config.ts",
+    "migration:run": "yarn typeorm migration:run",
+    "migration:revert": "yarn typeorm migration:revert"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
@@ -30,6 +34,7 @@
     "@nestjs/core": "^11.0.1",
     "@nestjs/jwt": "^11.0.0",
     "@nestjs/passport": "^11.0.5",
+    "@nestjs/bullmq": "^11.0.0",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/platform-socket.io": "^11.1.7",
     "@nestjs/schedule": "^5.0.0",
@@ -37,11 +42,13 @@
     "@nestjs/typeorm": "^11.0.0",
     "@nestjs/websockets": "^11.1.7",
     "axios": "^1.7.9",
+    "bullmq": "^5.12.0",
     "bcrypt": "^6.0.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
     "form-data": "^4.0.1",
     "passport": "^0.7.0",
+    "ioredis": "^5.4.2",
     "passport-jwt": "^4.0.1",
     "pg": "^8.16.3",
     "reflect-metadata": "^0.2.2",
@@ -92,6 +99,9 @@
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "moduleNameMapper": {
+      "^src/(.*)$": "<rootDir>/$1"
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"

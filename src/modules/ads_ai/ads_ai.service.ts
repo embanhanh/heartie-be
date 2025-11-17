@@ -46,7 +46,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
 
   async generateCreative(dto: GenerateAdsAiDto): Promise<GeneratedAdContent> {
     const { prompt, product, productName, hasExplicitProductName } = await this.buildPrompt(dto);
-    const modelName = this.configService.get<string>('GEMINI_AD_MODEL') ?? 'gemini-1.5-flash';
+    const modelName = this.configService.get<string>('GEMINI_AD_MODEL') ?? 'gemini-2.5-flash';
     const model = this.getGeminiModel(modelName);
 
     try {

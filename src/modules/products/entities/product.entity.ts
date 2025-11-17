@@ -1,5 +1,6 @@
 import {
   Column,
+  ColumnType,
   CreateDateColumn,
   Entity,
   JoinColumn,
@@ -13,6 +14,7 @@ import { Category } from '../../categories/entities/category.entity';
 import { ProductVariant } from '../../product_variants/entities/product_variant.entity';
 import { ProductAttribute } from '../../product_attributes/entities/product-attribute.entity';
 import { Rating } from 'src/modules/ratings/entities/rating.entity';
+import { VectorTransformer } from 'src/common/transformers/vector.transformer';
 
 export enum ProductStatus {
   ACTIVE = 'active',
@@ -70,6 +72,13 @@ export class Product {
 
   @OneToMany(() => Rating, (rating) => rating.product)
   ratings: Rating[];
+
+  @Column({
+    type: 'vector' as unknown as ColumnType,
+    nullable: true,
+    transformer: VectorTransformer,
+  })
+  embedding?: number[] | null;
 
   @Column({ type: 'float', default: 0 })
   rating: number;

@@ -58,7 +58,8 @@ export class UserResponseDto {
     dto.isActive = user.isActive;
     dto.createdAt = user.createdAt;
     dto.updatedAt = user.updatedAt;
-    dto.participants = user.participants.map((participant) => {
+    const participants = Array.isArray(user.participants) ? user.participants : [];
+    dto.participants = participants.map((participant) => {
       const info = new ConversationParticipantInfo();
       info.conversationId = participant.conversationId;
       info.userId = participant.userId;
