@@ -1,31 +1,37 @@
+import { BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AiCustomerService } from './ai-customer.service';
-import { GeminiService } from '../gemini/gemini.service';
 import { ProductsService } from '../products/products.service';
 
 describe('AiCustomerService', () => {
   let service: AiCustomerService;
-  let geminiService: jest.Mocked<
-    Pick<GeminiService, 'generateContent' | 'generateStructuredContent'>
-  >;
   let productsService: { findOne: jest.Mock; buildStylistCatalogue: jest.Mock };
+  let configService: { get: jest.Mock };
 
   beforeEach(async () => {
-    geminiService = {
-      generateContent: jest.fn().mockResolvedValue({ text: null, functionCall: null }),
-      generateStructuredContent: jest.fn().mockResolvedValue('{}'),
-    } as jest.Mocked<Pick<GeminiService, 'generateContent' | 'generateStructuredContent'>>;
-
     productsService = {
       findOne: jest.fn(),
       buildStylistCatalogue: jest.fn().mockResolvedValue([]),
     };
 
+    configService = {
+      get: jest.fn((key: string) => {
+        if (key === 'GEMINI_API_KEY') {
+          return 'test-key';
+        }
+        if (key === 'GEMINI_CHAT_MODEL') {
+          return 'test-model';
+        }
+        return undefined;
+      }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AiCustomerService,
-        { provide: GeminiService, useValue: geminiService },
         { provide: ProductsService, useValue: productsService },
+        { provide: ConfigService, useValue: configService },
       ],
     }).compile();
 
@@ -124,7 +130,9 @@ describe('AiCustomerService', () => {
       ],
     });
 
-    geminiService.generateStructuredContent.mockResolvedValueOnce(geminiPayload);
+    const geminiSpy = jest
+      .spyOn<any, any>(service as any, 'generateGeminiContent')
+      .mockResolvedValueOnce(geminiPayload);
 
     const result = await service.generateProactiveStylistSuggestions({
       productId: 1,
@@ -151,16 +159,18 @@ describe('AiCustomerService', () => {
       limit: 40,
     });
 
-    expect(geminiService.generateStructuredContent).toHaveBeenCalledWith(
-      expect.any(String),
+    expect(geminiSpy).toHaveBeenCalledWith(
       expect.objectContaining({
+        modelName: 'test-model',
         responseMimeType: 'application/json',
         temperature: 0.35,
       }),
     );
+
+    geminiSpy.mockRestore();
   });
 
-  it('should fall back to canned stylist suggestions when Gemini payload is invalid', async () => {
+  it('should throw BadRequestException when Gemini payload is invalid', async () => {
     const productDetail = {
       id: 2,
       name: 'Đầm maxi đỏ',
@@ -181,17 +191,19 @@ describe('AiCustomerService', () => {
         score: 1,
       },
     ]);
-    geminiService.generateStructuredContent.mockResolvedValueOnce('không phải json');
+    const geminiSpy = jest
+      .spyOn<any, any>(service as any, 'generateGeminiContent')
+      .mockResolvedValueOnce('không phải json');
 
-    const result = await service.generateProactiveStylistSuggestions({
-      productId: 2,
-      locale: 'vi-VN',
-      signals: [],
-    });
+    await expect(
+      service.generateProactiveStylistSuggestions({
+        productId: 2,
+        locale: 'vi-VN',
+        signals: [],
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
 
-    expect(result.fallbackApplied).toBe(true);
-    expect(result.suggestions.length).toBeGreaterThan(0);
-    expect(result.headline).toContain('Đầm maxi đỏ');
+    geminiSpy.mockRestore();
   });
 
   it('should parse cart analysis insight from structured Gemini payload', async () => {
@@ -212,7 +224,9 @@ describe('AiCustomerService', () => {
       },
     });
 
-    geminiService.generateStructuredContent.mockResolvedValueOnce(geminiPayload);
+    const geminiSpy = jest
+      .spyOn<any, any>(service as any, 'generateGeminiContent')
+      .mockResolvedValueOnce(geminiPayload);
 
     const result = await service.analyzeCart({
       items: [
@@ -228,12 +242,14 @@ describe('AiCustomerService', () => {
       }),
     );
     expect(result.fallbackApplied).toBe(false);
-    expect(geminiService.generateStructuredContent).toHaveBeenCalledWith(
-      expect.any(String),
+    expect(geminiSpy).toHaveBeenCalledWith(
       expect.objectContaining({
+        modelName: 'test-model',
         responseMimeType: 'application/json',
         temperature: 0.2,
       }),
     );
+
+    geminiSpy.mockRestore();
   });
 });

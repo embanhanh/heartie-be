@@ -1,7 +1,30 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { GeminiService } from '../gemini/gemini.service';
+import {
+  BadRequestException,
+  HttpException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 
 import { ProductsService, StylistCandidateProduct } from '../products/products.service';
+import { CART_ASSISTANT_SYSTEM_PROMPT, PROACTIVE_STYLIST_SYSTEM_PROMPT } from './constants/prompts';
+import type {
+  AiCustomerManifestResponse,
+  GeminiStylistPlanOutfit,
+  GeminiStylistPlanPayload,
+  ProductDetailHydrated,
+  ProductSnapshot,
+  ProductVariantHydrated,
+  StylistCandidateSummary,
+  VariantSnapshot,
+} from './types/internal.types';
+import type { AiCustomerFeatureManifestItem } from './types/internal.types';
+export type {
+  AiCustomerFeatureManifestItem,
+  AiCustomerManifestResponse,
+} from './types/internal.types';
 import {
   ProactiveStylistRequestDto,
   ProactiveStylistResponse,
@@ -15,42 +38,47 @@ import {
   CartInsightCategory,
 } from './dto/cart-analysis.dto';
 
-export interface AiCustomerFeatureManifestItem {
-  key: string;
-  label: string;
-  description: string;
-  enabled: boolean;
-  actions: Array<{
-    key: string;
-    label: string;
-    description: string;
-  }>;
-}
-
-export interface AiCustomerManifestResponse {
-  features: AiCustomerFeatureManifestItem[];
-  updatedAt: string;
-}
-
-const PROACTIVE_STYLIST_SYSTEM_PROMPT = `Bạn là "Fia Stylist" — trợ lý phối đồ cho khách hàng Fashia. Luôn lịch sự, tinh tế và thực tế.
-- Chỉ gợi ý những món đồ phổ biến, dễ tìm (quần jean, blazer, giày sneaker, v.v.).
-- Mỗi outfit nên có tối thiểu 3 món: phần dưới, phần ngoài (nếu hợp), phụ kiện/giày.
-- Ưu tiên sử dụng tiếng Việt, câu ngắn, giàu tính định hướng.
-- Tránh lặp lại cùng một ý ở nhiều outfit.`;
-
-const CART_ASSISTANT_SYSTEM_PROMPT = `Bạn là "Fia Cart" — trợ lý giỏ hàng của khách Fashia.
-- Nhận diện trùng lặp, thiếu phối, cơ hội upsell, hoặc ưu đãi.
-- Chỉ cung cấp đúng 1 insight quan trọng nhất.
-- Nếu không có insight hữu ích, trả về null.
-- Ngắn gọn, thân thiện và hành động được ngay.`;
+const manifestFeatures: AiCustomerFeatureManifestItem[] = [
+  {
+    key: 'proactive-stylist',
+    label: 'Proactive Stylist',
+    description:
+      'Observes product intent signals (scroll idle, focus) and offers curated outfit guidance.',
+    enabled: true,
+    actions: [
+      {
+        key: 'magic-mirror-suggestions',
+        label: 'Magic Mirror Suggestions',
+        description: 'Generates three mix-and-match outfit ideas when shoppers pause on a product.',
+      },
+    ],
+  },
+  {
+    key: 'contextual-cart-assistant',
+    label: 'Contextual Cart Assistant',
+    description:
+      'Analyzes cart composition to highlight duplicates, upsell ideas, or decision helpers.',
+    enabled: true,
+    actions: [
+      {
+        key: 'cart-smart-hints',
+        label: 'Cart Smart Hints',
+        description:
+          'Surfaces a single actionable insight when shoppers review their cart contents.',
+      },
+    ],
+  },
+];
 
 @Injectable()
 export class AiCustomerService {
   private readonly logger = new Logger(AiCustomerService.name);
+  private geminiClient?: GoogleGenerativeAI;
+  private readonly geminiModels = new Map<string, GenerativeModel>();
 
   constructor(
-    private readonly geminiService: GeminiService,
     private readonly productsService: ProductsService,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
@@ -59,42 +87,9 @@ export class AiCustomerService {
    * Later iterations can hydrate this manifest dynamically from configuration or persistence.
    */
   getManifest(): AiCustomerManifestResponse {
-    const now = new Date().toISOString();
-
     return {
-      features: [
-        {
-          key: 'proactive-stylist',
-          label: 'Proactive Stylist',
-          description:
-            'Observes product intent signals (scroll idle, focus) and offers curated outfit guidance.',
-          enabled: true,
-          actions: [
-            {
-              key: 'magic-mirror-suggestions',
-              label: 'Magic Mirror Suggestions',
-              description:
-                'Generates three mix-and-match outfit ideas when shoppers pause on a product.',
-            },
-          ],
-        },
-        {
-          key: 'contextual-cart-assistant',
-          label: 'Contextual Cart Assistant',
-          description:
-            'Analyzes cart composition to highlight duplicates, upsell ideas, or decision helpers.',
-          enabled: true,
-          actions: [
-            {
-              key: 'cart-smart-hints',
-              label: 'Cart Smart Hints',
-              description:
-                'Surfaces a single actionable insight when shoppers review their cart contents.',
-            },
-          ],
-        },
-      ],
-      updatedAt: now,
+      features: manifestFeatures,
+      updatedAt: new Date().toISOString(),
     };
   }
 
@@ -152,11 +147,12 @@ export class AiCustomerService {
     );
 
     let parsed: { headline?: string; suggestions: ProactiveStylistSuggestion[] } | null = null;
-    let structuredError: string | null = null;
 
     try {
-      const text = await this.geminiService.generateStructuredContent(prompt, {
-        systemPrompt: PROACTIVE_STYLIST_SYSTEM_PROMPT,
+      const text = await this.generateGeminiContent({
+        modelName: this.resolveModelName('GEMINI_STYLIST_MODEL'),
+        prompt,
+        systemInstruction: PROACTIVE_STYLIST_SYSTEM_PROMPT,
         temperature: 0.35,
         maxOutputTokens: 1024,
         responseMimeType: 'application/json',
@@ -164,34 +160,28 @@ export class AiCustomerService {
       });
 
       parsed = this.parseProactiveStylistResponse(text, candidateMap, productSnapshot.id);
-      if (!parsed) {
-        this.logger.warn('Gemini returned unparsable stylist response, using fallback suggestions');
-      } else {
-        this.logger.debug(
-          `Stylist structured response parsed with ${parsed.suggestions.length} suggestion(s)`,
-        );
-      }
     } catch (error) {
-      structuredError = error instanceof Error ? error.message : String(error);
-      this.logger.warn(
+      const structuredError = error instanceof Error ? error.message : String(error);
+      this.logger.error(
         `Gemini structured stylist generation failed for product ${productSnapshot.id}: ${structuredError}`,
       );
+
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
+      throw new BadRequestException('Không tạo được gợi ý phối đồ. Vui lòng thử lại sau.');
     }
 
-    const suggestions = parsed?.suggestions?.length
-      ? parsed.suggestions
-      : this.buildFallbackStylistSuggestions(productSnapshot);
-
     if (!parsed?.suggestions?.length) {
-      this.logger.debug(
-        `Stylist fallback engaged for product ${productSnapshot.id} (reason=${structuredError ?? 'empty suggestions'})`,
+      this.logger.error(
+        `Gemini returned empty stylist suggestions for product ${productSnapshot.id}.`,
       );
+      throw new BadRequestException('Không tạo được gợi ý phối đồ. Vui lòng thử lại sau.');
     }
 
     this.logger.debug(
-      `Stylist response composed with ${suggestions.length} suggestion(s); fallbackApplied=${Boolean(
-        structuredError || !parsed?.suggestions?.length,
-      )}`,
+      `Stylist structured response parsed with ${parsed.suggestions.length} suggestion(s)`,
     );
 
     const responseSnapshot = {
@@ -204,9 +194,9 @@ export class AiCustomerService {
     };
 
     return {
-      headline: parsed?.headline ?? `Fia gợi ý phối đồ cùng ${productSnapshot.name}`,
-      suggestions,
-      fallbackApplied: Boolean(structuredError || !parsed?.suggestions?.length),
+      headline: parsed.headline ?? `Fia gợi ý phối đồ cùng ${productSnapshot.name}`,
+      suggestions: parsed.suggestions,
+      fallbackApplied: false,
       productSnapshot: responseSnapshot,
     };
   }
@@ -240,8 +230,10 @@ export class AiCustomerService {
 
     const prompt = this.renderCartAnalysisPrompt(payload, productCatalogue);
 
-    const text = await this.geminiService.generateStructuredContent(prompt, {
-      systemPrompt: CART_ASSISTANT_SYSTEM_PROMPT,
+    const text = await this.generateGeminiContent({
+      modelName: this.resolveModelName('GEMINI_CART_MODEL'),
+      prompt,
+      systemInstruction: CART_ASSISTANT_SYSTEM_PROMPT,
       temperature: 0.2,
       maxOutputTokens: 768,
       responseMimeType: 'application/json',
@@ -278,12 +270,15 @@ export class AiCustomerService {
     const prompt = `Tóm tắt ngắn gọn (1-2 câu) về sản phẩm sau để giúp khách hàng quyết định mua: ${product.name}\nThông tin: brand=${brandName}, category=${categoryName}, price=${snapshot.priceRange ?? 'n/a'}\nChỉ trả về plain text summary.`;
 
     try {
-      const text = await this.geminiService.generateStructuredContent(prompt, {
+      const text = await this.generateGeminiContent({
+        modelName: this.resolveModelName('GEMINI_PRODUCT_SUMMARY_MODEL'),
+        prompt,
         temperature: 0.2,
-        maxOutputTokens: 200,
+        // maxOutputTokens: 200,
+        retryAttempts: 2,
       });
 
-      const summary = typeof text === 'string' ? text.trim() : null;
+      const summary = text.trim();
       return { summary };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -324,17 +319,309 @@ export class AiCustomerService {
 
       const prompt = `Tóm tắt ngắn gọn các review sau: ${sample}\nHãy nhấn mạnh điểm mạnh/điểm yếu lặp lại và tóm tắt cảm nhận chung (2-3 câu). Chỉ trả về plain text.`;
 
-      const text = await this.geminiService.generateStructuredContent(prompt, {
+      const text = await this.generateGeminiContent({
+        modelName: this.resolveModelName('GEMINI_REVIEWS_MODEL'),
+        prompt,
         temperature: 0.25,
         maxOutputTokens: 300,
+        retryAttempts: 2,
       });
 
-      return { summary: typeof text === 'string' ? text.trim() : null };
+      return { summary: text.trim() };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`generateReviewsSummary failed for ${payload.productId}: ${msg}`);
       return { summary: null };
     }
+  }
+
+  private async generateGeminiContent(options: {
+    modelName: string;
+    prompt: string;
+    systemInstruction?: string;
+    temperature?: number;
+    maxOutputTokens?: number;
+    responseMimeType?: string;
+    retryAttempts?: number;
+  }): Promise<string> {
+    const trimmedPrompt = options.prompt?.trim();
+    if (!trimmedPrompt) {
+      throw new BadRequestException('Prompt is required for Gemini generation.');
+    }
+
+    const model = this.getGeminiModel(options.modelName);
+    const generationConfig: Record<string, unknown> = {
+      temperature: options.temperature ?? 0.6,
+      // maxOutputTokens: options.maxOutputTokens ?? 1024,
+    };
+
+    if (options.responseMimeType?.trim()) {
+      generationConfig.responseMimeType = options.responseMimeType;
+    }
+
+    const contents = [
+      {
+        role: 'user',
+        parts: [{ text: trimmedPrompt }],
+      },
+    ];
+
+    const systemInstruction =
+      typeof options.systemInstruction === 'string' ? options.systemInstruction.trim() : undefined;
+
+    const maxAttempts = Math.max(1, options.retryAttempts ?? 2);
+    let attempt = 0;
+    let lastFailure: { clientMessage: string; logMessage: string; stack?: string } | null = null;
+
+    while (attempt < maxAttempts) {
+      attempt += 1;
+
+      try {
+        console.log(
+          `Generating Gemini content, payload: ${JSON.stringify({ contents, generationConfig, systemInstruction })}`,
+        );
+
+        const result = await model.generateContent({
+          contents,
+          generationConfig,
+          systemInstruction:
+            systemInstruction && systemInstruction.length ? systemInstruction : undefined,
+        });
+
+        console.log(`Gemini content generated successfully: ${JSON.stringify(result)}`);
+
+        const text = this.extractResponseText(result?.response);
+        if (text?.trim()) {
+          if (attempt > 1) {
+            this.logger.warn(`Gemini content succeeded after ${attempt} attempt(s).`);
+          }
+          return text.trim();
+        }
+
+        this.logger.warn(`Gemini returned empty content (attempt ${attempt}/${maxAttempts}).`);
+        lastFailure = {
+          clientMessage: 'Gemini không phản hồi nội dung phù hợp. Vui lòng thử lại.',
+          logMessage: 'Gemini returned empty content body',
+        };
+      } catch (error) {
+        const normalized = this.normalizeGeminiError(error);
+        lastFailure = normalized;
+
+        if (!this.isRetryableGeminiError(error) || attempt >= maxAttempts) {
+          this.logger.error(`Gemini generateContent error: ${normalized.logMessage}`);
+          if (normalized.stack) {
+            this.logger.error(normalized.stack);
+          }
+          throw new BadRequestException(normalized.clientMessage);
+        }
+
+        this.logger.warn(
+          `Gemini generateContent attempt ${attempt} failed (${normalized.logMessage}); retrying...`,
+        );
+      }
+
+      if (attempt < maxAttempts) {
+        await this.delay(this.getRetryDelay(attempt));
+      }
+    }
+
+    const failureMessage =
+      lastFailure?.clientMessage ?? 'Gemini không phản hồi nội dung phù hợp. Vui lòng thử lại.';
+    if (lastFailure) {
+      this.logger.error(`Gemini generateContent error: ${lastFailure.logMessage}`);
+      if (lastFailure.stack) {
+        this.logger.error(lastFailure.stack);
+      }
+    }
+
+    throw new BadRequestException(failureMessage);
+  }
+
+  private resolveModelName(envKey: string): string {
+    return (
+      this.configService.get<string>(envKey) ??
+      this.configService.get<string>('GEMINI_CHAT_MODEL') ??
+      'gemini-2.5-flash'
+    );
+  }
+
+  private getGeminiModel(modelName: string): GenerativeModel {
+    const apiKey = this.configService.get<string>('GEMINI_API_KEY');
+
+    if (!apiKey) {
+      throw new BadRequestException('Chưa cấu hình GEMINI_API_KEY');
+    }
+
+    if (!this.geminiClient) {
+      this.geminiClient = new GoogleGenerativeAI(apiKey);
+    }
+
+    if (!this.geminiModels.has(modelName)) {
+      this.geminiModels.set(modelName, this.geminiClient.getGenerativeModel({ model: modelName }));
+    }
+
+    return this.geminiModels.get(modelName)!;
+  }
+
+  private extractResponseText(response: unknown): string | null {
+    if (!response || typeof response !== 'object') {
+      return null;
+    }
+
+    const typedResponse = response as {
+      text?: () => string | undefined | null;
+      candidates?: Array<{
+        content?: {
+          parts?: Array<{ text?: string | null }>;
+        };
+        parts?: Array<{ text?: string | null }>;
+      }>;
+    };
+
+    try {
+      const direct = typeof typedResponse.text === 'function' ? typedResponse.text()?.trim() : null;
+      if (direct) {
+        return direct;
+      }
+    } catch (error) {
+      this.logger.debug(
+        `Unable to read Gemini response text directly: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    const candidates = Array.isArray(typedResponse.candidates) ? typedResponse.candidates : [];
+
+    for (const candidate of candidates) {
+      const contentParts = Array.isArray(candidate?.content?.parts)
+        ? (candidate.content?.parts as Array<{ text?: string | null }>)
+        : [];
+      const fallbackParts = Array.isArray(candidate?.parts)
+        ? (candidate.parts as Array<{ text?: string | null }>)
+        : [];
+
+      const parts = contentParts.length ? contentParts : fallbackParts;
+
+      const collected = parts
+        .map((part) => (typeof part?.text === 'string' ? part.text.trim() : ''))
+        .filter((segment) => segment.length > 0);
+
+      if (collected.length) {
+        return collected.join('\n');
+      }
+    }
+
+    return null;
+  }
+
+  private normalizeGeminiError(error: unknown): {
+    clientMessage: string;
+    logMessage: string;
+    stack?: string;
+  } {
+    const defaultResponse = {
+      clientMessage: 'Gemini không phản hồi nội dung phù hợp. Vui lòng thử lại.',
+      logMessage: 'Lỗi khi gọi Gemini API',
+      stack: error instanceof Error ? error.stack : undefined,
+    };
+
+    if (!error || typeof error !== 'object') {
+      return defaultResponse;
+    }
+
+    if (error instanceof BadRequestException) {
+      return {
+        clientMessage: error.message,
+        logMessage: error.message,
+        stack: error.stack,
+      };
+    }
+
+    const status = (error as { status?: number }).status;
+    const code =
+      (error as { statusText?: string }).statusText ??
+      (error as { code?: string }).code ??
+      (error as { error?: { code?: string } }).error?.code;
+    const message =
+      (error as { message?: string }).message ??
+      (error as { error?: { message?: string } }).error?.message ??
+      'Không xác định';
+
+    if (status === 429 || code === 'RESOURCE_EXHAUSTED') {
+      return {
+        clientMessage: 'Gemini đang quá tải. Vui lòng thử lại sau ít phút.',
+        logMessage: `Gemini rate limited the request: ${message}`,
+        stack: error instanceof Error ? error.stack : undefined,
+      };
+    }
+
+    if (status === 401 || status === 403 || code === 'PERMISSION_DENIED') {
+      return {
+        clientMessage: 'Không có quyền gọi Gemini API. Vui lòng kiểm tra lại cấu hình.',
+        logMessage: `Gemini authentication failed: ${message}`,
+        stack: error instanceof Error ? error.stack : undefined,
+      };
+    }
+
+    if (status && status >= 500) {
+      return {
+        clientMessage: 'Gemini đang gặp sự cố. Vui lòng thử lại sau.',
+        logMessage: `Gemini server error (${status}): ${message}`,
+        stack: error instanceof Error ? error.stack : undefined,
+      };
+    }
+
+    return {
+      clientMessage: defaultResponse.clientMessage,
+      logMessage: `${defaultResponse.logMessage}: ${message}`,
+      stack: error instanceof Error ? error.stack : undefined,
+    };
+  }
+
+  private isRetryableGeminiError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+
+    const status = (error as { status?: number }).status;
+    if (status && [429, 500, 502, 503, 504].includes(status)) {
+      return true;
+    }
+
+    const code =
+      (error as { code?: string }).code ??
+      (error as { statusText?: string }).statusText ??
+      (error as { error?: { code?: string } }).error?.code;
+
+    if (code && ['RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'ABORTED'].includes(code)) {
+      return true;
+    }
+
+    const message =
+      (error as { message?: string }).message ??
+      (error as { error?: { message?: string } }).error?.message ??
+      '';
+
+    if (typeof message === 'string') {
+      return /temporarily unavailable|overloaded|timeout/i.test(message);
+    }
+
+    return false;
+  }
+
+  private getRetryDelay(attempt: number): number {
+    const base = 250;
+    const maxDelay = 2000;
+    return Math.min(maxDelay, base * Math.max(1, attempt));
+  }
+
+  private async delay(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private prepareStylistCatalogue(
@@ -390,80 +677,88 @@ export class AiCustomerService {
     payload: ProactiveStylistRequestDto,
     catalogue: StylistCandidateSummary[],
   ): string {
-    const signals = payload.signals?.length
-      ? payload.signals
-          .map((signal) => {
-            const duration = signal.durationMs ?? 'n/a';
-            const intensity = signal.intensity ?? 'n/a';
-            return `  - type: ${signal.type}, durationMs: ${duration}, intensity: ${intensity}`;
-          })
-          .join('\n')
-      : '  - none captured';
-
     const focusDescriptor = {
       id: product.id,
       name: product.name,
-      brand: product.brand ?? 'Fashia',
-      category: product.category ?? 'Không rõ',
-      priceRange: product.priceRange ?? 'Không rõ',
-      selectedVariant: product.selectedVariant?.attributeSummary ?? null,
+      brand: product.brand ?? null,
+      category: product.category ?? null,
+      priceRange: product.priceRange ?? null,
+      selectedVariant: product.selectedVariant
+        ? {
+            id: product.selectedVariant.id,
+            label: product.selectedVariant.attributeSummary ?? null,
+            attributes: product.selectedVariant.attributes.map((attribute) => ({
+              attribute: attribute.attribute ?? null,
+              value: attribute.value ?? null,
+            })),
+          }
+        : null,
     };
 
-    const catalogueLines = catalogue
+    const behaviourSignals = (payload.signals ?? []).slice(0, 10).map((signal) => ({
+      type: signal.type,
+      durationMs:
+        typeof signal.durationMs === 'number' && Number.isFinite(signal.durationMs)
+          ? Math.round(signal.durationMs)
+          : null,
+      intensity: signal.intensity ?? null,
+    }));
+
+    const candidateCatalogue = catalogue
       .filter((item) => !item.isFocus)
-      .slice(0, 40)
-      .map((item, index) => {
-        const tags = item.tags.slice(0, 5).join(', ') || 'không rõ';
-        const price = item.priceRange ?? 'không rõ';
-        const brand = item.brand ?? 'không rõ';
-        const category = item.category ?? 'không rõ';
-        const similarity = item.score ? item.score.toFixed(2) : '0.00';
-        return `${index + 1}. id=${item.id}; tên="${item.name}"; danh_mục=${category}; thương_hiệu=${brand}; giá=${price}; tags=${tags}; similarity=${similarity}`;
-      })
-      .join('\n');
+      .slice(0, 20)
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        category: item.category ?? null,
+        brand: item.brand ?? null,
+        priceRange: item.priceRange ?? null,
+        tags: item.tags.filter((tag) => Boolean(tag)).slice(0, 4),
+        similarityScore:
+          typeof item.score === 'number' && Number.isFinite(item.score)
+            ? Number(item.score.toFixed(3))
+            : null,
+        image: item.image ?? null,
+      }));
 
-    const catalogueSection = catalogueLines.length
-      ? catalogueLines
-      : '- Không có sản phẩm phụ trợ phù hợp, hãy ưu tiên layer/phụ kiện cơ bản dễ phối.';
+    const inputPayload = {
+      locale: payload.locale ?? 'vi',
+      surface: payload.surface ?? null,
+      focus_item: focusDescriptor,
+      behaviour_signals: behaviourSignals,
+      candidate_catalogue: candidateCatalogue,
+    };
 
-    return `Bạn là Stylist AI của Fashia. Hãy tạo ra 1 đến 3 outfit hoàn chỉnh dựa trên nguồn dữ liệu dưới đây.
-
-Sản phẩm trung tâm (focus_item):
-${JSON.stringify(focusDescriptor, null, 2)}
-
-Danh sách sản phẩm tương đồng (catalogue, chỉ dùng các productId trong danh sách này):
-${catalogueSection}
-
-Tín hiệu hành vi:
-${signals}
-
-Nhiệm vụ:
-- Mỗi outfit phải bao gồm sản phẩm focus có id=${product.id}.
-- Chỉ chọn thêm 2-4 sản phẩm từ catalogue; không bịa thêm sản phẩm mới.
-- Giữ văn phong ngắn gọn, nêu rõ lý do phối và dịp phù hợp.
-- Không lặp lại cùng một sản phẩm ở nhiều outfit trừ khi thực sự cần thiết.
-
-Schema JSON bắt buộc:
-{
-  "headline": string,
-  "outfits": [
-    {
-      "title": string,
-      "summary": string,
-      "occasion": string | null,
-      "items": [
+    const schema = {
+      headline: 'string',
+      outfits: [
         {
-          "productId": number,
-          "role": "focus" | "top" | "bottom" | "layer" | "footwear" | "accessory",
-          "reason": string
-        }
-      ]
-    }
-  ],
-  "notes": string | null
-}
+          title: 'string',
+          summary: 'string',
+          occasion: 'string | null',
+          items: [
+            {
+              productId: 'number',
+              role: 'focus | top | bottom | layer | footwear | accessory',
+              reason: 'string',
+            },
+          ],
+        },
+      ],
+      notes: 'string | null',
+    };
 
-Quan trọng: chỉ xuất JSON hợp lệ, không thêm lời dẫn hoặc giải thích ngoài JSON.`;
+    return [
+      'Bạn là Stylist AI của Fashia. Hãy tạo ra 1 đến 3 outfit hoàn chỉnh dựa trên dữ liệu sau.',
+      'Dữ liệu đầu vào:',
+      JSON.stringify(inputPayload, null, 2),
+      'Yêu cầu bắt buộc:\n- Mỗi outfit phải bao gồm sản phẩm focus có id=' +
+        product.id +
+        '.\n- Chỉ chọn thêm 2-4 sản phẩm từ candidate_catalogue; không bịa sản phẩm mới.\n- Tập trung vào lý do phối, dịp sử dụng và văn phong ngắn gọn.\n- Không lặp cùng một sản phẩm ở nhiều outfit trừ khi thực sự cần thiết. \n- Nếu Không đủ sản phẩm để tạo outfit hợp lý, hãy trả về ít outfit hơn.\n- Nếu không có outfit hợp lý nào, hãy trả về một mảng outfits rỗng.',
+      'Schema JSON bắt buộc:',
+      JSON.stringify(schema, null, 2),
+      'Quan trọng: chỉ xuất JSON hợp lệ, không thêm lời dẫn hoặc giải thích ngoài JSON.',
+    ].join('\n\n');
   }
 
   private renderCartAnalysisPrompt(
@@ -918,87 +1213,6 @@ Không viết thêm mô tả, chỉ xuất JSON.`;
     }
   }
 
-  private buildFallbackStylistSuggestions(product: ProductSnapshot): ProactiveStylistSuggestion[] {
-    const baseName = product.name;
-    return [
-      {
-        title: 'Phong cách công sở tinh gọn',
-        summary: `Phối ${baseName} cùng quần âu và blazer sáng màu để tạo cảm giác chuyên nghiệp nhưng vẫn nhẹ nhàng.`,
-        items: [
-          {
-            name: 'Quần âu ống suông',
-            description: 'Tông trung tính giúp chiếc áo trở thành điểm nhấn.',
-            categoryHint: 'bottom',
-            pairingReason: 'Giữ tổng thể thanh lịch, phù hợp văn phòng.',
-          },
-          {
-            name: 'Blazer màu be',
-            description: 'Tạo chiều sâu layer và cân bằng màu sắc.',
-            categoryHint: 'outerwear',
-            pairingReason: 'Mang lại cảm giác chuyên nghiệp, dễ phối nhiều dịp.',
-          },
-          {
-            name: 'Giày loafer tối màu',
-            description: 'Hoàn thiện tổng thể chỉn chu, thoải mái di chuyển.',
-            categoryHint: 'footwear',
-            pairingReason: 'Phong cách công sở hiện đại.',
-          },
-        ],
-        occasionHint: 'Đi làm, gặp gỡ đối tác',
-      },
-      {
-        title: 'Phong cách dạo phố năng động',
-        summary: `Nhấn mạnh sự trẻ trung của ${baseName} bằng denim và sneaker trắng.`,
-        items: [
-          {
-            name: 'Quần jean ống đứng wash nhạt',
-            description: 'Tạo độ tương phản vừa phải cho phần thân trên.',
-            categoryHint: 'bottom',
-            pairingReason: 'Giúp outfit cân đối, dễ mặc cuối tuần.',
-          },
-          {
-            name: 'Áo khoác denim mỏng',
-            description: 'Layer nhẹ nhàng, tăng chiều sâu khi thời tiết se lạnh.',
-            categoryHint: 'outerwear',
-            pairingReason: 'Mang lại vibe trẻ trung đường phố.',
-          },
-          {
-            name: 'Sneaker trắng tối giản',
-            description: 'Giữ outfit nhẹ nhàng nhưng nổi bật.',
-            categoryHint: 'footwear',
-            pairingReason: 'Dễ phối, tiện lợi cho nhiều hoạt động.',
-          },
-        ],
-        occasionHint: 'Cafe cuối tuần, dạo phố',
-      },
-      {
-        title: 'Phong cách tiệc tối tinh tế',
-        summary: `Biến ${baseName} thành điểm nhấn sang trọng với chân váy midi và phụ kiện ánh kim.`,
-        items: [
-          {
-            name: 'Chân váy midi satin',
-            description: 'Chất liệu bắt sáng, tôn dáng nữ tính.',
-            categoryHint: 'bottom',
-            pairingReason: 'Tăng độ sang trọng, phù hợp sự kiện.',
-          },
-          {
-            name: 'Áo khoác dạ dáng lửng',
-            description: 'Giữ ấm vừa phải mà vẫn thanh lịch.',
-            categoryHint: 'outerwear',
-            pairingReason: 'Cân bằng tỷ lệ trang phục khi về đêm.',
-          },
-          {
-            name: 'Giày cao gót mũi nhọn ánh kim',
-            description: 'Hoàn thiện tổng thể nổi bật.',
-            categoryHint: 'footwear',
-            pairingReason: 'Tạo cảm giác sang trọng, nữ tính.',
-          },
-        ],
-        occasionHint: 'Tiệc tối, sự kiện thân mật',
-      },
-    ];
-  }
-
   private composeProductSnapshot(
     product: ProductDetailHydrated,
     selectedVariantId?: number,
@@ -1081,72 +1295,4 @@ Không viết thêm mô tả, chỉ xuất JSON.`;
 
     return `${formatter.format(minPrice)} - ${formatter.format(maxPrice)}`;
   }
-}
-
-interface ProductVariantAttributeValueHydrated {
-  attribute?: { name?: string | null } | null;
-  attributeValue?: { value?: string | null } | null;
-}
-
-interface ProductVariantHydrated {
-  id: number;
-  price: number | string;
-  image?: string | null;
-  attributeValues?: ProductVariantAttributeValueHydrated[] | null;
-}
-
-interface ProductDetailHydrated {
-  id: number;
-  name: string;
-  images?: string[] | null;
-  category?: { name?: string | null } | null;
-  brand?: { name?: string | null } | null;
-  variants?: ProductVariantHydrated[] | null;
-}
-
-interface VariantSnapshot {
-  id: number;
-  price: number;
-  image: string | null;
-  attributes: Array<{ attribute?: string; value?: string }>;
-  attributeSummary: string | null;
-}
-
-interface ProductSnapshot {
-  id: number;
-  name: string;
-  category: string | null;
-  brand: string | null;
-  priceRange: string | null;
-  image: string | null;
-  selectedVariant: VariantSnapshot | null;
-}
-
-interface StylistCandidateSummary {
-  id: number;
-  name: string;
-  brand: string | null;
-  category: string | null;
-  priceRange: string | null;
-  tags: string[];
-  image: string | null;
-  score: number;
-  isFocus: boolean;
-}
-
-interface GeminiStylistPlanOutfit {
-  title?: string;
-  name?: string;
-  summary?: string;
-  overview?: string;
-  description?: string;
-  occasion?: string | null;
-  items?: unknown;
-}
-
-interface GeminiStylistPlanPayload {
-  headline?: string;
-  title?: string;
-  suggestions?: unknown;
-  outfits?: unknown;
 }
