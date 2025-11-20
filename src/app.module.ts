@@ -48,6 +48,8 @@ import { ReviewAnalysisModule } from './modules/review_analysis/review-analysis.
 import { AdminCopilotModule } from './modules/admin_copilot/admin-copilot.module';
 import { AiCustomerModule } from './modules/ai_customer/ai-customer.module';
 import { TrendForecastingModule } from './modules/trend_forecasting/trend-forecasting.module';
+import { CustomerGroupsModule } from './modules/customer_groups/customer_groups.module';
+import { UserCustomerGroupsModule } from './modules/user_customer_groups/user_customer_groups.module';
 import type { SharedBullAsyncConfiguration } from '@nestjs/bullmq';
 
 const BullModuleTyped = BullModule as unknown as {
@@ -116,6 +118,8 @@ const BullModuleTyped = BullModule as unknown as {
     PromotionalComboDetailsModule,
     PromotionalCombosModule,
     PromotionsModule,
+    CustomerGroupsModule,
+    UserCustomerGroupsModule,
     RatingsModule,
     StoreInventoriesModule,
     StoresModule,

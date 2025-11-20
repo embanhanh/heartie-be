@@ -54,6 +54,7 @@ The codebase follows NestJS modular design. Each domain lives in `src/modules/<f
 | `products`                  | Product master data with rich JSON fields, category relations, pricing, stock metrics.          |
 | `product_variants`          | Variant-level SKU details, pricing, inventory state, options.                                   |
 | `categories`                | Hierarchical catalog with slug generation.                                                      |
+| `customer_groups`           | Segments users into named cohorts for targeting campaigns and analytics.                        |
 | `store_inventories`         | Per-store inventory records with validation against stores, variants, and users.                |
 | `stores`                    | Physical/virtual store metadata.                                                                |
 | `banners`                   | Marketing banners with schedule, CTA metadata, ordering.                                        |
@@ -63,6 +64,7 @@ The codebase follows NestJS modular design. Each domain lives in `src/modules/<f
 | `order_product_details`     | Junction table between orders and product variants with quantity tracking.                      |
 | `vouchers`                  | Voucher setup, discount rules, product eligibility.                                             |
 | `voucher_user_details`      | Voucher assignments to users with validity windows and usage tracking.                          |
+| `user_customer_groups`      | Junction table mapping users to customer groups with assignment auditing.                       |
 | `promotional_combos`        | Combo campaigns linking multiple products with validity and limits.                             |
 | `promotional_combo_details` | Line-level combo details (quantity, discount per item).                                         |
 

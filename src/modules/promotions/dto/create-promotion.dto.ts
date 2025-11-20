@@ -1,15 +1,18 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import {
   ApplyScope,
@@ -18,6 +21,33 @@ import {
   DiscountType,
   PromotionType,
 } from '../entities/promotion.entity';
+import { PromotionConditionRole } from '../../promotion_conditions/entities/promotion-condition.entity';
+
+class PromotionConditionInput {
+  @ApiProperty({ description: 'Identifier of the product', minimum: 1 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  productId: number;
+
+  @ApiPropertyOptional({
+    description: 'Quantity threshold for the condition',
+    minimum: 1,
+    default: 1,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quantity?: number;
+
+  @ApiProperty({
+    enum: PromotionConditionRole,
+    description: 'Role of the product within the promotion',
+  })
+  @IsEnum(PromotionConditionRole)
+  role: PromotionConditionRole;
+}
 
 export class CreatePromotionDto {
   @ApiProperty({ description: 'Promotion name', example: 'Back to School Sale' })
@@ -111,4 +141,25 @@ export class CreatePromotionDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Conditions describing products involved in the promotion',
+    type: () => [PromotionConditionInput],
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PromotionConditionInput)
+  conditions?: PromotionConditionInput[];
+
+  @ApiPropertyOptional({
+    description: 'Branch identifiers where the promotion should be applied',
+    type: () => [Number],
+  })
+  @IsOptional()
+  @IsArray()
+  @Type(() => Number)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  branchIds?: number[];
 }
