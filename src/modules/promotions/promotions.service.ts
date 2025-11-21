@@ -6,9 +6,12 @@ import { CreatePromotionDto } from './dto/create-promotion.dto';
 import { UpdatePromotionDto } from './dto/update-promotion.dto';
 import { PromotionCondition } from '../promotion_conditions/entities/promotion-condition.entity';
 import { PromotionBranch } from '../promotion_branches/entities/promotion-branch.entity';
+import { BaseService } from 'src/common/services/base.service';
+import { PaginatedResult, SortParam } from 'src/common/dto/pagination.dto';
+import { PromotionQueryDto } from './dto/promotion-query.dto';
 
 @Injectable()
-export class PromotionsService {
+export class PromotionsService extends BaseService<Promotion> {
   private readonly defaultRelations = {
     conditions: { product: true },
     branches: { branch: true },
@@ -18,7 +21,9 @@ export class PromotionsService {
   constructor(
     @InjectRepository(Promotion)
     private readonly repo: Repository<Promotion>,
-  ) {}
+  ) {
+    super(repo, 'promotion');
+  }
 
   async create(dto: CreatePromotionDto) {
     const promotionId = await this.repo.manager.transaction(async (manager) => {
@@ -51,10 +56,38 @@ export class PromotionsService {
     return this.findOne(promotionId);
   }
 
-  findAll() {
-    return this.repo.find({
-      relations: this.defaultRelations,
-      order: { createdAt: 'DESC' },
+  async findAll(options: PromotionQueryDto): Promise<PaginatedResult<Promotion>> {
+    return this.paginate(options, (qb) => {
+      qb.leftJoinAndSelect('promotion.conditions', 'conditions');
+      qb.leftJoinAndSelect('conditions.product', 'conditionProduct');
+      qb.leftJoinAndSelect('promotion.branches', 'promotionBranch');
+      qb.leftJoinAndSelect('promotionBranch.branch', 'branch');
+      qb.leftJoinAndSelect('promotion.customerGroups', 'promotionCustomerGroup');
+      qb.leftJoinAndSelect('promotionCustomerGroup.customerGroup', 'customerGroup');
+
+      const search = options.search?.trim();
+      if (search) {
+        const keyword = `%${search.toLowerCase()}%`;
+        qb.andWhere(
+          '(LOWER(promotion.name) LIKE :keyword OR LOWER(promotion.code) LIKE :keyword)',
+          { keyword },
+        );
+      }
+
+      if (options.type) {
+        qb.andWhere('promotion.type = :type', { type: options.type });
+      }
+
+      if (options.applyScope) {
+        qb.andWhere('promotion.applyScope = :applyScope', { applyScope: options.applyScope });
+      }
+
+      if (typeof options.isActive === 'boolean') {
+        qb.andWhere('promotion.isActive = :isActive', { isActive: options.isActive });
+      }
+
+      this.applyDateFilter(qb, 'startDate', options.startDateFrom, options.startDateTo);
+      this.applyDateFilter(qb, 'endDate', options.endDateFrom, options.endDateTo);
     });
   }
 
@@ -226,5 +259,9 @@ export class PromotionsService {
     }
 
     return Math.max(1, Math.floor(quantity));
+  }
+
+  protected override getDefaultSorts(): SortParam[] {
+    return [{ field: 'createdAt', direction: 'desc' }];
   }
 }
