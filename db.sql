@@ -293,6 +293,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   subTotal NUMERIC(12,2) NOT NULL, -- price * quantity
   discountTotal NUMERIC(12,2) NOT NULL DEFAULT 0,
   totalAmount NUMERIC(12,2) NOT NULL, -- final amount after discount
+  isGift BOOLEAN DEFAULT FALSE,
   createdAt TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

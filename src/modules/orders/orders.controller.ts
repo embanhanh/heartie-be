@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { Request } from 'express';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -7,6 +18,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../users/entities/user.entity';
 import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport/dist/auth.guard';
+import { PaginationOptionsDto } from '../../common/dto/pagination.dto';
 
 @Controller('orders')
 @ApiBearerAuth()
@@ -22,8 +34,8 @@ export class OrdersController {
 
   @Get()
   @Roles(UserRole.ADMIN, UserRole.SHOP_OWNER, UserRole.BRANCH_MANAGER)
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query() pagination: PaginationOptionsDto) {
+    return this.service.findAll(pagination);
   }
 
   @Get('status/:orderNumber')
