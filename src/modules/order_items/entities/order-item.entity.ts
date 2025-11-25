@@ -40,6 +40,9 @@ export class OrderItem {
   @Column({ type: 'numeric', precision: 12, scale: 2 })
   totalAmount: number;
 
+  @Column({ type: 'boolean', default: false })
+  isGift: boolean;
+
   @CreateDateColumn({ type: 'timestamp with time zone' })
   createdAt: Date;
 }

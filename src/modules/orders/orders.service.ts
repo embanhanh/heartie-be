@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsRelations, Repository } from 'typeorm';
 import { FulfillmentMethod, Order, OrderStatus, PaymentMethod } from './entities/order.entity';
@@ -10,10 +10,31 @@ import { OrderItem } from '../order_items/entities/order-item.entity';
 import { Address } from '../addresses/entities/address.entity';
 import { AddressesService } from '../addresses/addresses.service';
 import { CreateAddressDto } from '../addresses/dto/create-address.dto';
-import { PricingService, PricingSummary } from '../pricing/pricing.service';
+import { PricingService } from '../pricing/pricing.service';
+import { PricingSummary } from '../pricing/types/pricing.types';
+import {
+  ProductVariant,
+  ProductVariantStatus,
+} from '../product_variants/entities/product_variant.entity';
+import { ComboType } from '../promotions/entities/promotion.entity';
+import { Cart } from '../carts/entities/cart.entity';
+import { CartItem } from '../cart_items/entities/cart-item.entity';
+import {
+  NotificationsService,
+  OrderCreatedAdminPayload,
+  OrderStatusChangedPayload,
+} from '../notifications/notifications.service';
+import { BaseService } from '../../common/services/base.service';
+import { PaginationOptionsDto, SortParam } from '../../common/dto/pagination.dto';
+
+interface AutoGiftLine {
+  variant: ProductVariant;
+  quantity: number;
+}
 
 @Injectable()
-export class OrdersService {
+export class OrdersService extends BaseService<Order> {
+  private readonly logger = new Logger(OrdersService.name);
   private readonly orderRelations: FindOptionsRelations<Order> = {
     user: true,
     branch: true,
@@ -25,20 +46,33 @@ export class OrdersService {
     },
   };
 
+  protected override getDefaultSorts(): SortParam[] {
+    return [{ field: 'createdAt', direction: 'desc' }];
+  }
+
   constructor(
     @InjectRepository(Order)
     private readonly repo: Repository<Order>,
     @InjectRepository(OrderItem)
     private readonly orderItemRepo: Repository<OrderItem>,
+    @InjectRepository(Cart)
+    private readonly cartRepo: Repository<Cart>,
+    @InjectRepository(CartItem)
+    private readonly cartItemRepo: Repository<CartItem>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     @InjectRepository(Branch)
     private readonly branchRepo: Repository<Branch>,
     @InjectRepository(Address)
     private readonly addressRepo: Repository<Address>,
+    @InjectRepository(ProductVariant)
+    private readonly variantRepo: Repository<ProductVariant>,
     private readonly addressesService: AddressesService,
     private readonly pricingService: PricingService,
-  ) {}
+    private readonly notificationsService: NotificationsService,
+  ) {
+    super(repo, 'order');
+  }
 
   async create(dto: CreateOrderDto) {
     const resolvedAddressId = await this.resolveAddressId({
@@ -57,11 +91,14 @@ export class OrdersService {
 
     const pricing = await this.pricingService.calculate({
       items: dto.items,
-      promotionId: dto.promotionId,
+      promotionCode: dto.promotionCode,
       branchId: dto.branchId,
       addressId: effectiveAddressId,
       userId: dto.userId,
     });
+
+    const autoGiftLines = await this.resolveAutoGiftLines(pricing);
+    const giftTotals = this.calculateGiftTotals(autoGiftLines);
 
     const entity = this.repo.create({
       userId: dto.userId ?? null,
@@ -76,8 +113,8 @@ export class OrdersService {
       cancelledAt: dto.cancelledAt,
       status: dto.status ?? OrderStatus.PENDING,
       orderNumber: this.generateOrderNumber(),
-      subTotal: pricing.totals.subTotal,
-      discountTotal: pricing.totals.discountTotal,
+      subTotal: this.roundMoney(pricing.totals.subTotal + giftTotals.subTotal),
+      discountTotal: this.roundMoney(pricing.totals.discountTotal + giftTotals.discountTotal),
       shippingFee: pricing.totals.shippingFee,
       taxTotal: pricing.totals.taxTotal,
       totalAmount: pricing.totals.totalAmount,
@@ -85,7 +122,18 @@ export class OrdersService {
 
     const savedOrder = await this.repo.save(entity);
 
-    await this.saveOrderItems(savedOrder.id, pricing);
+    await this.saveOrderItems(savedOrder.id, pricing, autoGiftLines);
+
+    if (dto.userId) {
+      await this.removePurchasedCartItems(dto.userId, dto.items);
+    }
+
+    await this.notifyAdminsOrderCreated({
+      orderId: savedOrder.id,
+      orderNumber: savedOrder.orderNumber ?? '',
+      totalAmount: savedOrder.totalAmount,
+      userId: savedOrder.userId,
+    });
 
     return this.findOne(savedOrder.id);
   }
@@ -164,10 +212,14 @@ export class OrdersService {
     };
   }
 
-  findAll() {
-    return this.repo.find({
-      relations: this.orderRelations,
-      order: { createdAt: 'DESC' },
+  async findAll(pagination: PaginationOptionsDto = new PaginationOptionsDto()) {
+    return this.paginate(pagination, (qb) => {
+      qb.leftJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('order.branch', 'branch')
+        .leftJoinAndSelect('order.address', 'address')
+        .leftJoinAndSelect('order.items', 'items')
+        .leftJoinAndSelect('items.variant', 'variant')
+        .leftJoinAndSelect('variant.product', 'variantProduct');
     });
   }
 
@@ -194,7 +246,9 @@ export class OrdersService {
       throw new NotFoundException(`Order ${id} not found`);
     }
 
-    const { items, promotionId, address, ...rest } = dto;
+    const { items, promotionCode, address, ...rest } = dto;
+
+    const previousStatus = existing.status;
 
     const targetUserId = rest.userId ?? existing.userId ?? undefined;
     const targetBranchId = rest.branchId ?? existing.branchId ?? undefined;
@@ -217,7 +271,7 @@ export class OrdersService {
     if (items && items.length > 0) {
       pricing = await this.pricingService.calculate({
         items,
-        promotionId,
+        promotionCode,
         branchId: targetBranchId,
         addressId: effectiveAddressId,
         userId: targetUserId,
@@ -231,19 +285,50 @@ export class OrdersService {
     merged.status = merged.status ?? OrderStatus.PENDING;
     merged.paymentMethod = merged.paymentMethod ?? PaymentMethod.COD;
 
+    const statusChanged = merged.status !== previousStatus;
+
     if (pricing) {
-      merged.subTotal = pricing.totals.subTotal;
-      merged.discountTotal = pricing.totals.discountTotal;
+      const autoGiftLines = await this.resolveAutoGiftLines(pricing);
+      const giftTotals = this.calculateGiftTotals(autoGiftLines);
+
+      merged.subTotal = this.roundMoney(pricing.totals.subTotal + giftTotals.subTotal);
+      merged.discountTotal = this.roundMoney(
+        pricing.totals.discountTotal + giftTotals.discountTotal,
+      );
       merged.shippingFee = pricing.totals.shippingFee;
       merged.taxTotal = pricing.totals.taxTotal;
       merged.totalAmount = pricing.totals.totalAmount;
+
+      const saved = await this.repo.save(merged);
+
+      await this.orderItemRepo.delete({ orderId: saved.id });
+      await this.saveOrderItems(saved.id, pricing, autoGiftLines);
+
+      const userId = saved.userId;
+      if (statusChanged && typeof userId === 'number') {
+        await this.notifyUserOrderStatusChanged({
+          userId,
+          orderId: saved.id,
+          orderNumber: saved.orderNumber ?? '',
+          status: saved.status,
+          totalAmount: saved.totalAmount,
+        });
+      }
+
+      return this.findOne(saved.id);
     }
 
     const saved = await this.repo.save(merged);
 
-    if (pricing) {
-      await this.orderItemRepo.delete({ orderId: saved.id });
-      await this.saveOrderItems(saved.id, pricing);
+    const userId = saved.userId;
+    if (statusChanged && typeof userId === 'number') {
+      await this.notifyUserOrderStatusChanged({
+        userId,
+        orderId: saved.id,
+        orderNumber: saved.orderNumber ?? '',
+        status: saved.status,
+        totalAmount: saved.totalAmount,
+      });
     }
 
     return this.findOne(saved.id);
@@ -259,12 +344,18 @@ export class OrdersService {
     return { success: true };
   }
 
-  private async saveOrderItems(orderId: number, pricing: PricingSummary) {
-    if (pricing.items.length === 0) {
+  private async saveOrderItems(
+    orderId: number,
+    pricing: PricingSummary,
+    autoGifts: AutoGiftLine[] = [],
+  ) {
+    if (pricing.items.length === 0 && autoGifts.length === 0) {
       return;
     }
 
-    const items = pricing.items.map((item) =>
+    const giftVariantIds = this.collectGiftVariantIds(pricing);
+
+    const persistedItems = pricing.items.map((item) =>
       this.orderItemRepo.create({
         orderId,
         variantId: item.variantId,
@@ -272,10 +363,186 @@ export class OrdersService {
         subTotal: item.subTotal,
         discountTotal: item.discountTotal,
         totalAmount: item.totalAmount,
+        isGift: giftVariantIds.has(item.variantId) && item.totalAmount === 0,
       }),
     );
 
-    await this.orderItemRepo.save(items);
+    autoGifts.forEach((gift) => {
+      const subTotal = this.roundMoney(gift.variant.price * gift.quantity);
+      persistedItems.push(
+        this.orderItemRepo.create({
+          orderId,
+          variantId: gift.variant.id,
+          quantity: gift.quantity,
+          subTotal,
+          discountTotal: subTotal,
+          totalAmount: 0,
+          isGift: true,
+        }),
+      );
+    });
+
+    if (persistedItems.length > 0) {
+      await this.orderItemRepo.save(persistedItems);
+    }
+  }
+
+  private async removePurchasedCartItems(
+    userId: number,
+    items: Array<{ variantId?: number | string | null; quantity: number }> = [],
+  ) {
+    if (!userId || !items.length) {
+      return;
+    }
+
+    const cart = await this.cartRepo.findOne({
+      where: { userId },
+      relations: { items: true },
+    });
+
+    if (!cart || !cart.items || cart.items.length === 0) {
+      return;
+    }
+
+    const remainingByVariant = new Map<number, number>();
+
+    for (const item of items) {
+      let variantIdNumber: number | null = null;
+
+      if (typeof item.variantId === 'number') {
+        variantIdNumber = item.variantId;
+      } else if (typeof item.variantId === 'string' && item.variantId.trim()) {
+        const parsed = Number(item.variantId);
+        variantIdNumber = Number.isNaN(parsed) ? null : parsed;
+      }
+
+      if (!variantIdNumber) {
+        continue;
+      }
+
+      const current = remainingByVariant.get(variantIdNumber) ?? 0;
+      remainingByVariant.set(variantIdNumber, current + Math.max(0, item.quantity));
+    }
+
+    if (!remainingByVariant.size) {
+      return;
+    }
+
+    const itemsToUpdate: CartItem[] = [];
+    const itemIdsToRemove: number[] = [];
+
+    for (const cartItem of cart.items) {
+      const variantId = cartItem.variantId ?? undefined;
+      if (!variantId) {
+        continue;
+      }
+
+      const remaining = remainingByVariant.get(variantId);
+      if (!remaining || remaining <= 0) {
+        continue;
+      }
+
+      if (cartItem.quantity <= remaining) {
+        itemIdsToRemove.push(cartItem.id);
+        remainingByVariant.set(variantId, remaining - cartItem.quantity);
+      } else {
+        cartItem.quantity = cartItem.quantity - remaining;
+        remainingByVariant.set(variantId, 0);
+        itemsToUpdate.push(cartItem);
+      }
+    }
+
+    if (itemIdsToRemove.length > 0) {
+      await this.cartItemRepo.delete(itemIdsToRemove);
+    }
+
+    if (itemsToUpdate.length > 0) {
+      await this.cartItemRepo.save(itemsToUpdate);
+    }
+  }
+
+  private async resolveAutoGiftLines(pricing: PricingSummary): Promise<AutoGiftLine[]> {
+    const productQuantities = new Map<number, number>();
+
+    for (const promotion of pricing.appliedPromotions ?? []) {
+      if (promotion.comboType !== ComboType.BUY_X_GET_Y) {
+        continue;
+      }
+
+      for (const suggestion of promotion.suggestions ?? []) {
+        if (!suggestion.autoAdd || suggestion.missingQuantity <= 0) {
+          continue;
+        }
+
+        const current = productQuantities.get(suggestion.productId) ?? 0;
+        productQuantities.set(suggestion.productId, current + suggestion.missingQuantity);
+      }
+    }
+
+    if (!productQuantities.size) {
+      return [];
+    }
+
+    const results: AutoGiftLine[] = [];
+
+    for (const [productId, quantity] of productQuantities) {
+      let variant = await this.variantRepo.findOne({
+        where: { productId, status: ProductVariantStatus.ACTIVE },
+        order: { id: 'ASC' },
+      });
+
+      if (!variant) {
+        variant = await this.variantRepo.findOne({
+          where: { productId },
+          order: { id: 'ASC' },
+        });
+      }
+
+      if (!variant) {
+        throw new BadRequestException(
+          `Không tìm thấy biến thể phù hợp để thêm quà tặng cho sản phẩm ${productId}.`,
+        );
+      }
+
+      results.push({ variant, quantity });
+    }
+
+    return results;
+  }
+
+  private calculateGiftTotals(gifts: AutoGiftLine[]): { subTotal: number; discountTotal: number } {
+    return gifts.reduce(
+      (acc, gift) => {
+        const subTotal = this.roundMoney(gift.variant.price * gift.quantity);
+        return {
+          subTotal: this.roundMoney(acc.subTotal + subTotal),
+          discountTotal: this.roundMoney(acc.discountTotal + subTotal),
+        };
+      },
+      { subTotal: 0, discountTotal: 0 },
+    );
+  }
+
+  private collectGiftVariantIds(pricing: PricingSummary): Set<number> {
+    const ids = new Set<number>();
+
+    for (const promotion of pricing.appliedPromotions ?? []) {
+      if (promotion.comboType !== ComboType.BUY_X_GET_Y) {
+        continue;
+      }
+
+      for (const item of promotion.items ?? []) {
+        if (item.isGift && typeof item.variantId === 'number') {
+          ids.add(item.variantId);
+        }
+      }
+    }
+
+    return ids;
+  }
+
+  private roundMoney(value: number): number {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 
   private async validateRelations(payload: {
@@ -341,5 +608,29 @@ export class OrdersService {
       .padStart(4, '0');
 
     return `ORD-${stamp}-${random}`;
+  }
+
+  private logNotificationError(error: unknown, context: string) {
+    const message = error instanceof Error ? error.message : String(error);
+    this.logger.error(
+      `Failed to ${context}: ${message}`,
+      error instanceof Error ? error.stack : undefined,
+    );
+  }
+
+  private async notifyAdminsOrderCreated(payload: OrderCreatedAdminPayload) {
+    try {
+      await this.notificationsService.notifyAdminsOrderCreated(payload);
+    } catch (error: unknown) {
+      this.logNotificationError(error, 'notify admins order created');
+    }
+  }
+
+  private async notifyUserOrderStatusChanged(payload: OrderStatusChangedPayload) {
+    try {
+      await this.notificationsService.notifyUserOrderStatusChanged(payload);
+    } catch (error: unknown) {
+      this.logNotificationError(error, 'notify user order status updated');
+    }
   }
 }

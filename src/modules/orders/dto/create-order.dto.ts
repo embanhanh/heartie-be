@@ -96,12 +96,11 @@ export class CreateOrderDto {
   @IsEnum(OrderStatus)
   status?: OrderStatus;
 
-  @ApiPropertyOptional({ example: 99, description: 'FK -> promotions.id' })
+  @ApiPropertyOptional({ example: 'SAVE10', description: 'Mã khuyến mãi sử dụng cho đơn hàng' })
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @IsPositive()
-  promotionId?: number;
+  @IsString()
+  @MaxLength(50)
+  promotionCode?: string;
 
   @ApiProperty({
     type: [OrderItemDto],

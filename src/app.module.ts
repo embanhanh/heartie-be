@@ -50,6 +50,8 @@ import { AiCustomerModule } from './modules/ai_customer/ai-customer.module';
 import { TrendForecastingModule } from './modules/trend_forecasting/trend-forecasting.module';
 import { CustomerGroupsModule } from './modules/customer_groups/customer_groups.module';
 import { UserCustomerGroupsModule } from './modules/user_customer_groups/user_customer_groups.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import firebaseConfig from './config/firebase.config';
 import type { SharedBullAsyncConfiguration } from '@nestjs/bullmq';
 
 const BullModuleTyped = BullModule as unknown as {
@@ -61,7 +63,7 @@ const BullModuleTyped = BullModule as unknown as {
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
-      load: [geminiConfig],
+      load: [geminiConfig, firebaseConfig],
     }),
     BullModuleTyped.forRootAsync({
       imports: [ConfigModule],
@@ -141,6 +143,7 @@ const BullModuleTyped = BullModule as unknown as {
     TrendForecastingModule,
     AdminCopilotModule,
     AiCustomerModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

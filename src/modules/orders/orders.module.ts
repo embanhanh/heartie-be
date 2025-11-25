@@ -9,12 +9,26 @@ import { Branch } from '../branches/entities/branch.entity';
 import { Address } from '../addresses/entities/address.entity';
 import { PricingModule } from '../pricing/pricing.module';
 import { AddressesModule } from '../addresses/addresses.module';
+import { ProductVariant } from '../product_variants/entities/product_variant.entity';
+import { Cart } from '../carts/entities/cart.entity';
+import { CartItem } from '../cart_items/entities/cart-item.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Order, OrderItem, User, Branch, Address]),
+    TypeOrmModule.forFeature([
+      Order,
+      OrderItem,
+      User,
+      Branch,
+      Address,
+      ProductVariant,
+      Cart,
+      CartItem,
+    ]),
     PricingModule,
     AddressesModule,
+    NotificationsModule,
   ],
   controllers: [OrdersController],
   providers: [OrdersService],

@@ -4,8 +4,10 @@ import {
   ArrayMinSize,
   IsArray,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsPositive,
+  IsString,
   ValidateNested,
 } from 'class-validator';
 
@@ -31,12 +33,11 @@ export class CalculatePricingDto {
   @ArrayMinSize(1)
   items: PricingItemDto[];
 
-  @ApiPropertyOptional({ example: 12, description: 'FK -> promotions.id' })
+  @ApiPropertyOptional({ example: 'SAVE10', description: 'Mã khuyến mãi duy nhất' })
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @IsPositive()
-  promotionId?: number;
+  @IsString()
+  @IsNotEmpty()
+  promotionCode?: string;
 
   @ApiPropertyOptional({ example: 3, description: 'FK -> branches.id' })
   @IsOptional()
