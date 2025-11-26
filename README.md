@@ -109,27 +109,30 @@ Other noteworthy files:
 
 Fill in a `.env` file at the project root (copy `.env.example` and adjust):
 
-| Variable                      | Description                                           | Default (dev)        |
-| ----------------------------- | ----------------------------------------------------- | -------------------- |
-| `PORT`                        | API listening port                                    | `3001`               |
-| `DB_HOST`                     | PostgreSQL host                                       | `localhost`          |
-| `DB_PORT`                     | PostgreSQL port                                       | `5432`               |
-| `DB_USERNAME`                 | Database user                                         | `thongdinh`          |
-| `DB_PASSWORD`                 | Database password                                     | `thongdinh`          |
-| `DB_DATABASE`                 | Database name                                         | `heartie_db`         |
-| `REDIS_HOST`                  | Redis host for BullMQ queues                          | `localhost`          |
-| `REDIS_PORT`                  | Redis port                                            | `6379`               |
-| `JWT_SECRET`                  | Access token secret                                   | `access_token`       |
-| `JWT_EXPIRATION_TIME`         | Access token TTL                                      | `3600s`              |
-| `JWT_REFRESH_SECRET`          | Refresh token secret                                  | `refresh_token`      |
-| `JWT_REFRESH_EXPIRATION_TIME` | Refresh token TTL                                     | `7d`                 |
-| `OPENAI_API_KEY`              | OpenAI API key for AI content generation              | —                    |
-| `OPENAI_AD_MODEL`             | (Optional) OpenAI model, defaults to `gpt-4o-mini`    | —                    |
-| `FACEBOOK_PAGE_ID`            | Target Facebook Page ID for publishing ads            | —                    |
-| `FACEBOOK_PAGE_ACCESS_TOKEN`  | Long-lived Page access token with publish permissions | —                    |
-| `GEMINI_API_KEY`              | Google Gemini API key for chat + embeddings           | —                    |
-| `GEMINI_EMBEDDING_MODEL`      | (Optional) Gemini embedding model                     | `text-embedding-004` |
-| `GEMINI_REVIEW_MODEL`         | (Optional) Gemini model for review analysis           | `gemini-1.5-pro`     |
+| Variable                      | Description                                          | Example / Default (dev)               |
+| ----------------------------- | ---------------------------------------------------- | ------------------------------------- |
+| `PORT`                        | API listening port (Render injects its own value)    | `3000`                                |
+| `DB_HOST` / `DB_PORT`         | PostgreSQL connection                                | `localhost` / `5432`                  |
+| `DB_USERNAME` / `DB_PASSWORD` | Database credentials                                 | `postgres` / `postgres`               |
+| `DB_DATABASE`                 | Database name                                        | `heartie_db`                          |
+| `REDIS_HOST` / `REDIS_PORT`   | Redis/BullMQ queue backend                           | `localhost` / `6379`                  |
+| `REDIS_PASSWORD`              | Redis password (optional)                            | _(empty)_                             |
+| `JWT_SECRET`                  | Access token secret                                  | `change_me_access`                    |
+| `JWT_EXPIRATION_TIME`         | Access token TTL                                     | `3600s`                               |
+| `JWT_REFRESH_SECRET`          | Refresh token secret                                 | `change_me_refresh`                   |
+| `JWT_REFRESH_EXPIRATION_TIME` | Refresh token TTL                                    | `7d`                                  |
+| `GEMINI_API_KEY`              | Google Gemini API key                                | —                                     |
+| `GEMINI_AD_MODEL`             | (Optional) Gemini model for ads                      | `gemini-2.0-flash`                    |
+| `GEMINI_ADMIN_MODEL`          | (Optional) Admin copilot model                       | `gemini-2.0-flash`                    |
+| `GEMINI_REVIEW_MODEL`         | (Optional) Model for review insights                 | `gemini-1.5-pro`                      |
+| `FIREBASE_PROJECT_ID`         | Firebase project id                                  | —                                     |
+| `FIREBASE_CLIENT_EMAIL`       | Firebase service account email                       | —                                     |
+| `FIREBASE_PRIVATE_KEY`        | Firebase service account private key                 | `"-----BEGIN PRIVATE KEY-----\\n..."` |
+| `FIREBASE_ADMIN_TOPIC`        | Firebase topic for admin notifications               | `admin-orders`                        |
+| `FB_GRAPH_API_URL`            | Facebook Graph API base URL                          | `https://graph.facebook.com/v24.0`    |
+| `FACEBOOK_PAGE_ID`            | Facebook Page id                                     | —                                     |
+| `FACEBOOK_PAGE_ACCESS_TOKEN`  | Long-lived Page access token                         | —                                     |
+| `CORS_ORIGINS`                | Allowed origins (comma separated). Blank → allow all | `http://localhost:3000`               |
 
 > ℹ️ The app fails fast if JWT secrets are missing. Ensure these env vars are set before starting Nest.
 
@@ -177,6 +180,31 @@ docker compose up --build
 - To follow logs: `docker compose logs -f api`.
 - The `db` service builds from `docker/db/Dockerfile`, which compiles the pgvector extension (and is the place to add more extensions for the whole team).
 - Any SQL dropped in `docker/db/init/*.sql` runs automatically the first time a new data volume is created (for example `docker/db/init/00-extensions.sql` creates `vector`). Add more files there if you need additional extensions or bootstrap logic.
+
+### Deploying to Render with Docker
+
+Render can build the container image directly from this repository. Use these settings when creating a **Web Service**:
+
+| Setting             | Value / Notes                                            |
+| ------------------- | -------------------------------------------------------- |
+| **Environment**     | Docker                                                   |
+| **Dockerfile path** | `Dockerfile` (root)                                      |
+| **Build command**   | _Leave empty_ (Render runs `docker build` automatically) |
+| **Start command**   | _Leave empty_ (uses the `CMD` defined in the Dockerfile) |
+| **Health check**    | `/api-docs` or another public endpoint                   |
+| **Port**            | Render injects `PORT`; no manual mapping required        |
+
+Required environment variables (copy from `.env.example`, adjust credentials/secrets):
+
+- Database: `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`
+- Redis/BullMQ: `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`
+- Auth: `JWT_SECRET`, `JWT_REFRESH_SECRET`, expiration variables
+- Integrations: Gemini keys, Firebase admin credentials, Facebook tokens (optional)
+- CORS: `CORS_ORIGINS` should include your front-end origin (e.g., `https://<app>.onrender.com`)
+
+> 💾 **Persistent uploads**: The service serves files from `/app/uploads`. Attach a Render disk (persistent storage) mounted at `/uploads` or update `main.ts` to point to a cloud bucket if you need long-term file storage.
+
+> 🔐 **Secrets**: Never commit production secrets. Populate them through the Render dashboard or Render CLI (`render env:set`).
 
 ### Seed data
 
