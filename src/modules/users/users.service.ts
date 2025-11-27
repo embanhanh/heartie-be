@@ -1,51 +1,161 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import { Injectable, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { User } from './entities/user.entity';
-import { CreateUserDto } from './dto/create-users.dto';
+import { User, UserRole } from './entities/user.entity';
+import { CreateUserDto } from './dto/create-user.dto';
+import { UserSafe } from './types/user-safe.type';
+import { BaseService } from '../../common/services/base.service';
 import * as bcrypt from 'bcrypt';
+import { FilterUserDto } from './dto/filter-users.dto';
+import { PaginatedResult, SortParam } from '../../common/dto/pagination.dto';
 
 @Injectable()
-export class UsersService {
+export class UsersService extends BaseService<User> {
   constructor(
     @InjectRepository(User)
-    private usersRepository: Repository<User>,
-  ) {}
+    private readonly userRepository: Repository<User>,
+  ) {
+    super(userRepository, 'user');
+  }
 
-  async create(createUserDto: CreateUserDto): Promise<User> {
-    const existingUser = await this.findOneByEmail(createUserDto.email);
-    if (existingUser) {
+  protected override getDefaultSorts(): SortParam[] {
+    return [{ field: 'createdAt', direction: 'desc' }];
+  }
+
+  private sanitizeUser(user: User | null): UserSafe | null {
+    if (!user) {
+      return null;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { password, hashedRefreshToken, ...safeUser } = user;
+    return safeUser;
+  }
+
+  async create(createUserDto: CreateUserDto): Promise<UserSafe> {
+    const [existingUserByEmail, existingUserByPhone] = await Promise.all([
+      this.userRepository.findOne({ where: { email: createUserDto.email } }),
+      this.userRepository.findOne({ where: { phoneNumber: createUserDto.phoneNumber } }),
+    ]);
+
+    if (existingUserByEmail) {
       throw new ConflictException('Email đã tồn tại');
+    }
+
+    if (existingUserByPhone) {
+      throw new ConflictException('Số điện thoại đã tồn tại');
     }
 
     const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
 
-    const newUser = this.usersRepository.create({
+    if (createUserDto.role === UserRole.BRANCH_MANAGER || createUserDto.role === UserRole.STAFF) {
+      if (!createUserDto.branchId) {
+        throw new BadRequestException(
+          'Branch assignment is required for staff and branch managers',
+        );
+      }
+    }
+
+    const newUser = this.userRepository.create({
       ...createUserDto,
+      role: createUserDto.role ?? UserRole.CUSTOMER,
+      branchId: createUserDto.branchId ?? null,
       password: hashedPassword,
     });
 
-    return this.usersRepository.save(newUser);
+    const savedUser = await this.userRepository.save(newUser);
+    const safeUser = this.sanitizeUser(savedUser);
+    if (!safeUser) {
+      throw new Error('Không thể khởi tạo người dùng mới');
+    }
+    return safeUser;
   }
 
-  async findOneByEmail(email: string): Promise<User | null> {
-    return this.usersRepository.findOneBy({ email });
+  async findOneByEmail(email: string): Promise<UserSafe | null> {
+    const user = await this.userRepository.findOne({ where: { email } });
+    return this.sanitizeUser(user);
   }
 
-  async findOneById(id: number): Promise<User | null> {
-    return this.usersRepository.findOneBy({ id });
+  async findOneByEmailWithSecrets(email: string): Promise<User | null> {
+    return this.userRepository
+      .createQueryBuilder('user')
+      .addSelect(['user.password', 'user.hashedRefreshToken'])
+      .where('user.email = :email', { email })
+      .getOne();
   }
 
-  async setCurrentRefreshToken(refreshToken: string, userId: number) {
+  async findOneById(id: number): Promise<UserSafe | null> {
+    const user = await this.userRepository.findOne({
+      where: { id },
+      relations: { participants: true, notificationTokens: true },
+    });
+    return this.sanitizeUser(user);
+  }
+
+  async findOneByIdWithRefreshToken(id: number): Promise<User | null> {
+    return this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.hashedRefreshToken')
+      .where('user.id = :id', { id })
+      .getOne();
+  }
+
+  async setCurrentRefreshToken(refreshToken: string, userId: number): Promise<void> {
     const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
-    await this.usersRepository.update(userId, {
+    await this.userRepository.update(userId, {
       hashedRefreshToken,
     });
   }
 
-  async removeRefreshToken(userId: number) {
-    return this.usersRepository.update(userId, {
-      hashedRefreshToken: undefined,
+  async removeRefreshToken(userId: number): Promise<void> {
+    await this.userRepository.update(userId, {
+      hashedRefreshToken: null,
     });
+  }
+
+  async findAll(query: FilterUserDto): Promise<PaginatedResult<UserSafe>> {
+    const { search, email, role, isActive, branchId, createdFrom, createdTo, phoneNumber } = query;
+
+    const result = await this.paginate(query, (qb) => {
+      qb.leftJoinAndSelect('user.participants', 'participants');
+
+      if (search) {
+        const like = `%${search.trim()}%`;
+        qb.andWhere(
+          'user.firstName ILIKE :search OR user.lastName ILIKE :search OR user.email ILIKE :search OR user.phoneNumber ILIKE :search',
+          { search: like },
+        );
+      }
+
+      if (email) {
+        qb.andWhere('user.email ILIKE :email', { email: `%${email.trim()}%` });
+      }
+
+      if (phoneNumber) {
+        qb.andWhere('user.phoneNumber ILIKE :phone', { phone: `%${phoneNumber.trim()}%` });
+      }
+
+      if (role) {
+        qb.andWhere('user.role = :role', { role });
+      }
+
+      if (typeof isActive === 'boolean') {
+        qb.andWhere('user.isActive = :isActive', { isActive });
+      }
+
+      if (typeof branchId === 'number') {
+        qb.andWhere('user.branchId = :branchId', { branchId });
+      }
+
+      this.applyDateFilter(qb, 'createdAt', createdFrom, createdTo);
+    });
+
+    const data = result.data
+      .map((item) => this.sanitizeUser(item))
+      .filter((user): user is UserSafe => Boolean(user));
+
+    return {
+      data,
+      meta: result.meta,
+    };
   }
 }

@@ -1,49 +1,87 @@
 import {
-  Controller,
-  Post,
   Body,
+  Controller,
+  Delete,
   Get,
+  NotFoundException,
   Param,
   ParseIntPipe,
-  NotFoundException,
   Patch,
-  Delete,
+  Post,
+  Query,
+  UseGuards,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
-import { CreateUserDto } from './dto/create-users.dto';
-import { ApiOperation } from '@nestjs/swagger';
+import { CreateUserDto } from './dto/create-user.dto';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+  ApiCreatedResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
+import { UserResponseDto } from './dto/user-response.dto';
+import { UserSafe } from './types/user-safe.type';
+import { AuthGuard } from '@nestjs/passport';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from './entities/user.entity';
+import { FilterUserDto } from './dto/filter-users.dto';
+import { PaginatedResult } from 'src/common/dto/pagination.dto';
 
+@ApiTags('Users')
 @Controller('users')
+@UseGuards(AuthGuard('jwt'))
+@Roles(UserRole.ADMIN)
+@ApiBearerAuth()
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  private mapToResponseDto(user: UserSafe): UserResponseDto {
+    return UserResponseDto.from(user);
+  }
+
   // Tạo user mới
   @ApiOperation({ summary: 'Tạo user mới' })
+  @ApiCreatedResponse({ type: () => UserResponseDto })
   @Post()
-  async create(@Body() createUserDto: CreateUserDto) {
-    return this.usersService.create(createUserDto);
+  async create(@Body() createUserDto: CreateUserDto): Promise<UserResponseDto> {
+    const user = await this.usersService.create(createUserDto);
+    return this.mapToResponseDto(user);
+  }
+
+  @ApiOperation({ summary: 'Danh sách user với phân trang và bộ lọc' })
+  @ApiOkResponse({ type: () => UserResponseDto, isArray: false })
+  @Get()
+  async findAll(@Query() query: FilterUserDto): Promise<PaginatedResult<UserResponseDto>> {
+    const result = await this.usersService.findAll(query);
+    return {
+      data: result.data.map((user) => this.mapToResponseDto(user)),
+      meta: result.meta,
+    };
   }
 
   // Lấy user theo id
   @ApiOperation({ summary: 'Lấy user theo id' })
+  @ApiOkResponse({ type: () => UserResponseDto })
   @Get(':id')
-  async findOne(@Param('id', ParseIntPipe) id: number) {
+  async findOne(@Param('id', ParseIntPipe) id: number): Promise<UserResponseDto> {
     const user = await this.usersService.findOneById(id);
     if (!user) {
       throw new NotFoundException(`Không tìm thấy user với id ${id}`);
     }
-    return user;
+    return this.mapToResponseDto(user);
   }
 
   // Lấy user theo email
   @ApiOperation({ summary: 'Lấy user theo email' })
+  @ApiOkResponse({ type: () => UserResponseDto })
   @Get('email/:email')
-  async findByEmail(@Param('email') email: string) {
+  async findByEmail(@Param('email') email: string): Promise<UserResponseDto> {
     const user = await this.usersService.findOneByEmail(email);
     if (!user) {
       throw new NotFoundException(`Không tìm thấy user với email ${email}`);
     }
-    return user;
+    return this.mapToResponseDto(user);
   }
 
   // Set refresh token cho user (ví dụ gọi trong AuthService)
