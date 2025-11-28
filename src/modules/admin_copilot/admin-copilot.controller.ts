@@ -49,19 +49,22 @@ export class AdminCopilotController {
 
   @Get('revenue-overview')
   @ApiOperation({ summary: 'Tổng quan doanh thu và đơn hàng theo khoảng thời gian' })
-  getRevenueOverview(@Query() query: AdminCopilotRevenueOverviewQueryDto) {
-    return this.service.getRevenueOverview(query);
+  getRevenueOverview(@Query() query: AdminCopilotRevenueOverviewQueryDto, @Req() req: Request) {
+    const user = req.user as { id: number };
+    return this.service.getRevenueOverview(user.id, query);
   }
 
   @Get('top-products')
   @ApiOperation({ summary: 'Danh sách sản phẩm bán chạy nhất theo doanh thu' })
-  getTopProducts(@Query() query: AdminCopilotTopProductsQueryDto) {
-    return this.service.getTopProducts(query);
+  getTopProducts(@Query() query: AdminCopilotTopProductsQueryDto, @Req() req: Request) {
+    const user = req.user as { id: number };
+    return this.service.getTopProducts(user.id, query);
   }
 
   @Get('stock-alerts')
   @ApiOperation({ summary: 'Danh sách cảnh báo tồn kho thấp theo SKU/chi nhánh' })
-  getStockAlerts(@Query() query: AdminCopilotStockAlertsQueryDto) {
-    return this.service.getStockAlerts(query);
+  getStockAlerts(@Query() query: AdminCopilotStockAlertsQueryDto, @Req() req: Request) {
+    const user = req.user as { id: number };
+    return this.service.getStockAlerts(user.id, query);
   }
 }

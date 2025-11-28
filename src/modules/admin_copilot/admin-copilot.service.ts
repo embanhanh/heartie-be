@@ -1,15 +1,18 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { FunctionCall, FunctionResponsePart, Tool, SchemaType } from '@google/generative-ai';
+import { I18nContext, I18nService } from 'nestjs-i18n';
+import { FunctionCall, FunctionResponsePart } from '@google/generative-ai';
+import { plainToInstance } from 'class-transformer';
+import { validate, ValidationError } from 'class-validator';
 import { Repository } from 'typeorm';
 import { GeminiService, GeminiChatMessage, GeminiChatRole } from '../gemini/gemini.service';
+import { AdsAiService } from '../ads_ai/ads_ai.service';
+import { GenerateAdsAiDto } from '../ads_ai/dto/generate-ads-ai.dto';
+import { CreateAdsAiDto } from '../ads_ai/dto/create-ads-ai.dto';
+import { ScheduleAdsAiDto } from '../ads_ai/dto/schedule-ads-ai.dto';
+import { AdsAiCampaign } from '../ads_ai/entities/ads-ai-campaign.entity';
+import { GeneratedAdContent } from '../ads_ai/interfaces/generated-ad-content.interface';
 import {
   AdminCopilotChatRequestDto,
   AdminCopilotHistoryMessageDto,
@@ -23,191 +26,65 @@ import {
 } from './dto/admin-copilot-history.dto';
 import { TrendForecastingService } from '../trend_forecasting/trend-forecasting.service';
 import { TrendGranularity } from '../trend_forecasting/dto/trend-forecast-query.dto';
-import { TrendForecastResponseDto } from '../trend_forecasting/dto/trend-forecast-response.dto';
 import { OrderItem } from '../order_items/entities/order-item.entity';
 import { ProductVariantInventory } from '../inventory/entities/product-variant-inventory.entity';
-import { OrderStatus } from '../orders/entities/order.entity';
 import { Conversation } from '../conversations/entities/conversation.entity';
 import { ConversationParticipant } from '../conversation_participants/entities/conversation_participant.entity';
 import { ParticipantRole } from '../conversations/enums/conversation.enums';
 import { Message } from '../messages/entities/message.entity';
 import { MessageRole } from '../messages/enums/message.enums';
-
-const ADMIN_COPILOT_SYSTEM_PROMPT = `Bạn là FiaOps — trợ lý chiến lược dành cho đội vận hành/ban giám đốc của Fashia.
-
-# Phong cách trả lời
-- Giọng điệu: chuyên nghiệp, ngắn gọn, ưu tiên bullet với dấu gạch ngang (-).
-- Nhấn mạnh insight chính, nêu rõ số liệu quan trọng, đề xuất hành động tiếp theo.
-- Nếu dữ liệu không đủ, nói thẳng "chưa đủ dữ liệu" và gợi ý bước cần lấy thêm.
-
-# Nguyên tắc dữ liệu
-- Chỉ sử dụng số liệu được cung cấp từ các hàm (tool). Không phỏng đoán.
-- Đối với tiền tệ, sử dụng định dạng VND với dấu phẩy phân tách hàng nghìn.
-- Khi so sánh tăng/giảm, nêu rõ phần trăm và ngữ cảnh thời gian.
-
-# Hàm (tool) khả dụng
-- get_revenue_overview: lấy tổng quan doanh thu, số đơn, AOV, dự báo.
-- get_top_products: liệt kê sản phẩm bán chạy theo doanh thu.
-- get_stock_alerts: cảnh báo SKU tồn kho thấp.
-
-# Quy tắc output
-- Nếu cần gọi tool, hãy gọi ngay, không trả lời vòng vo.
-- Sau khi có kết quả, tóm tắt 2-4 ý quan trọng và đề xuất bước hành động rõ ràng.
-- Tránh các cụm từ chung chung như "có vẻ" hoặc "có thể" nếu dữ liệu đã rõ.
-`;
-
-const ADMIN_COPILOT_TOOLS: Tool[] = [
-  {
-    functionDeclarations: [
-      {
-        name: 'get_revenue_overview',
-        description:
-          'Lấy tổng quan doanh thu, số đơn, sản phẩm bán ra và dự báo cho khoảng thời gian gần nhất.',
-        parameters: {
-          type: SchemaType.OBJECT,
-          properties: {
-            range: {
-              type: SchemaType.STRING,
-              format: 'enum',
-              description: 'Khoảng thời gian phân tích',
-              enum: ['7d', '30d', '90d'],
-            },
-            granularity: {
-              type: SchemaType.STRING,
-              format: 'enum',
-              enum: ['day', 'week', 'month'],
-            },
-            forecastPeriods: {
-              type: SchemaType.NUMBER,
-              description: 'Số kỳ dự báo tiếp theo',
-            },
-          },
-        },
-      },
-      {
-        name: 'get_top_products',
-        description: 'Lấy danh sách sản phẩm bán chạy theo doanh thu.',
-        parameters: {
-          type: SchemaType.OBJECT,
-          properties: {
-            range: {
-              type: SchemaType.STRING,
-              format: 'enum',
-              enum: ['7d', '30d', '90d'],
-            },
-            limit: { type: SchemaType.NUMBER, description: 'Số lượng sản phẩm, mặc định 5' },
-          },
-        },
-      },
-      {
-        name: 'get_stock_alerts',
-        description: 'Liệt kê các SKU tồn kho thấp để kịp thời bổ sung.',
-        parameters: {
-          type: SchemaType.OBJECT,
-          properties: {
-            threshold: {
-              type: SchemaType.NUMBER,
-              description: 'Ngưỡng tồn kho tối thiểu để cảnh báo',
-            },
-            branchId: {
-              type: SchemaType.NUMBER,
-              description: 'Lọc theo chi nhánh cụ thể (tùy chọn)',
-            },
-            limit: {
-              type: SchemaType.NUMBER,
-              description: 'Số lượng cảnh báo tối đa trả về',
-            },
-          },
-        },
-      },
-    ],
-  },
-];
+import { User } from '../users/entities/user.entity';
+import {
+  AdminCopilotAdminContext,
+  AdminCopilotRangeKey,
+  AdminCopilotRevenueOverviewResult,
+  AdminCopilotStockAlertRow,
+  AdminCopilotStockAlertsResult,
+  AdminCopilotTopProductRow,
+  AdminCopilotTopProductsResult,
+  AdminCopilotPostBrief,
+  AdminCopilotPostDraft,
+  AdminCopilotPostSchedule,
+  AdminCopilotPostStrategy,
+  AdminCopilotPostCampaignResult,
+  AdminCopilotPostCampaignNormalizedInput,
+  AdminCopilotRangeConfig,
+} from './types/admin-copilot.types';
+import {
+  AdminCopilotRevenueOverviewInput,
+  AdminCopilotStockAlertsInput,
+  AdminCopilotTopProductsInput,
+  AdminCopilotPostCampaignInput,
+} from './types/admin-copilot-tool-inputs';
+import {
+  ADMIN_COPILOT_DEFAULT_RANGE,
+  ADMIN_COPILOT_FULFILLED_ORDER_STATUSES,
+  ADMIN_COPILOT_RANGE_OPTIONS,
+} from './constants/admin-copilot.constants';
+import { ADMIN_COPILOT_TOOLS } from './constants/admin-copilot.tools';
+import { AppException } from '../../common/errors/app.exception';
 
 const ADMIN_COPILOT_CONVERSATION_TYPE = 'ADMIN_COPILOT';
 const ADMIN_COPILOT_HISTORY_LIMIT = 40;
 
-interface RangeConfig {
-  range: '7d' | '30d' | '90d';
-  days: number;
-  lookbackMonths: number;
-  granularity: TrendGranularity;
-}
-
-const RANGE_CONFIGS: RangeConfig[] = [
+const RANGE_CONFIGS: AdminCopilotRangeConfig[] = [
   { range: '7d', days: 7, lookbackMonths: 1, granularity: 'day' },
   { range: '30d', days: 30, lookbackMonths: 3, granularity: 'week' },
   { range: '90d', days: 90, lookbackMonths: 6, granularity: 'month' },
 ];
-
-type RangeKey = RangeConfig['range'];
-
-interface RevenueOverviewInput {
-  range?: RangeKey;
-  granularity?: TrendGranularity;
-  forecastPeriods?: number;
-}
-
-export interface AdminCopilotRevenueOverviewResult {
-  range: RangeKey;
-  granularity: TrendGranularity;
-  periodStart: string | null;
-  periodEnd: string | null;
-  totalRevenue: number;
-  totalOrders: number;
-  totalUnits: number;
-  averageOrderValue: number;
-  forecast: TrendForecastResponseDto['forecast'][number] | null;
-  summary: TrendForecastResponseDto['summary'];
-}
-
-interface TopProductsInput {
-  range?: RangeKey;
-  limit?: number;
-}
-
-interface TopProductRow {
-  productId: number;
-  name: string;
-  revenue: number;
-  unitsSold: number;
-  revenueShare: number;
-}
-
-export interface AdminCopilotTopProductsResult {
-  range: RangeKey;
-  products: TopProductRow[];
-}
-
-interface StockAlertsInput {
-  threshold?: number;
-  branchId?: number;
-  limit?: number;
-}
-
-interface StockAlertRow {
-  inventoryId: number;
-  variantId: number;
-  productId: number;
-  productName: string;
-  stock: number;
-  branchId: number | null;
-  branchName: string | null;
-}
-
-export interface AdminCopilotStockAlertsResult {
-  threshold: number;
-  alerts: StockAlertRow[];
-}
 
 @Injectable()
 export class AdminCopilotService {
   private readonly logger = new Logger(AdminCopilotService.name);
 
   constructor(
+    private readonly adsAiService: AdsAiService,
     private readonly geminiService: GeminiService,
     private readonly trendForecastingService: TrendForecastingService,
     private readonly configService: ConfigService,
+    private readonly i18n: I18nService,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
     @InjectRepository(OrderItem)
     private readonly orderItemRepository: Repository<OrderItem>,
     @InjectRepository(ProductVariantInventory)
@@ -223,14 +100,24 @@ export class AdminCopilotService {
   async chat(
     request: AdminCopilotChatRequestDto,
     adminUserId: number,
+    options: { lang?: string } = {},
   ): Promise<AdminCopilotResponseDto> {
     const trimmedMessage = request.message?.trim();
     if (!trimmedMessage) {
-      throw new BadRequestException('Message cannot be empty');
+      throw new AppException({
+        status: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN_COPILOT_MESSAGE_EMPTY',
+        translationKey: 'errors.adminCopilot.messageEmpty',
+      });
     }
 
+    const lang = options.lang ?? this.getRequestLanguage();
+    const adminContext = await this.resolveAdminContext(adminUserId);
+    const systemPrompt = await this.buildSystemPrompt(adminContext, lang);
+    const tools = ADMIN_COPILOT_TOOLS;
+
     this.logger.debug(
-      `Admin ${adminUserId} is sending copilot chat message` +
+      `Admin ${adminUserId} (${adminContext.isGlobalAdmin ? 'global' : `branch ${adminContext.branchId}`}) is sending copilot chat message` +
         ` (conversationId=${request.conversationId ?? 'auto'}, historyLength=${
           request.history?.length ?? 0
         })`,
@@ -268,9 +155,9 @@ export class AdminCopilotService {
     ];
 
     const firstCall = await this.geminiService.generateContent(trimmedMessage, historyMessages, {
-      systemPrompt: ADMIN_COPILOT_SYSTEM_PROMPT,
+      systemPrompt,
       temperature: 0.1,
-      tools: ADMIN_COPILOT_TOOLS,
+      tools,
       model: this.getAdminModelName(),
     });
 
@@ -291,7 +178,7 @@ export class AdminCopilotService {
     let toolResult: Record<string, unknown> | null = null;
 
     if (firstCall.functionCall) {
-      const toolExecution = await this.dispatchTool(firstCall.functionCall);
+      const toolExecution = await this.dispatchTool(firstCall.functionCall, adminContext, lang);
       const responsePayload = toolExecution.functionResponse.response as Record<string, unknown>;
       toolResult = responsePayload;
       functionCall = {
@@ -314,9 +201,9 @@ export class AdminCopilotService {
         tempHistory,
         toolExecution,
         {
-          systemPrompt: ADMIN_COPILOT_SYSTEM_PROMPT,
+          systemPrompt,
           temperature: 0.1,
-          tools: ADMIN_COPILOT_TOOLS,
+          tools,
           model: this.getAdminModelName(),
         },
       );
@@ -328,7 +215,11 @@ export class AdminCopilotService {
         );
       }
     } else if (!reply) {
-      throw new BadRequestException('Gemini did not return any answer');
+      throw new AppException({
+        status: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN_COPILOT_NO_ANSWER',
+        translationKey: 'errors.adminCopilot.geminiNoAnswer',
+      });
     }
 
     const assistantHistoryEntry: AdminCopilotHistoryMessageDto = {
@@ -340,6 +231,7 @@ export class AdminCopilotService {
     const assistantMetadata: Record<string, unknown> = {
       provider: 'gemini',
       model: this.getAdminModelName(),
+      language: lang,
     };
     if (functionCall) {
       assistantMetadata.functionCall = functionCall;
@@ -386,8 +278,16 @@ export class AdminCopilotService {
     };
   }
 
-  getRevenueOverview(params: RevenueOverviewInput): Promise<AdminCopilotRevenueOverviewResult> {
-    return this.computeRevenueOverview(params);
+  async getRevenueOverview(
+    adminUserId: number,
+    params: AdminCopilotRevenueOverviewInput,
+  ): Promise<AdminCopilotRevenueOverviewResult> {
+    const context = await this.resolveAdminContext(adminUserId);
+    const branchSuffix = context.branchId ? ` branchId=${context.branchId}` : '';
+    this.logger.debug(
+      `Admin ${adminUserId} fetching revenue overview (range=${params.range ?? 'default'}, granularity=${params.granularity ?? 'default'})${branchSuffix}`,
+    );
+    return this.computeRevenueOverview(params, context);
   }
 
   async getHistory(
@@ -438,12 +338,168 @@ export class AdminCopilotService {
     };
   }
 
-  getTopProducts(params: TopProductsInput): Promise<AdminCopilotTopProductsResult> {
-    return this.computeTopProducts(params);
+  async getTopProducts(
+    adminUserId: number,
+    params: AdminCopilotTopProductsInput,
+  ): Promise<AdminCopilotTopProductsResult> {
+    const context = await this.resolveAdminContext(adminUserId);
+    const branchSuffix = context.branchId ? ` branchId=${context.branchId}` : '';
+    this.logger.debug(
+      `Admin ${adminUserId} fetching top products (range=${params.range ?? 'default'}, limit=${params.limit ?? 'default'})${branchSuffix}`,
+    );
+    return this.computeTopProducts(params, context);
   }
 
-  getStockAlerts(params: StockAlertsInput): Promise<AdminCopilotStockAlertsResult> {
-    return this.computeStockAlerts(params);
+  async getStockAlerts(
+    adminUserId: number,
+    params: AdminCopilotStockAlertsInput,
+  ): Promise<AdminCopilotStockAlertsResult> {
+    const context = await this.resolveAdminContext(adminUserId);
+    const branchSuffix = context.branchId
+      ? ` branchId=${context.branchId}`
+      : params.branchId
+        ? ` branchId=${params.branchId}`
+        : '';
+    this.logger.debug(
+      `Admin ${adminUserId} fetching stock alerts (threshold=${params.threshold ?? 'default'}, limit=${params.limit ?? 'default'})${branchSuffix}`,
+    );
+    return this.computeStockAlerts(params, context);
+  }
+
+  private async resolveAdminContext(adminUserId: number): Promise<AdminCopilotAdminContext> {
+    const user = await this.userRepository.findOne({
+      where: { id: adminUserId },
+      relations: { branch: true },
+    });
+
+    if (!user) {
+      throw new AppException({
+        status: HttpStatus.NOT_FOUND,
+        code: 'ADMIN_COPILOT_ADMIN_NOT_FOUND',
+        translationKey: 'errors.adminCopilot.adminNotFound',
+      });
+    }
+
+    const branchId = user.branchId ?? null;
+
+    this.logger.debug(
+      `Admin context resolved for ${adminUserId} (role=${user.role}, branchId=${branchId ?? 'all'})`,
+    );
+
+    return {
+      adminUserId,
+      role: user.role,
+      branchId,
+      branchName: user.branch?.name ?? null,
+      isGlobalAdmin: branchId === null,
+    };
+  }
+
+  private async buildSystemPrompt(
+    context: AdminCopilotAdminContext,
+    lang: string,
+  ): Promise<string> {
+    const base = (await this.translateString('admin-copilot.prompts.system.base', lang)).trim();
+    const scopeHeading = await this.translateString(
+      'admin-copilot.prompts.system.scopeHeading',
+      lang,
+    );
+    const scopeLines = await this.translateStringArray(
+      `admin-copilot.prompts.system.scopes.${context.isGlobalAdmin ? 'global' : 'branch'}`,
+      lang,
+      context.isGlobalAdmin
+        ? undefined
+        : {
+            branchLabel: this.getBranchLabel(context),
+          },
+    );
+    const footer = await this.translateString('admin-copilot.prompts.system.footer', lang);
+    const languageDirective = await this.translateString(
+      'admin-copilot.prompts.system.languageDirective',
+      lang,
+      {
+        languageName: this.getLanguageDisplayName(lang),
+      },
+    );
+
+    const segments = [base, '', scopeHeading, ...scopeLines, footer, languageDirective].filter(
+      (segment): segment is string => typeof segment === 'string',
+    );
+
+    return segments
+      .filter((segment, index) => segment !== '' || segments[index - 1] !== '')
+      .join('\n')
+      .trim();
+  }
+
+  private getRequestLanguage(): string {
+    const lang = I18nContext.current()?.lang;
+    if (lang && typeof lang === 'string') {
+      return lang;
+    }
+    return 'vi';
+  }
+
+  private getLanguageDisplayName(lang: string): string {
+    const normalized = lang.toLowerCase();
+    if (normalized.startsWith('vi')) {
+      return 'Tiếng Việt';
+    }
+    if (normalized.startsWith('en')) {
+      return 'English';
+    }
+    return 'English';
+  }
+
+  private getBranchLabel(context: AdminCopilotAdminContext): string {
+    if (context.branchName) {
+      return context.branchName;
+    }
+    if (context.branchId) {
+      return `#${context.branchId}`;
+    }
+    return 'N/A';
+  }
+
+  private async translateString(
+    key: string,
+    lang: string,
+    args?: Record<string, unknown>,
+    fallback = '',
+  ): Promise<string> {
+    const value = await this.i18n.translate(key, { lang, args });
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.join('\n');
+    }
+    if (value === null || value === undefined) {
+      return fallback;
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return fallback;
+    }
+  }
+
+  private async translateStringArray(
+    key: string,
+    lang: string,
+    args?: Record<string, unknown>,
+  ): Promise<string[]> {
+    const value = await this.i18n.translate(key, { lang, args });
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item));
+    }
+    if (typeof value === 'string') {
+      return value
+        .split('\n')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    return [];
   }
 
   private mapMessagesToGemini(messages: Message[]): GeminiChatMessage[] {
@@ -518,7 +574,11 @@ export class AdminCopilotService {
         where: { id: opts.conversationId },
       });
       if (!conversation) {
-        throw new NotFoundException('Admin copilot conversation not found');
+        throw new AppException({
+          status: HttpStatus.NOT_FOUND,
+          code: 'ADMIN_COPILOT_CONVERSATION_NOT_FOUND',
+          translationKey: 'errors.adminCopilot.conversationNotFound',
+        });
       }
 
       const isParticipant = await this.participantRepository.exist({
@@ -526,7 +586,11 @@ export class AdminCopilotService {
       });
 
       if (!isParticipant) {
-        throw new ForbiddenException('You are not allowed to access this conversation');
+        throw new AppException({
+          status: HttpStatus.FORBIDDEN,
+          code: 'ADMIN_COPILOT_CONVERSATION_FORBIDDEN',
+          translationKey: 'errors.adminCopilot.conversationAccessDenied',
+        });
       }
     } else {
       conversation = await this.conversationRepository
@@ -619,29 +683,63 @@ export class AdminCopilotService {
     return this.configService.get<string>('GEMINI_ADMIN_MODEL') ?? 'gemini-2.5-pro';
   }
 
-  private async dispatchTool(functionCall: FunctionCall): Promise<FunctionResponsePart> {
+  private async dispatchTool(
+    functionCall: FunctionCall,
+    context: AdminCopilotAdminContext,
+    lang: string,
+  ): Promise<FunctionResponsePart> {
     const { name, args } = functionCall;
-    this.logger.debug(`Dispatching admin copilot tool ${name} with args ${JSON.stringify(args)}`);
+    this.logger.debug(
+      `Dispatching admin copilot tool ${name} with args ${JSON.stringify(args)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
     switch (name) {
       case 'get_revenue_overview':
-        return this.handleRevenueOverview((args ?? {}) as Record<string, unknown>);
+        return this.handleRevenueOverview((args ?? {}) as Record<string, unknown>, context);
       case 'get_top_products':
-        return this.handleTopProducts((args ?? {}) as Record<string, unknown>);
+        return this.handleTopProducts((args ?? {}) as Record<string, unknown>, context);
       case 'get_stock_alerts':
-        return this.handleStockAlerts((args ?? {}) as Record<string, unknown>);
-      default:
+        return this.handleStockAlerts((args ?? {}) as Record<string, unknown>, context);
+      case 'generate_post_campaign':
+        return this.handlePostCampaign((args ?? {}) as Record<string, unknown>, context, lang);
+      case 'finalize_post_campaign':
+        return this.handleFinalizePostCampaign(
+          (args ?? {}) as Record<string, unknown>,
+          context,
+          lang,
+        );
+      case 'schedule_post_campaign':
+        return this.handleSchedulePostCampaign(
+          (args ?? {}) as Record<string, unknown>,
+          context,
+          lang,
+        );
+      default: {
         this.logger.warn(`Unknown admin copilot tool: ${name}`);
+        const errorMessage =
+          (await this.translateString(
+            'errors.adminCopilot.toolUnsupported',
+            lang,
+            { toolName: name },
+            `Tool ${name} is not supported`,
+          )) || `Tool ${name} is not supported`;
         return {
           functionResponse: {
             name,
-            response: { content: { error: `Tool ${name} is not supported` } },
+            response: {
+              content: {
+                error: errorMessage,
+                code: 'ADMIN_COPILOT_TOOL_UNSUPPORTED',
+              },
+            },
           },
         };
+      }
     }
   }
 
   private async computeRevenueOverview(
-    params: RevenueOverviewInput,
+    params: AdminCopilotRevenueOverviewInput,
+    context: AdminCopilotAdminContext,
   ): Promise<AdminCopilotRevenueOverviewResult> {
     const { range, config } = this.resolveRangeConfig(params.range);
     const granularity = this.resolveGranularity(params.granularity, config.granularity);
@@ -651,6 +749,7 @@ export class AdminCopilotService {
       granularity,
       lookbackMonths: config.lookbackMonths,
       forecastPeriods,
+      branchId: context.branchId ?? undefined,
     });
 
     const rangeStart = this.subtractDays(new Date(), config.days);
@@ -671,6 +770,10 @@ export class AdminCopilotService {
 
     const averageOrderValue = totals.orders > 0 ? totals.revenue / totals.orders : 0;
 
+    this.logger.debug(
+      `Revenue overview computed (range=${range}, granularity=${granularity}, orders=${totals.orders}, revenue=${totals.revenue.toFixed(0)}, scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
+
     return {
       range,
       granularity,
@@ -689,7 +792,8 @@ export class AdminCopilotService {
   }
 
   private async computeTopProducts(
-    params: TopProductsInput,
+    params: AdminCopilotTopProductsInput,
+    context: AdminCopilotAdminContext,
   ): Promise<AdminCopilotTopProductsResult> {
     const { range, config } = this.resolveRangeConfig(params.range);
     const limit = this.parsePositiveInt(params.limit, 5, 1, 20) ?? 5;
@@ -706,17 +810,16 @@ export class AdminCopilotService {
       .addSelect('SUM(item.quantity)', 'unitsSold')
       .where('order.createdAt >= :startDate', { startDate: startDate.toISOString() })
       .andWhere('order.status IN (:...statuses)', {
-        statuses: [
-          OrderStatus.CONFIRMED,
-          OrderStatus.PROCESSING,
-          OrderStatus.SHIPPED,
-          OrderStatus.DELIVERED,
-        ],
+        statuses: ADMIN_COPILOT_FULFILLED_ORDER_STATUSES,
       })
       .groupBy('product.id')
       .addGroupBy('product.name')
       .orderBy('revenue', 'DESC')
       .limit(limit);
+
+    if (context.branchId) {
+      qb.andWhere('order.branchId = :branchId', { branchId: context.branchId });
+    }
 
     const rows = await qb.getRawMany<{
       productId: number;
@@ -726,13 +829,17 @@ export class AdminCopilotService {
     }>();
     const totalRevenue = rows.reduce((acc, row) => acc + Number(row.revenue ?? 0), 0);
 
-    const products: TopProductRow[] = rows.map((row) => ({
+    const products: AdminCopilotTopProductRow[] = rows.map((row) => ({
       productId: Number(row.productId),
       name: row.name,
       revenue: Number(row.revenue ?? 0),
       unitsSold: Number(row.unitsSold ?? 0),
       revenueShare: totalRevenue ? Number(row.revenue ?? 0) / totalRevenue : 0,
     }));
+
+    this.logger.debug(
+      `Top products computed (range=${range}, items=${products.length}, scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
 
     return {
       range,
@@ -741,11 +848,20 @@ export class AdminCopilotService {
   }
 
   private async computeStockAlerts(
-    params: StockAlertsInput,
+    params: AdminCopilotStockAlertsInput,
+    context: AdminCopilotAdminContext,
   ): Promise<AdminCopilotStockAlertsResult> {
     const threshold = this.parsePositiveInt(params.threshold, 20, 0, 1000) ?? 20;
-    const branchId = this.parsePositiveInt(params.branchId, undefined, 1);
     const limit = this.parsePositiveInt(params.limit, 10, 1, 50) ?? 10;
+
+    const requestedBranchId = this.parsePositiveInt(params.branchId, undefined, 1);
+    const effectiveBranchId = context.branchId ?? requestedBranchId ?? undefined;
+
+    if (context.branchId && requestedBranchId && requestedBranchId !== context.branchId) {
+      this.logger.warn(
+        `Branch admin ${context.adminUserId} attempted to access stock alerts for branch ${requestedBranchId}; enforced branch ${context.branchId}`,
+      );
+    }
 
     const qb = this.inventoryRepository
       .createQueryBuilder('inventory')
@@ -763,8 +879,8 @@ export class AdminCopilotService {
       .orderBy('inventory.stock', 'ASC')
       .limit(limit);
 
-    if (branchId) {
-      qb.andWhere('inventory.branchId = :branchId', { branchId });
+    if (effectiveBranchId) {
+      qb.andWhere('inventory.branchId = :branchId', { branchId: effectiveBranchId });
     }
 
     const rows = await qb.getRawMany<{
@@ -777,7 +893,7 @@ export class AdminCopilotService {
       branchName: string | null;
     }>();
 
-    const alerts: StockAlertRow[] = rows.map((row) => ({
+    const alerts: AdminCopilotStockAlertRow[] = rows.map((row) => ({
       inventoryId: Number(row.inventoryId),
       variantId: Number(row.variantId),
       productId: Number(row.productId),
@@ -787,21 +903,39 @@ export class AdminCopilotService {
       branchName: row.branchName ?? null,
     }));
 
+    this.logger.debug(
+      `Stock alerts computed (threshold=${threshold}, alerts=${alerts.length}, scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
+
     return {
       threshold,
       alerts,
     };
   }
 
-  private resolveRangeConfig(source?: unknown): { range: RangeKey; config: RangeConfig } {
-    if (typeof source === 'string') {
-      const match = RANGE_CONFIGS.find((item) => item.range === source);
-      if (match) {
-        return { range: match.range, config: match };
-      }
+  private normalizeRangeKey(value: unknown): AdminCopilotRangeKey | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
     }
-    const fallback = RANGE_CONFIGS[1];
-    return { range: fallback.range, config: fallback };
+    const options = ADMIN_COPILOT_RANGE_OPTIONS as readonly AdminCopilotRangeKey[];
+    return options.includes(value as AdminCopilotRangeKey)
+      ? (value as AdminCopilotRangeKey)
+      : undefined;
+  }
+
+  private resolveRangeConfig(source?: unknown): {
+    range: AdminCopilotRangeKey;
+    config: AdminCopilotRangeConfig;
+  } {
+    const fallbackRange =
+      this.normalizeRangeKey(ADMIN_COPILOT_DEFAULT_RANGE) ?? ('30d' as AdminCopilotRangeKey);
+    const normalized = this.normalizeRangeKey(source) ?? fallbackRange;
+    const config =
+      RANGE_CONFIGS.find((item) => item.range === normalized) ??
+      RANGE_CONFIGS.find((item) => item.range === fallbackRange) ??
+      RANGE_CONFIGS[0];
+
+    return { range: config.range, config };
   }
 
   private resolveGranularity(source: unknown, fallback: TrendGranularity): TrendGranularity {
@@ -816,16 +950,19 @@ export class AdminCopilotService {
 
   private async handleRevenueOverview(
     rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
   ): Promise<FunctionResponsePart> {
-    this.logger.debug(`Handling revenue overview tool with payload ${JSON.stringify(rawArgs)}`);
-    const payload = await this.computeRevenueOverview({
-      range: typeof rawArgs.range === 'string' ? (rawArgs.range as RangeKey) : undefined,
-      granularity:
-        typeof rawArgs.granularity === 'string'
-          ? (rawArgs.granularity as TrendGranularity)
-          : undefined,
-      forecastPeriods: this.parsePositiveInt(rawArgs.forecastPeriods, undefined, 1, 12),
-    });
+    this.logger.debug(
+      `Handling revenue overview tool with payload ${JSON.stringify(rawArgs)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
+    const payload = await this.computeRevenueOverview(
+      {
+        range: this.normalizeRangeKey(rawArgs.range),
+        granularity: this.normalizeGranularity(rawArgs.granularity),
+        forecastPeriods: this.parsePositiveInt(rawArgs.forecastPeriods, undefined, 1, 12),
+      },
+      context,
+    );
 
     return {
       functionResponse: {
@@ -835,12 +972,20 @@ export class AdminCopilotService {
     };
   }
 
-  private async handleTopProducts(rawArgs: Record<string, unknown>): Promise<FunctionResponsePart> {
-    this.logger.debug(`Handling top products tool with payload ${JSON.stringify(rawArgs)}`);
-    const payload = await this.computeTopProducts({
-      range: typeof rawArgs.range === 'string' ? (rawArgs.range as RangeKey) : undefined,
-      limit: this.parsePositiveInt(rawArgs.limit, undefined, 1, 20),
-    });
+  private async handleTopProducts(
+    rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+  ): Promise<FunctionResponsePart> {
+    this.logger.debug(
+      `Handling top products tool with payload ${JSON.stringify(rawArgs)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
+    const payload = await this.computeTopProducts(
+      {
+        range: this.normalizeRangeKey(rawArgs.range),
+        limit: this.parsePositiveInt(rawArgs.limit, undefined, 1, 20),
+      },
+      context,
+    );
 
     return {
       functionResponse: {
@@ -852,13 +997,21 @@ export class AdminCopilotService {
     };
   }
 
-  private async handleStockAlerts(rawArgs: Record<string, unknown>): Promise<FunctionResponsePart> {
-    this.logger.debug(`Handling stock alerts tool with payload ${JSON.stringify(rawArgs)}`);
-    const payload = await this.computeStockAlerts({
-      threshold: this.parsePositiveInt(rawArgs.threshold, undefined, 0, 1000),
-      branchId: this.parsePositiveInt(rawArgs.branchId, undefined, 1),
-      limit: this.parsePositiveInt(rawArgs.limit, undefined, 1, 50),
-    });
+  private async handleStockAlerts(
+    rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+  ): Promise<FunctionResponsePart> {
+    this.logger.debug(
+      `Handling stock alerts tool with payload ${JSON.stringify(rawArgs)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
+    const payload = await this.computeStockAlerts(
+      {
+        threshold: this.parsePositiveInt(rawArgs.threshold, undefined, 0, 1000),
+        branchId: this.parsePositiveInt(rawArgs.branchId, undefined, 1),
+        limit: this.parsePositiveInt(rawArgs.limit, undefined, 1, 50),
+      },
+      context,
+    );
 
     return {
       functionResponse: {
@@ -868,6 +1021,1043 @@ export class AdminCopilotService {
         },
       },
     };
+  }
+
+  private async handlePostCampaign(
+    rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+    requestLang: string,
+  ): Promise<FunctionResponsePart> {
+    this.logger.debug(
+      `Handling post campaign tool with payload ${JSON.stringify(rawArgs)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
+
+    try {
+      const normalized = this.normalizePostCampaignInput(rawArgs, requestLang);
+      const posts = await this.generatePostCampaignDraftsWithAdsAi(normalized, context);
+      const strategy = this.buildPostCampaignStrategyFromAdsAi(posts, normalized, context);
+      const payload = this.normalizePostCampaignResult(
+        {
+          brief: normalized.brief,
+          strategy,
+          posts,
+        },
+        normalized,
+      );
+
+      return {
+        functionResponse: {
+          name: 'generate_post_campaign',
+          response: {
+            content: payload,
+          },
+        },
+      };
+    } catch (error) {
+      this.logger.error(
+        `Failed to generate post campaign content for admin ${context.adminUserId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+
+      const fallbackMessage =
+        (await this.translateString(
+          'admin-copilot.messages.errors.postPlanFailed',
+          requestLang,
+          {},
+          'Không thể tạo kế hoạch nội dung, vui lòng thử lại sau.',
+        )) || 'Không thể tạo kế hoạch nội dung, vui lòng thử lại sau.';
+
+      return {
+        functionResponse: {
+          name: 'generate_post_campaign',
+          response: {
+            content: {
+              error: fallbackMessage,
+            },
+          },
+        },
+      };
+    }
+  }
+
+  private async handleFinalizePostCampaign(
+    rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+    requestLang: string,
+  ): Promise<FunctionResponsePart> {
+    this.logger.debug(
+      `Handling finalize post campaign tool with payload ${JSON.stringify(rawArgs)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
+
+    try {
+      const campaignPayload = this.extractFinalizeCampaignInput(rawArgs);
+      const dto = await this.buildAdsAiCreateDto(campaignPayload, context);
+      const campaign = await this.adsAiService.createFromForm(dto);
+      const payload = {
+        advertisement: this.buildAdsAiCampaignResponse(campaign),
+      };
+
+      return {
+        functionResponse: {
+          name: 'finalize_post_campaign',
+          response: { content: payload },
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to finalize post campaign for admin ${context.adminUserId}: ${message}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
+      const fallback =
+        (await this.translateString(
+          'admin-copilot.messages.errors.postFinalizeFailed',
+          requestLang,
+          {},
+          'Không thể lưu bài viết, vui lòng thử lại sau.',
+        )) || 'Không thể lưu bài viết, vui lòng thử lại sau.';
+
+      return {
+        functionResponse: {
+          name: 'finalize_post_campaign',
+          response: {
+            content: {
+              error: fallback,
+            },
+          },
+        },
+      };
+    }
+  }
+
+  private async handleSchedulePostCampaign(
+    rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+    requestLang: string,
+  ): Promise<FunctionResponsePart> {
+    this.logger.debug(
+      `Handling schedule post campaign tool with payload ${JSON.stringify(rawArgs)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
+
+    try {
+      const advertisementId =
+        this.parsePositiveInt(rawArgs.advertisementId, undefined, 1) ??
+        this.parsePositiveInt(rawArgs.campaignId, undefined, 1) ??
+        this.parsePositiveInt(rawArgs.id, undefined, 1);
+
+      if (!advertisementId) {
+        throw new Error('Thiếu advertisementId để lên lịch.');
+      }
+
+      const scheduledAtInput =
+        this.normalizeScheduleIso(rawArgs.scheduledAt) ??
+        this.normalizeScheduleIso(rawArgs.schedule);
+
+      if (!scheduledAtInput) {
+        throw new Error('Thiếu scheduledAt hợp lệ.');
+      }
+
+      const dto = plainToInstance(
+        ScheduleAdsAiDto,
+        { scheduledAt: scheduledAtInput },
+        { enableImplicitConversion: true, exposeDefaultValues: true },
+      );
+
+      const errors = await validate(dto, {
+        whitelist: true,
+        forbidUnknownValues: false,
+      });
+
+      if (errors.length) {
+        throw new Error(this.buildValidationErrorMessage(errors));
+      }
+
+      const scheduled = await this.adsAiService.schedule(advertisementId, dto);
+      const payload = {
+        advertisement: this.buildAdsAiCampaignResponse(scheduled),
+      };
+
+      return {
+        functionResponse: {
+          name: 'schedule_post_campaign',
+          response: { content: payload },
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to schedule post campaign for admin ${context.adminUserId}: ${message}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
+      const fallback =
+        (await this.translateString(
+          'admin-copilot.messages.errors.postScheduleFailed',
+          requestLang,
+          {},
+          'Không thể lên lịch đăng bài, vui lòng thử lại sau.',
+        )) || 'Không thể lên lịch đăng bài, vui lòng thử lại sau.';
+
+      return {
+        functionResponse: {
+          name: 'schedule_post_campaign',
+          response: {
+            content: {
+              error: fallback,
+            },
+          },
+        },
+      };
+    }
+  }
+
+  private extractFinalizeCampaignInput(source: Record<string, unknown>): Record<string, unknown> {
+    const candidateKeys = ['campaign', 'advertisement', 'payload', 'data'];
+
+    for (const key of candidateKeys) {
+      const value = source[key];
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return value as Record<string, unknown>;
+      }
+    }
+
+    return source;
+  }
+
+  private async buildAdsAiCreateDto(
+    raw: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+  ): Promise<CreateAdsAiDto> {
+    const normalizedName =
+      this.normalizeString(raw['name']) ??
+      this.normalizeString(raw['campaignName']) ??
+      this.normalizeString(raw['headline']) ??
+      this.buildDefaultAdsCampaignName(context);
+
+    const primaryText =
+      this.normalizeString(raw['primaryText']) ?? this.normalizeString(raw['caption']) ?? undefined;
+
+    const prompt =
+      this.normalizeString(raw['prompt']) ??
+      this.normalizeString(raw['sourcePrompt']) ??
+      primaryText ??
+      undefined;
+
+    const description =
+      this.normalizeString(raw['description']) ??
+      this.normalizeString(raw['subHeadline']) ??
+      undefined;
+
+    const callToAction =
+      this.normalizeString(raw['callToAction']) ?? this.normalizeString(raw['cta']) ?? undefined;
+
+    const ctaUrl = this.normalizeString(raw['ctaUrl'] ?? raw['url']);
+    const productName = this.normalizeString(raw['productName'] ?? raw['productFocus']);
+    const targetAudience = this.normalizeString(raw['targetAudience']);
+    const tone = this.normalizeString(raw['tone']);
+    const objective = this.normalizeString(raw['objective']);
+    const headline = this.normalizeString(raw['headline']);
+    const image = this.normalizeString(raw['image']);
+    const postType = this.normalizeString(raw['postType']);
+
+    const productId = this.parsePositiveInt(raw['productId'], undefined, 1);
+
+    const scheduledAt =
+      this.normalizeScheduleIso(raw['scheduledAt']) ?? this.normalizeScheduleIso(raw['schedule']);
+
+    const hashtagsValue =
+      Array.isArray(raw['hashtags']) || typeof raw['hashtags'] === 'string'
+        ? raw['hashtags']
+        : undefined;
+
+    const dtoInput: Record<string, unknown> = {
+      name: normalizedName,
+    };
+
+    if (productName) {
+      dtoInput.productName = productName;
+    }
+    if (productId !== undefined) {
+      dtoInput.productId = productId;
+    }
+    if (targetAudience) {
+      dtoInput.targetAudience = targetAudience;
+    }
+    if (tone) {
+      dtoInput.tone = tone;
+    }
+    if (objective) {
+      dtoInput.objective = objective;
+    }
+    if (callToAction) {
+      dtoInput.callToAction = callToAction;
+    }
+    if (ctaUrl) {
+      dtoInput.ctaUrl = ctaUrl;
+    }
+    if (primaryText) {
+      dtoInput.primaryText = primaryText;
+    }
+    if (headline) {
+      dtoInput.headline = headline;
+    }
+    if (description) {
+      dtoInput.description = description;
+    }
+    if (hashtagsValue !== undefined) {
+      dtoInput.hashtags = hashtagsValue;
+    }
+    if (scheduledAt) {
+      dtoInput.scheduledAt = scheduledAt;
+    }
+    if (image) {
+      dtoInput.image = image;
+    }
+    if (postType) {
+      dtoInput.postType = postType;
+    }
+    if (prompt) {
+      dtoInput.prompt = prompt;
+    }
+
+    const dto = plainToInstance(CreateAdsAiDto, dtoInput, {
+      enableImplicitConversion: true,
+      exposeDefaultValues: true,
+    });
+
+    const errors = await validate(dto, {
+      whitelist: true,
+      forbidUnknownValues: false,
+    });
+
+    if (errors.length) {
+      throw new Error(this.buildValidationErrorMessage(errors));
+    }
+
+    return dto;
+  }
+
+  private buildAdsAiCampaignResponse(campaign: AdsAiCampaign): Record<string, unknown> {
+    return {
+      id: campaign.id,
+      name: campaign.name,
+      status: campaign.status,
+      productId: campaign.productId,
+      productName: campaign.productName,
+      targetAudience: campaign.targetAudience,
+      tone: campaign.tone,
+      objective: campaign.objective,
+      callToAction: campaign.callToAction,
+      ctaUrl: campaign.ctaUrl,
+      primaryText: campaign.primaryText,
+      headline: campaign.headline,
+      description: campaign.description,
+      hashtags: campaign.hashtags ?? [],
+      postType: campaign.postType,
+      scheduledAt: campaign.scheduledAt ? campaign.scheduledAt.toISOString() : null,
+      createdAt: campaign.createdAt ? campaign.createdAt.toISOString() : null,
+      updatedAt: campaign.updatedAt ? campaign.updatedAt.toISOString() : null,
+    };
+  }
+
+  private buildDefaultAdsCampaignName(context: AdminCopilotAdminContext): string {
+    const now = new Date();
+    const datePart = now.toISOString().split('T')[0];
+    const scope = !context.isGlobalAdmin && context.branchName ? ` - ${context.branchName}` : '';
+    return `Copilot Campaign ${datePart}${scope}`;
+  }
+
+  private buildValidationErrorMessage(errors: ValidationError[]): string {
+    const messages: string[] = [];
+
+    const collect = (items: ValidationError[]) => {
+      items.forEach((item) => {
+        if (item.constraints) {
+          messages.push(...Object.values(item.constraints));
+        }
+        if (item.children && item.children.length) {
+          collect(item.children);
+        }
+      });
+    };
+
+    collect(errors);
+
+    return messages.filter(Boolean).join('; ');
+  }
+
+  private normalizeScheduleIso(value: unknown): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return undefined;
+      }
+      const parsed = new Date(trimmed);
+      if (Number.isNaN(parsed.getTime())) {
+        return undefined;
+      }
+      return parsed.toISOString();
+    }
+
+    if (typeof value === 'object') {
+      const map = value as Record<string, unknown>;
+      const directKeys = ['iso', 'scheduledAt', 'datetime', 'dateTime'];
+      for (const key of directKeys) {
+        const candidate = map[key];
+        if (typeof candidate === 'string') {
+          const normalized = this.normalizeScheduleIso(candidate);
+          if (normalized) {
+            return normalized;
+          }
+        }
+      }
+
+      const date = this.normalizeString(map['date'] ?? map['day'] ?? map['publishDate']);
+      if (!date) {
+        return undefined;
+      }
+
+      const time =
+        this.normalizeString(map['time'] ?? map['hour'] ?? map['window'] ?? map['publishTime']) ??
+        '09:00';
+
+      const timezoneInput =
+        this.normalizeString(map['timezone'] ?? map['tz'] ?? map['timeZone'] ?? map['offset']) ??
+        '+07:00';
+
+      const timezone = this.normalizeTimezoneOffset(timezoneInput);
+      if (!timezone) {
+        return undefined;
+      }
+
+      const isoCandidate = `${date}T${time}${timezone}`;
+      const parsed = new Date(isoCandidate);
+      if (Number.isNaN(parsed.getTime())) {
+        return undefined;
+      }
+
+      return parsed.toISOString();
+    }
+
+    return undefined;
+  }
+
+  private normalizeTimezoneOffset(value: string): string | null {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    if (/^Z$/i.test(trimmed)) {
+      return 'Z';
+    }
+
+    const alias = trimmed.replace(/\s+/g, '').toLowerCase();
+    switch (alias) {
+      case 'asia/ho_chi_minh':
+      case 'asia/hochiminh':
+      case 'asia/saigon':
+      case 'asia/bangkok':
+        return '+07:00';
+      default:
+        break;
+    }
+
+    const match = trimmed.match(/^([+-])(\d{1,2})(?::?(\d{2}))?$/);
+    if (!match) {
+      return null;
+    }
+
+    const sign = match[1];
+    const hours = match[2].padStart(2, '0');
+    const minutes = (match[3] ?? '00').padStart(2, '0');
+
+    return `${sign}${hours}:${minutes}`;
+  }
+
+  private async generatePostCampaignDraftsWithAdsAi(
+    normalized: AdminCopilotPostCampaignNormalizedInput,
+    context: AdminCopilotAdminContext,
+  ): Promise<AdminCopilotPostDraft[]> {
+    const totalPosts = normalized.variants;
+    const drafts: AdminCopilotPostDraft[] = [];
+    let successCount = 0;
+
+    for (let index = 0; index < totalPosts; index += 1) {
+      const variantId = `variant-${index + 1}`;
+
+      try {
+        const dto = this.buildAdsAiGenerateDto(normalized, index, context);
+        const creative = await this.adsAiService.generateCreative(dto);
+        successCount += 1;
+
+        const hashtags =
+          Array.isArray(creative.hashtags) && creative.hashtags.length
+            ? creative.hashtags
+            : normalized.hashtags;
+
+        drafts.push({
+          variantId,
+          headline: creative.headline,
+          subHeadline: creative.description,
+          caption: creative.primaryText,
+          callToAction:
+            creative.callToAction && creative.callToAction.trim().length
+              ? creative.callToAction
+              : (normalized.brief.callToAction ?? null),
+          hashtags,
+          schedule: normalized.brief.schedule ?? null,
+          preview: this.buildAdsAiPreview(creative),
+          notes: this.buildAdsAiPostNotes(normalized),
+          suggestedAssets: this.buildSuggestedAssets(normalized),
+        });
+      } catch (error) {
+        this.logger.error(
+          `Ads AI generation failed for Facebook variant ${variantId}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+
+        drafts.push({
+          variantId,
+          headline: null,
+          subHeadline: null,
+          caption: this.buildAdsAiFallbackCaption(normalized.language),
+          callToAction: normalized.brief.callToAction ?? null,
+          hashtags: normalized.hashtags,
+          schedule: normalized.brief.schedule ?? null,
+          preview: null,
+          notes: this.buildAdsAiFailureNote(error, normalized.language),
+          suggestedAssets: this.buildSuggestedAssets(normalized),
+        });
+      }
+    }
+
+    if (!successCount) {
+      throw new AppException({
+        status: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN_COPILOT_POST_PLAN_FAILED',
+        translationKey: 'errors.adminCopilot.postPlanFailed',
+      });
+    }
+
+    return drafts;
+  }
+
+  private buildPostCampaignStrategyFromAdsAi(
+    posts: AdminCopilotPostDraft[],
+    normalized: AdminCopilotPostCampaignNormalizedInput,
+    context: AdminCopilotAdminContext,
+  ): AdminCopilotPostStrategy {
+    const hookCandidates = posts
+      .map((post) => {
+        if (post.headline && post.headline.trim().length) {
+          return post.headline.trim();
+        }
+        const caption = post.caption.trim();
+        if (!caption.length) {
+          return null;
+        }
+        const firstSentence = caption.split(/(?<=[.!?])\s+/)[0]?.trim();
+        return firstSentence && firstSentence.length ? firstSentence : caption;
+      })
+      .filter((item): item is string => Boolean(item));
+
+    const hookIdeas = Array.from(new Set(hookCandidates)).slice(0, 6);
+    const hashtags = this.aggregateHashtags(posts, normalized.hashtags);
+    const assetIdeas = this.buildAssetIdeaSuggestions(normalized);
+    const publishingTips = this.buildPublishingTipSuggestions(normalized, context);
+
+    return {
+      hookIdeas,
+      assetIdeas,
+      publishingTips,
+      hashtags,
+    };
+  }
+
+  private buildAdsAiGenerateDto(
+    normalized: AdminCopilotPostCampaignNormalizedInput,
+    variantIndex: number,
+    context: AdminCopilotAdminContext,
+  ): GenerateAdsAiDto {
+    const descriptionSegments: string[] = [];
+
+    if (normalized.brief.campaignName) {
+      descriptionSegments.push(`Chiến dịch: ${normalized.brief.campaignName}`);
+    }
+    if (normalized.brief.productFocus) {
+      descriptionSegments.push(`Trọng tâm: ${normalized.brief.productFocus}`);
+    }
+    if (normalized.brief.keyMessages.length) {
+      descriptionSegments.push(`Thông điệp chính: ${normalized.brief.keyMessages.join(', ')}`);
+    }
+    if (normalized.brief.offers.length) {
+      descriptionSegments.push(`Ưu đãi: ${normalized.brief.offers.join(', ')}`);
+    }
+
+    const schedule = normalized.brief.schedule;
+    if (schedule?.date || schedule?.time) {
+      const timedSegments = [
+        schedule.date ? `ngày ${schedule.date}` : null,
+        schedule.time ? `khung giờ ${schedule.time}` : null,
+      ]
+        .filter((segment): segment is string => Boolean(segment))
+        .join(' ');
+      const withTimezone = schedule?.timezone
+        ? `${timedSegments} (${schedule.timezone})`
+        : timedSegments;
+      if (withTimezone.trim().length) {
+        descriptionSegments.push(`Thời gian đăng: ${withTimezone.trim()}`);
+      }
+    }
+
+    if (normalized.brief.notes) {
+      descriptionSegments.push(`Ghi chú thương hiệu: ${normalized.brief.notes}`);
+    }
+
+    const languageName = this.getLanguageDisplayName(normalized.language);
+    const noteSegments: string[] = [];
+
+    if (normalized.format) {
+      noteSegments.push(`Độ dài mong muốn: ${normalized.format}.`);
+    }
+    if (normalized.hashtags.length) {
+      noteSegments.push(`Ưu tiên các hashtag: ${normalized.hashtags.join(', ')}.`);
+    }
+    if (!context.isGlobalAdmin && context.branchName) {
+      noteSegments.push(`Nội dung dành cho chi nhánh ${context.branchName}.`);
+    }
+    noteSegments.push(`Ngôn ngữ bắt buộc: ${languageName}.`);
+
+    const campaignContextSegments: string[] = [`Biến thể #${variantIndex + 1}.`];
+    if (normalized.brief.objective) {
+      campaignContextSegments.push(`Mục tiêu: ${normalized.brief.objective}.`);
+    }
+    if (normalized.brief.targetAudience) {
+      campaignContextSegments.push(`Đối tượng: ${normalized.brief.targetAudience}.`);
+    }
+
+    return {
+      productName:
+        normalized.brief.productFocus ??
+        normalized.brief.campaignName ??
+        `Chiến dịch biến thể ${variantIndex + 1}`,
+      description: descriptionSegments.length ? descriptionSegments.join('\n') : undefined,
+      targetAudience: normalized.brief.targetAudience ?? undefined,
+      tone: normalized.brief.tone ?? undefined,
+      objective: normalized.brief.objective ?? undefined,
+      features: normalized.brief.keyMessages.length ? normalized.brief.keyMessages : undefined,
+      benefits: normalized.brief.offers.length ? normalized.brief.offers : undefined,
+      campaignContext: campaignContextSegments.join(' '),
+      additionalNotes: noteSegments.join('\n'),
+    };
+  }
+
+  private buildAdsAiPreview(content: GeneratedAdContent): string | null {
+    const segments = [content.headline, content.description]
+      .map((segment) => segment?.trim())
+      .filter((segment): segment is string => Boolean(segment));
+
+    if (!segments.length) {
+      return null;
+    }
+
+    return segments.join(' — ');
+  }
+
+  private buildAdsAiPostNotes(normalized: AdminCopilotPostCampaignNormalizedInput): string | null {
+    if (!normalized.brief.notes) {
+      return null;
+    }
+
+    return normalized.brief.notes;
+  }
+
+  private buildAdsAiFallbackCaption(language: string): string {
+    const normalizedLang = language.toLowerCase();
+    if (normalizedLang.startsWith('en')) {
+      return 'Content could not be generated. Please try again later.';
+    }
+    return 'Không thể tạo nội dung. Vui lòng thử lại sau.';
+  }
+
+  private buildAdsAiFailureNote(error: unknown, language: string): string | null {
+    const message = error instanceof Error ? error.message : null;
+    const normalizedLang = language.toLowerCase();
+
+    if (normalizedLang.startsWith('en')) {
+      return message ? `Generation error: ${message}` : 'Unable to generate content with Ads AI.';
+    }
+
+    return message ? `Lỗi tạo nội dung: ${message}` : 'Không thể tạo nội dung bằng Ads AI.';
+  }
+
+  private buildSuggestedAssets(normalized: AdminCopilotPostCampaignNormalizedInput): string[] {
+    const suggestions = new Set<string>();
+
+    if (normalized.brief.productFocus) {
+      suggestions.add(`Hình ảnh/clip nổi bật sản phẩm ${normalized.brief.productFocus}`);
+    }
+
+    suggestions.add('Ảnh lifestyle 1:1 phù hợp bài đăng Facebook.');
+    suggestions.add('Video ngắn 15-30s giới thiệu ưu đãi chính.');
+
+    if (!suggestions.size) {
+      suggestions.add('Chuẩn bị hình ảnh và video thể hiện rõ ưu đãi chiến dịch.');
+    }
+
+    return Array.from(suggestions).slice(0, 6);
+  }
+
+  private aggregateHashtags(posts: AdminCopilotPostDraft[], fallback: string[]): string[] {
+    const collected = new Set<string>();
+
+    posts.forEach((post) => {
+      post.hashtags.forEach((hashtag) => {
+        const trimmed = hashtag.trim();
+        if (!trimmed) {
+          return;
+        }
+        collected.add(trimmed.startsWith('#') ? trimmed : `#${trimmed.replace(/^#+/, '')}`);
+      });
+    });
+
+    if (!collected.size) {
+      return fallback;
+    }
+
+    return Array.from(collected).slice(0, 12);
+  }
+
+  private buildAssetIdeaSuggestions(normalized: AdminCopilotPostCampaignNormalizedInput): string[] {
+    const suggestions = new Set<string>();
+
+    if (normalized.brief.productFocus) {
+      suggestions.add(`Chụp cận cảnh ${normalized.brief.productFocus} trong bối cảnh đời thực.`);
+    }
+
+    suggestions.add('Ảnh lifestyle có CTA rõ ràng cho Facebook.');
+    suggestions.add('Thiết kế mockup mobile/desktop thể hiện bài đăng sau khi lên sóng.');
+
+    if (!suggestions.size) {
+      suggestions.add('Chuẩn bị bộ ảnh/video thể hiện ưu đãi và trải nghiệm sản phẩm.');
+    }
+
+    return Array.from(suggestions).slice(0, 8);
+  }
+
+  private buildPublishingTipSuggestions(
+    normalized: AdminCopilotPostCampaignNormalizedInput,
+    context: AdminCopilotAdminContext,
+  ): string[] {
+    const tips = new Set<string>();
+
+    const schedule = normalized.brief.schedule;
+    if (schedule?.date || schedule?.time) {
+      const scheduleSegments = [
+        schedule.date ? `ngày ${schedule.date}` : null,
+        schedule.time ? `khung giờ ${schedule.time}` : null,
+      ]
+        .filter((segment): segment is string => Boolean(segment))
+        .join(' ');
+      const timezone = schedule?.timezone ? ` (${schedule.timezone})` : '';
+      tips.add(`Đăng vào ${scheduleSegments.trim()}${timezone}`.trim());
+    }
+
+    if (normalized.brief.callToAction) {
+      tips.add(`Nhắc lại CTA "${normalized.brief.callToAction}" ở đầu và cuối caption.`);
+    }
+
+    if (!context.isGlobalAdmin && context.branchName) {
+      tips.add(`Điều chỉnh nội dung phù hợp chi nhánh ${context.branchName}.`);
+    }
+
+    if (!tips.size) {
+      tips.add('Theo dõi tương tác sau khi đăng và phản hồi trong 15 phút đầu.');
+    }
+
+    return Array.from(tips).slice(0, 8);
+  }
+
+  private normalizePostCampaignInput(
+    rawArgs: Record<string, unknown>,
+    fallbackLanguage: string,
+  ): AdminCopilotPostCampaignNormalizedInput {
+    const args = rawArgs as AdminCopilotPostCampaignInput;
+    const rawBrief = (args.brief ?? {}) as Record<string, unknown>;
+    const language = this.normalizeLanguageInput(args.language, fallbackLanguage);
+    const variants = this.parsePositiveInt(args.variants, 1, 1, 3) ?? 1;
+    const format = this.normalizeFormat(args.format);
+    const hashtags = this.normalizeStringArray(args.hashtags, 12);
+
+    const brief = this.mergePostBrief(rawBrief, null);
+
+    return {
+      language,
+      variants,
+      format,
+      hashtags,
+      brief,
+    };
+  }
+
+  private normalizePostCampaignResult(
+    raw: Record<string, unknown>,
+    normalizedInput: AdminCopilotPostCampaignNormalizedInput,
+  ): AdminCopilotPostCampaignResult {
+    const mergedBrief = this.mergePostBrief(raw?.brief, normalizedInput.brief);
+    const strategy = this.normalizePostStrategy(raw?.strategy, normalizedInput);
+    const posts = this.normalizePostDrafts(raw?.posts, normalizedInput);
+
+    return {
+      brief: mergedBrief,
+      strategy,
+      posts,
+    };
+  }
+
+  private mergePostBrief(
+    source: unknown,
+    fallback: AdminCopilotPostBrief | null,
+  ): AdminCopilotPostBrief {
+    const base: AdminCopilotPostBrief = fallback
+      ? { ...fallback }
+      : {
+          campaignName: null,
+          objective: null,
+          targetAudience: null,
+          tone: null,
+          productFocus: null,
+          keyMessages: [],
+          offers: [],
+          callToAction: null,
+          schedule: null,
+          notes: null,
+        };
+
+    if (!source || typeof source !== 'object') {
+      return base;
+    }
+
+    const map = source as Record<string, unknown>;
+
+    const campaignName = this.normalizeString(map.campaignName);
+    const objective = this.normalizeString(map.objective);
+    const targetAudience = this.normalizeString(map.targetAudience ?? map.audience);
+    const tone = this.normalizeString(map.tone ?? map.voice);
+    const productFocus = this.normalizeString(map.productFocus ?? map.product);
+    const keyMessages = this.normalizeStringArray(
+      map.keyMessages ?? map.keypoints ?? map.messages,
+      10,
+    );
+    const offers = this.normalizeStringArray(map.offers ?? map.promotions ?? map.deals, 8);
+    const callToAction = this.normalizeString(map.callToAction ?? map.cta);
+    const schedule = this.normalizePostSchedule(map.schedule) ?? base.schedule;
+    const notes =
+      this.normalizeString(map.notes ?? map.remarks ?? map.additionalNotes) ?? base.notes;
+
+    return {
+      campaignName: campaignName ?? base.campaignName ?? null,
+      objective: objective ?? base.objective ?? null,
+      targetAudience: targetAudience ?? base.targetAudience ?? null,
+      tone: tone ?? base.tone ?? null,
+      productFocus: productFocus ?? base.productFocus ?? null,
+      keyMessages: keyMessages.length ? keyMessages : base.keyMessages,
+      offers: offers.length ? offers : base.offers,
+      callToAction: callToAction ?? base.callToAction ?? null,
+      schedule,
+      notes,
+    };
+  }
+
+  private normalizePostStrategy(
+    source: unknown,
+    normalizedInput: AdminCopilotPostCampaignNormalizedInput,
+  ): AdminCopilotPostStrategy {
+    if (!source || typeof source !== 'object') {
+      return {
+        hookIdeas: [],
+        assetIdeas: [],
+        publishingTips: [],
+        hashtags: normalizedInput.hashtags,
+      };
+    }
+
+    const map = source as Record<string, unknown>;
+    const hookIdeas = this.normalizeStringArray(map.hookIdeas ?? map.hooks, 8);
+    const assetIdeas = this.normalizeStringArray(map.assetIdeas ?? map.visualIdeas, 8);
+    const publishingTips = this.normalizeStringArray(map.publishingTips ?? map.tips, 8);
+    const hashtags = this.normalizeStringArray(map.hashtags ?? map.tags, 12);
+
+    return {
+      hookIdeas,
+      assetIdeas,
+      publishingTips,
+      hashtags: hashtags.length ? hashtags : normalizedInput.hashtags,
+    };
+  }
+
+  private normalizePostDrafts(
+    source: unknown,
+    normalizedInput: AdminCopilotPostCampaignNormalizedInput,
+  ): AdminCopilotPostDraft[] {
+    const postsArray = Array.isArray(source) ? (source as unknown[]) : [];
+
+    const normalized = postsArray
+      .map((item, index) => this.normalizeSinglePostDraft(item, index, normalizedInput))
+      .filter((item): item is AdminCopilotPostDraft => item !== null);
+
+    if (normalized.length) {
+      return normalized.slice(0, normalizedInput.variants);
+    }
+
+    const fallbackCaption =
+      'Không có nội dung khả dụng. Vui lòng yêu cầu trợ lý tạo lại bài đăng Facebook.';
+
+    return [
+      {
+        variantId: 'variant-1',
+        caption: fallbackCaption,
+        hashtags: normalizedInput.hashtags,
+        callToAction: normalizedInput.brief.callToAction ?? null,
+        schedule: normalizedInput.brief.schedule ?? null,
+        preview: null,
+        headline: null,
+        subHeadline: null,
+        notes: null,
+        suggestedAssets: [],
+      },
+    ];
+  }
+
+  private normalizeSinglePostDraft(
+    source: unknown,
+    index: number,
+    normalizedInput: AdminCopilotPostCampaignNormalizedInput,
+  ): AdminCopilotPostDraft | null {
+    if (!source || typeof source !== 'object') {
+      return null;
+    }
+
+    const map = source as Record<string, unknown>;
+    const caption = this.normalizeString(map.caption);
+    if (!caption) {
+      return null;
+    }
+
+    const variantId = this.normalizeString(map.variantId ?? map.id) ?? `variant-${index + 1}`;
+
+    const hashtags = this.normalizeStringArray(map.hashtags ?? map.tags, 12);
+    const schedule =
+      this.normalizePostSchedule(map.schedule) ?? normalizedInput.brief.schedule ?? null;
+
+    return {
+      variantId,
+      headline: this.normalizeString(map.headline ?? map.title) ?? null,
+      subHeadline: this.normalizeString(map.subHeadline ?? map.subtitle ?? map.subheading) ?? null,
+      caption,
+      callToAction:
+        this.normalizeString(map.callToAction ?? map.cta) ??
+        normalizedInput.brief.callToAction ??
+        null,
+      hashtags: hashtags.length ? hashtags : normalizedInput.hashtags,
+      schedule,
+      preview: this.normalizeString(map.preview ?? map.summary) ?? null,
+      notes: this.normalizeString(map.notes ?? map.comments) ?? null,
+      suggestedAssets: this.normalizeStringArray(map.suggestedAssets ?? map.assetIdeas, 6),
+    };
+  }
+
+  private normalizePostSchedule(value: unknown): AdminCopilotPostSchedule | null {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+
+    const map = value as Record<string, unknown>;
+    const date = this.normalizeString(map.date ?? map.day ?? map.publishDate);
+    const time = this.normalizeString(map.time ?? map.publishTime ?? map.window);
+    const timezone = this.normalizeString(map.timezone ?? map.tz ?? map.timeZone);
+
+    if (!date && !time && !timezone) {
+      return null;
+    }
+
+    return {
+      date: date ?? null,
+      time: time ?? null,
+      timezone: timezone ?? null,
+    };
+  }
+
+  private normalizeLanguageInput(value: unknown, fallback: string): string {
+    const normalized = this.normalizeString(value);
+    if (!normalized) {
+      return fallback;
+    }
+    return normalized.toLowerCase();
+  }
+
+  private normalizeFormat(value: unknown): 'short' | 'medium' | 'long' | null {
+    const normalized = this.normalizeString(value);
+    if (!normalized) {
+      return null;
+    }
+
+    switch (normalized.toLowerCase()) {
+      case 'short':
+      case 'short_form':
+      case 'short-form':
+        return 'short';
+      case 'long':
+      case 'long_form':
+      case 'long-form':
+        return 'long';
+      case 'medium':
+      case 'mid':
+        return 'medium';
+      default:
+        return null;
+    }
+  }
+
+  private normalizeString(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    return trimmed;
+  }
+
+  private normalizeStringArray(value: unknown, limit = 10): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const normalized = value
+      .map((item) => this.normalizeString(item))
+      .filter((item): item is string => Boolean(item));
+
+    const unique = Array.from(new Set(normalized));
+    return unique.slice(0, Math.max(1, limit));
+  }
+
+  private normalizeGranularity(value: unknown): TrendGranularity | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    if (value === 'day' || value === 'week' || value === 'month') {
+      return value;
+    }
+    return undefined;
   }
 
   private parsePositiveInt(

@@ -11,10 +11,13 @@ import { Message } from '../messages/entities/message.entity';
 import { TrendForecastingModule } from '../trend_forecasting/trend-forecasting.module';
 import { GeminiModule } from '../gemini/gemini.module';
 import { AuthModule } from '../auth/auth.module';
+import { AdsAiModule } from '../ads_ai/ads_ai.module';
+import { User } from '../users/entities/user.entity';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
+      User,
       OrderItem,
       ProductVariantInventory,
       Conversation,
@@ -23,6 +26,7 @@ import { AuthModule } from '../auth/auth.module';
     ]),
     TrendForecastingModule,
     GeminiModule,
+    AdsAiModule,
     AuthModule,
   ],
   controllers: [AdminCopilotController],
