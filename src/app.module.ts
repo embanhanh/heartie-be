@@ -53,6 +53,8 @@ import { UserCustomerGroupsModule } from './modules/user_customer_groups/user_cu
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import firebaseConfig from './config/firebase.config';
 import type { SharedBullAsyncConfiguration } from '@nestjs/bullmq';
+import { AppLoggerModule } from './common/logger/app-logger.module';
+import { SharedI18nModule } from './common/i18n/shared-i18n.module';
 
 const BullModuleTyped = BullModule as unknown as {
   forRootAsync: (config: SharedBullAsyncConfiguration) => DynamicModule;
@@ -65,6 +67,8 @@ const BullModuleTyped = BullModule as unknown as {
       envFilePath: '.env',
       load: [geminiConfig, firebaseConfig],
     }),
+    AppLoggerModule,
+    SharedI18nModule,
     BullModuleTyped.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

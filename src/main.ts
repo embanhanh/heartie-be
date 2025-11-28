@@ -1,14 +1,22 @@
 import { NestFactory, Reflector } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
+import { ClassSerializerInterceptor } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { join } from 'path';
 import * as express from 'express';
+import { I18nService } from 'nestjs-i18n';
+import { AppValidationPipe } from './common/pipes/app-validation.pipe';
+import { AppExceptionFilter } from './common/filters/app-exception.filter';
+import { AppLogger } from './common/logger/app-logger.service';
+import { ACCEPT_LANGUAGE_HEADER, USER_LANGUAGE_HEADER } from './common/i18n/language.constants';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     // cors: true, // Enable CORS for WebSocket
   });
+
+  const appLogger = app.get(AppLogger);
+  app.useLogger(appLogger);
 
   const corsOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
@@ -20,7 +28,14 @@ async function bootstrap() {
     origin: corsOrigins.length ? corsOrigins : true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Accept',
+      'X-Requested-With',
+      USER_LANGUAGE_HEADER,
+      ACCEPT_LANGUAGE_HEADER,
+    ],
   });
 
   const uploadsPath = join(process.cwd(), 'uploads');
@@ -36,19 +51,15 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api-docs', app, document); // Endpoint là /api-docs
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true, // Tự động loại bỏ các thuộc tính không được định nghĩa trong DTO
-      forbidNonWhitelisted: true, // Ném lỗi nếu có thuộc tính không mong muốn
-      transform: true, // Tự động chuyển đổi payload sang kiểu DTO
-    }),
-  );
+  app.useGlobalPipes(new AppValidationPipe());
 
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
+  const i18nService = app.get<I18nService<Record<string, unknown>>>(I18nService);
+  app.useGlobalFilters(new AppExceptionFilter(i18nService, appLogger));
+
   const port = process.env.PORT || 3000;
-  await app.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
-  });
+  await app.listen(port);
+  appLogger.log(`Server is running on port ${port}`, 'Bootstrap');
 }
 void bootstrap();

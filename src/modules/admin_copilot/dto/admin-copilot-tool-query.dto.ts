@@ -2,15 +2,14 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
 import { TrendGranularity } from '../../trend_forecasting/dto/trend-forecast-query.dto';
+import { ADMIN_COPILOT_RANGE_OPTIONS } from '../constants/admin-copilot.constants';
 
-const RANGE_OPTIONS = ['7d', '30d', '90d'] as const;
-
-type RangeOption = (typeof RANGE_OPTIONS)[number];
+type RangeOption = (typeof ADMIN_COPILOT_RANGE_OPTIONS)[number];
 
 export class AdminCopilotRevenueOverviewQueryDto {
-  @ApiPropertyOptional({ enum: RANGE_OPTIONS, default: '30d' })
+  @ApiPropertyOptional({ enum: ADMIN_COPILOT_RANGE_OPTIONS, default: '30d' })
   @IsOptional()
-  @IsEnum(RANGE_OPTIONS)
+  @IsEnum(ADMIN_COPILOT_RANGE_OPTIONS)
   range?: RangeOption;
 
   @ApiPropertyOptional({ enum: ['day', 'week', 'month'] })
@@ -28,9 +27,9 @@ export class AdminCopilotRevenueOverviewQueryDto {
 }
 
 export class AdminCopilotTopProductsQueryDto {
-  @ApiPropertyOptional({ enum: RANGE_OPTIONS, default: '30d' })
+  @ApiPropertyOptional({ enum: ADMIN_COPILOT_RANGE_OPTIONS, default: '30d' })
   @IsOptional()
-  @IsEnum(RANGE_OPTIONS)
+  @IsEnum(ADMIN_COPILOT_RANGE_OPTIONS)
   range?: RangeOption;
 
   @ApiPropertyOptional({ minimum: 1, maximum: 20, default: 5 })
