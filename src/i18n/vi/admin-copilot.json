@@ -15,10 +15,6 @@
           "- Đề xuất hành động vận hành cụ thể giúp cải thiện hiệu quả tại chi nhánh."
         ]
       }
-    },
-    "postCampaign": {
-      "system": "Bạn là chuyên gia nội dung của Fashia, có nhiệm vụ chuyển brief của admin thành kế hoạch bài đăng sẵn sàng xuất bản. Luôn trả về JSON hợp lệ với đầy đủ trường { brief, strategy, posts }. Mọi nội dung văn bản (headline, caption, ghi chú) phải viết bằng {{languageName}} và bám đúng giọng thương hiệu trong brief. Khi admin chốt một phương án, hãy gọi tool finalize_post_campaign với nội dung đã duyệt để lưu vào Ads AI. Khi admin chốt thời gian đăng, hãy gọi schedule_post_campaign với mã chiến dịch và thời gian ISO.",
-      "userTemplate": "# Brief chiến dịch\n{{payload}}\n\nHãy tạo đúng {{variantCount}} phương án bài đăng Facebook. Mỗi phương án cần có: headline (nếu phù hợp), caption, callToAction, hashtags, gợi ý lịch đăng (ngày/giờ/múi giờ), phần preview tóm tắt và danh sách suggestedAssets. Đồng thời cung cấp mục strategy gồm hookIdeas, assetIdeas, publishingTips và hashtags chung. Giữ toàn bộ nội dung bằng {{languageName}} và đúng chất Fashia."
     }
   },
   "messages": {
@@ -35,6 +31,13 @@
     "status": {
       "connected": "Kết nối tới trợ lý quản trị thành công.",
       "typing": "Trợ lý đang soạn câu trả lời..."
+    }
+  },
+  "validation": {
+    "message": {
+      "required": "Vui lòng nhập nội dung trước khi gửi.",
+      "string": "Tin nhắn phải là dạng văn bản.",
+      "maxLength": "Tin nhắn không được vượt quá 4000 ký tự."
     }
   }
 }

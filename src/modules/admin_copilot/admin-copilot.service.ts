@@ -6,6 +6,7 @@ import { FunctionCall, FunctionResponsePart } from '@google/generative-ai';
 import { plainToInstance } from 'class-transformer';
 import { validate, ValidationError } from 'class-validator';
 import { Repository } from 'typeorm';
+import { randomUUID } from 'crypto';
 import { GeminiService, GeminiChatMessage, GeminiChatRole } from '../gemini/gemini.service';
 import { AdsAiService } from '../ads_ai/ads_ai.service';
 import { GenerateAdsAiDto } from '../ads_ai/dto/generate-ads-ai.dto';
@@ -49,6 +50,7 @@ import {
   AdminCopilotPostCampaignResult,
   AdminCopilotPostCampaignNormalizedInput,
   AdminCopilotRangeConfig,
+  AdminCopilotAttachment,
 } from './types/admin-copilot.types';
 import {
   AdminCopilotRevenueOverviewInput,
@@ -63,6 +65,15 @@ import {
 } from './constants/admin-copilot.constants';
 import { ADMIN_COPILOT_TOOLS } from './constants/admin-copilot.tools';
 import { AppException } from '../../common/errors/app.exception';
+import {
+  normalizeFormat,
+  normalizeLanguageInput,
+  normalizeScheduleIso,
+  normalizeString,
+  normalizeStringArray,
+  parsePositiveInt,
+  subtractDays,
+} from '../../common/utils/data-normalization.util';
 
 const ADMIN_COPILOT_CONVERSATION_TYPE = 'ADMIN_COPILOT';
 const ADMIN_COPILOT_HISTORY_LIMIT = 40;
@@ -72,6 +83,11 @@ const RANGE_CONFIGS: AdminCopilotRangeConfig[] = [
   { range: '30d', days: 30, lookbackMonths: 3, granularity: 'week' },
   { range: '90d', days: 90, lookbackMonths: 6, granularity: 'month' },
 ];
+
+interface AdminCopilotRequestContextOptions {
+  requestMeta?: Record<string, unknown>;
+  attachments?: AdminCopilotAttachment[];
+}
 
 @Injectable()
 export class AdminCopilotService {
@@ -115,11 +131,16 @@ export class AdminCopilotService {
     const adminContext = await this.resolveAdminContext(adminUserId);
     const systemPrompt = await this.buildSystemPrompt(adminContext, lang);
     const tools = ADMIN_COPILOT_TOOLS;
+    const requestMeta = request.meta ?? undefined;
+    const attachments = this.normalizeAttachments(request.attachments);
+    const requestContext: AdminCopilotRequestContextOptions = {
+      requestMeta,
+      attachments,
+    };
 
     this.logger.debug(
       `Admin ${adminUserId} (${adminContext.isGlobalAdmin ? 'global' : `branch ${adminContext.branchId}`}) is sending copilot chat message` +
-        ` (conversationId=${request.conversationId ?? 'auto'}, historyLength=${
-          request.history?.length ?? 0
+        ` (conversationId=${request.conversationId ?? 'auto'}
         })`,
     );
 
@@ -133,26 +154,32 @@ export class AdminCopilotService {
 
     const historyEntities = await this.messageRepository.find({
       where: { conversationId: context.conversation.id },
-      order: { createdAt: 'ASC', id: 'ASC' },
+      order: { createdAt: 'DESC', id: 'DESC' },
       take: ADMIN_COPILOT_HISTORY_LIMIT,
     });
 
-    const historyMessages = this.mapMessagesToGemini(historyEntities);
+    const historyMessages = this.mapMessagesToGemini(historyEntities.reverse());
+
+    const adminMessageMetadata = this.buildAdminMessageMetadata(requestMeta, attachments);
 
     const adminMessageEntity = this.messageRepository.create({
       conversationId: context.conversation.id,
       senderParticipantId: context.adminParticipant?.id ?? null,
       role: MessageRole.ADMIN,
       content: trimmedMessage,
-      metadata: {
-        type: 'admin_message',
-      },
+      metadata: adminMessageMetadata,
     });
     await this.messageRepository.save(adminMessageEntity);
 
     const newHistory: AdminCopilotHistoryMessageDto[] = [
-      { role: AdminCopilotMessageRole.USER, content: trimmedMessage },
+      {
+        role: AdminCopilotMessageRole.USER,
+        content: trimmedMessage,
+        metadata: adminMessageMetadata,
+      },
     ];
+
+    this.logger.debug(`call with system prompt: ${systemPrompt}`);
 
     const firstCall = await this.geminiService.generateContent(trimmedMessage, historyMessages, {
       systemPrompt,
@@ -178,7 +205,12 @@ export class AdminCopilotService {
     let toolResult: Record<string, unknown> | null = null;
 
     if (firstCall.functionCall) {
-      const toolExecution = await this.dispatchTool(firstCall.functionCall, adminContext, lang);
+      const toolExecution = await this.dispatchTool(
+        firstCall.functionCall,
+        adminContext,
+        lang,
+        requestContext,
+      );
       const responsePayload = toolExecution.functionResponse.response as Record<string, unknown>;
       toolResult = responsePayload;
       functionCall = {
@@ -225,6 +257,7 @@ export class AdminCopilotService {
     const assistantHistoryEntry: AdminCopilotHistoryMessageDto = {
       role: AdminCopilotMessageRole.ASSISTANT,
       content: reply,
+      metadata: undefined,
     };
     newHistory.push(assistantHistoryEntry);
 
@@ -248,6 +281,8 @@ export class AdminCopilotService {
       metadata: assistantMetadata,
     });
     await this.messageRepository.save(assistantMessageEntity);
+
+    assistantHistoryEntry.metadata = assistantMetadata;
 
     await this.conversationRepository.update(context.conversation.id, {
       lastMessageAt: assistantMessageEntity.createdAt,
@@ -687,6 +722,7 @@ export class AdminCopilotService {
     functionCall: FunctionCall,
     context: AdminCopilotAdminContext,
     lang: string,
+    options: AdminCopilotRequestContextOptions = {},
   ): Promise<FunctionResponsePart> {
     const { name, args } = functionCall;
     this.logger.debug(
@@ -700,12 +736,18 @@ export class AdminCopilotService {
       case 'get_stock_alerts':
         return this.handleStockAlerts((args ?? {}) as Record<string, unknown>, context);
       case 'generate_post_campaign':
-        return this.handlePostCampaign((args ?? {}) as Record<string, unknown>, context, lang);
+        return this.handlePostCampaign(
+          (args ?? {}) as Record<string, unknown>,
+          context,
+          lang,
+          options,
+        );
       case 'finalize_post_campaign':
         return this.handleFinalizePostCampaign(
           (args ?? {}) as Record<string, unknown>,
           context,
           lang,
+          options,
         );
       case 'schedule_post_campaign':
         return this.handleSchedulePostCampaign(
@@ -743,7 +785,7 @@ export class AdminCopilotService {
   ): Promise<AdminCopilotRevenueOverviewResult> {
     const { range, config } = this.resolveRangeConfig(params.range);
     const granularity = this.resolveGranularity(params.granularity, config.granularity);
-    const forecastPeriods = this.parsePositiveInt(params.forecastPeriods, 1, 1, 12) ?? 1;
+    const forecastPeriods = parsePositiveInt(params.forecastPeriods, 1, 1, 12) ?? 1;
 
     const forecast = await this.trendForecastingService.getSalesForecast({
       granularity,
@@ -752,7 +794,7 @@ export class AdminCopilotService {
       branchId: context.branchId ?? undefined,
     });
 
-    const rangeStart = this.subtractDays(new Date(), config.days);
+    const rangeStart = subtractDays(new Date(), config.days);
     const filteredSeries = forecast.timeSeries.filter((point) => {
       const periodDate = new Date(point.period);
       return Number.isFinite(periodDate.getTime()) && periodDate >= rangeStart;
@@ -796,8 +838,8 @@ export class AdminCopilotService {
     context: AdminCopilotAdminContext,
   ): Promise<AdminCopilotTopProductsResult> {
     const { range, config } = this.resolveRangeConfig(params.range);
-    const limit = this.parsePositiveInt(params.limit, 5, 1, 20) ?? 5;
-    const startDate = this.subtractDays(new Date(), config.days);
+    const limit = parsePositiveInt(params.limit, 5, 1, 20) ?? 5;
+    const startDate = subtractDays(new Date(), config.days);
 
     const qb = this.orderItemRepository
       .createQueryBuilder('item')
@@ -851,10 +893,10 @@ export class AdminCopilotService {
     params: AdminCopilotStockAlertsInput,
     context: AdminCopilotAdminContext,
   ): Promise<AdminCopilotStockAlertsResult> {
-    const threshold = this.parsePositiveInt(params.threshold, 20, 0, 1000) ?? 20;
-    const limit = this.parsePositiveInt(params.limit, 10, 1, 50) ?? 10;
+    const threshold = parsePositiveInt(params.threshold, 20, 0, 1000) ?? 20;
+    const limit = parsePositiveInt(params.limit, 10, 1, 50) ?? 10;
 
-    const requestedBranchId = this.parsePositiveInt(params.branchId, undefined, 1);
+    const requestedBranchId = parsePositiveInt(params.branchId, undefined, 1);
     const effectiveBranchId = context.branchId ?? requestedBranchId ?? undefined;
 
     if (context.branchId && requestedBranchId && requestedBranchId !== context.branchId) {
@@ -959,7 +1001,7 @@ export class AdminCopilotService {
       {
         range: this.normalizeRangeKey(rawArgs.range),
         granularity: this.normalizeGranularity(rawArgs.granularity),
-        forecastPeriods: this.parsePositiveInt(rawArgs.forecastPeriods, undefined, 1, 12),
+        forecastPeriods: parsePositiveInt(rawArgs.forecastPeriods, undefined, 1, 12),
       },
       context,
     );
@@ -982,7 +1024,7 @@ export class AdminCopilotService {
     const payload = await this.computeTopProducts(
       {
         range: this.normalizeRangeKey(rawArgs.range),
-        limit: this.parsePositiveInt(rawArgs.limit, undefined, 1, 20),
+        limit: parsePositiveInt(rawArgs.limit, undefined, 1, 20),
       },
       context,
     );
@@ -1006,9 +1048,9 @@ export class AdminCopilotService {
     );
     const payload = await this.computeStockAlerts(
       {
-        threshold: this.parsePositiveInt(rawArgs.threshold, undefined, 0, 1000),
-        branchId: this.parsePositiveInt(rawArgs.branchId, undefined, 1),
-        limit: this.parsePositiveInt(rawArgs.limit, undefined, 1, 50),
+        threshold: parsePositiveInt(rawArgs.threshold, undefined, 0, 1000),
+        branchId: parsePositiveInt(rawArgs.branchId, undefined, 1),
+        limit: parsePositiveInt(rawArgs.limit, undefined, 1, 50),
       },
       context,
     );
@@ -1027,13 +1069,14 @@ export class AdminCopilotService {
     rawArgs: Record<string, unknown>,
     context: AdminCopilotAdminContext,
     requestLang: string,
+    options: AdminCopilotRequestContextOptions = {},
   ): Promise<FunctionResponsePart> {
     this.logger.debug(
       `Handling post campaign tool with payload ${JSON.stringify(rawArgs)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
     );
 
     try {
-      const normalized = this.normalizePostCampaignInput(rawArgs, requestLang);
+      const normalized = this.normalizePostCampaignInput(rawArgs, requestLang, options);
       const posts = await this.generatePostCampaignDraftsWithAdsAi(normalized, context);
       const strategy = this.buildPostCampaignStrategyFromAdsAi(posts, normalized, context);
       const payload = this.normalizePostCampaignResult(
@@ -1084,6 +1127,7 @@ export class AdminCopilotService {
     rawArgs: Record<string, unknown>,
     context: AdminCopilotAdminContext,
     requestLang: string,
+    options: AdminCopilotRequestContextOptions = {},
   ): Promise<FunctionResponsePart> {
     this.logger.debug(
       `Handling finalize post campaign tool with payload ${JSON.stringify(rawArgs)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
@@ -1091,7 +1135,7 @@ export class AdminCopilotService {
 
     try {
       const campaignPayload = this.extractFinalizeCampaignInput(rawArgs);
-      const dto = await this.buildAdsAiCreateDto(campaignPayload, context);
+      const dto = await this.buildAdsAiCreateDto(campaignPayload, context, options);
       const campaign = await this.adsAiService.createFromForm(dto);
       const payload = {
         advertisement: this.buildAdsAiCampaignResponse(campaign),
@@ -1142,17 +1186,16 @@ export class AdminCopilotService {
 
     try {
       const advertisementId =
-        this.parsePositiveInt(rawArgs.advertisementId, undefined, 1) ??
-        this.parsePositiveInt(rawArgs.campaignId, undefined, 1) ??
-        this.parsePositiveInt(rawArgs.id, undefined, 1);
+        parsePositiveInt(rawArgs.advertisementId, undefined, 1) ??
+        parsePositiveInt(rawArgs.campaignId, undefined, 1) ??
+        parsePositiveInt(rawArgs.id, undefined, 1);
 
       if (!advertisementId) {
         throw new Error('Thiếu advertisementId để lên lịch.');
       }
 
       const scheduledAtInput =
-        this.normalizeScheduleIso(rawArgs.scheduledAt) ??
-        this.normalizeScheduleIso(rawArgs.schedule);
+        normalizeScheduleIso(rawArgs.scheduledAt) ?? normalizeScheduleIso(rawArgs.schedule);
 
       if (!scheduledAtInput) {
         throw new Error('Thiếu scheduledAt hợp lệ.');
@@ -1228,43 +1271,56 @@ export class AdminCopilotService {
   private async buildAdsAiCreateDto(
     raw: Record<string, unknown>,
     context: AdminCopilotAdminContext,
+    options: AdminCopilotRequestContextOptions = {},
   ): Promise<CreateAdsAiDto> {
     const normalizedName =
-      this.normalizeString(raw['name']) ??
-      this.normalizeString(raw['campaignName']) ??
-      this.normalizeString(raw['headline']) ??
+      normalizeString(raw['name']) ??
+      normalizeString(raw['campaignName']) ??
+      normalizeString(raw['headline']) ??
       this.buildDefaultAdsCampaignName(context);
 
     const primaryText =
-      this.normalizeString(raw['primaryText']) ?? this.normalizeString(raw['caption']) ?? undefined;
+      normalizeString(raw['primaryText']) ?? normalizeString(raw['caption']) ?? undefined;
 
     const prompt =
-      this.normalizeString(raw['prompt']) ??
-      this.normalizeString(raw['sourcePrompt']) ??
+      normalizeString(raw['prompt']) ??
+      normalizeString(raw['sourcePrompt']) ??
       primaryText ??
       undefined;
 
     const description =
-      this.normalizeString(raw['description']) ??
-      this.normalizeString(raw['subHeadline']) ??
-      undefined;
+      normalizeString(raw['description']) ?? normalizeString(raw['subHeadline']) ?? undefined;
 
     const callToAction =
-      this.normalizeString(raw['callToAction']) ?? this.normalizeString(raw['cta']) ?? undefined;
+      normalizeString(raw['callToAction']) ?? normalizeString(raw['cta']) ?? undefined;
 
-    const ctaUrl = this.normalizeString(raw['ctaUrl'] ?? raw['url']);
-    const productName = this.normalizeString(raw['productName'] ?? raw['productFocus']);
-    const targetAudience = this.normalizeString(raw['targetAudience']);
-    const tone = this.normalizeString(raw['tone']);
-    const objective = this.normalizeString(raw['objective']);
-    const headline = this.normalizeString(raw['headline']);
-    const image = this.normalizeString(raw['image']);
-    const postType = this.normalizeString(raw['postType']);
+    const ctaUrl = normalizeString(raw['ctaUrl'] ?? raw['url']);
+    const productName = normalizeString(raw['productName'] ?? raw['productFocus']);
+    const targetAudience = normalizeString(raw['targetAudience']);
+    const tone = normalizeString(raw['tone']);
+    const objective = normalizeString(raw['objective']);
+    const headline = normalizeString(raw['headline']);
+    let image = normalizeString(raw['image']);
+    const postType = normalizeString(raw['postType']);
 
-    const productId = this.parsePositiveInt(raw['productId'], undefined, 1);
+    let productId = parsePositiveInt(raw['productId'], undefined, 1);
+    let normalizedProductName = productName;
+    const productContext = this.resolveProductContextFromMeta(options.requestMeta);
+    if (!productId && productContext.productId) {
+      productId = productContext.productId;
+    }
+    if (!normalizedProductName && productContext.productName) {
+      normalizedProductName = productContext.productName;
+    }
+    if (!image) {
+      const imageAttachment = this.pickPrimaryImageAttachment(options.attachments);
+      if (imageAttachment) {
+        image = imageAttachment.url;
+      }
+    }
 
     const scheduledAt =
-      this.normalizeScheduleIso(raw['scheduledAt']) ?? this.normalizeScheduleIso(raw['schedule']);
+      normalizeScheduleIso(raw['scheduledAt']) ?? normalizeScheduleIso(raw['schedule']);
 
     const hashtagsValue =
       Array.isArray(raw['hashtags']) || typeof raw['hashtags'] === 'string'
@@ -1275,8 +1331,8 @@ export class AdminCopilotService {
       name: normalizedName,
     };
 
-    if (productName) {
-      dtoInput.productName = productName;
+    if (normalizedProductName) {
+      dtoInput.productName = normalizedProductName;
     }
     if (productId !== undefined) {
       dtoInput.productId = productId;
@@ -1385,99 +1441,6 @@ export class AdminCopilotService {
     collect(errors);
 
     return messages.filter(Boolean).join('; ');
-  }
-
-  private normalizeScheduleIso(value: unknown): string | undefined {
-    if (!value) {
-      return undefined;
-    }
-
-    if (typeof value === 'string') {
-      const trimmed = value.trim();
-      if (!trimmed) {
-        return undefined;
-      }
-      const parsed = new Date(trimmed);
-      if (Number.isNaN(parsed.getTime())) {
-        return undefined;
-      }
-      return parsed.toISOString();
-    }
-
-    if (typeof value === 'object') {
-      const map = value as Record<string, unknown>;
-      const directKeys = ['iso', 'scheduledAt', 'datetime', 'dateTime'];
-      for (const key of directKeys) {
-        const candidate = map[key];
-        if (typeof candidate === 'string') {
-          const normalized = this.normalizeScheduleIso(candidate);
-          if (normalized) {
-            return normalized;
-          }
-        }
-      }
-
-      const date = this.normalizeString(map['date'] ?? map['day'] ?? map['publishDate']);
-      if (!date) {
-        return undefined;
-      }
-
-      const time =
-        this.normalizeString(map['time'] ?? map['hour'] ?? map['window'] ?? map['publishTime']) ??
-        '09:00';
-
-      const timezoneInput =
-        this.normalizeString(map['timezone'] ?? map['tz'] ?? map['timeZone'] ?? map['offset']) ??
-        '+07:00';
-
-      const timezone = this.normalizeTimezoneOffset(timezoneInput);
-      if (!timezone) {
-        return undefined;
-      }
-
-      const isoCandidate = `${date}T${time}${timezone}`;
-      const parsed = new Date(isoCandidate);
-      if (Number.isNaN(parsed.getTime())) {
-        return undefined;
-      }
-
-      return parsed.toISOString();
-    }
-
-    return undefined;
-  }
-
-  private normalizeTimezoneOffset(value: string): string | null {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    if (/^Z$/i.test(trimmed)) {
-      return 'Z';
-    }
-
-    const alias = trimmed.replace(/\s+/g, '').toLowerCase();
-    switch (alias) {
-      case 'asia/ho_chi_minh':
-      case 'asia/hochiminh':
-      case 'asia/saigon':
-      case 'asia/bangkok':
-        return '+07:00';
-      default:
-        break;
-    }
-
-    const match = trimmed.match(/^([+-])(\d{1,2})(?::?(\d{2}))?$/);
-    if (!match) {
-      return null;
-    }
-
-    const sign = match[1];
-    const hours = match[2].padStart(2, '0');
-    const minutes = (match[3] ?? '00').padStart(2, '0');
-
-    return `${sign}${hours}:${minutes}`;
   }
 
   private async generatePostCampaignDraftsWithAdsAi(
@@ -1642,7 +1605,7 @@ export class AdminCopilotService {
       campaignContextSegments.push(`Đối tượng: ${normalized.brief.targetAudience}.`);
     }
 
-    return {
+    const dto: GenerateAdsAiDto = {
       productName:
         normalized.brief.productFocus ??
         normalized.brief.campaignName ??
@@ -1656,6 +1619,16 @@ export class AdminCopilotService {
       campaignContext: campaignContextSegments.join(' '),
       additionalNotes: noteSegments.join('\n'),
     };
+
+    const metaContext = this.resolveProductContextFromMeta(normalized.meta ?? undefined);
+    if (metaContext.productId && dto.productId === undefined) {
+      dto.productId = metaContext.productId;
+    }
+    if (metaContext.productName && !dto.productName) {
+      dto.productName = metaContext.productName;
+    }
+
+    return dto;
   }
 
   private buildAdsAiPreview(content: GeneratedAdContent): string | null {
@@ -1787,15 +1760,18 @@ export class AdminCopilotService {
   private normalizePostCampaignInput(
     rawArgs: Record<string, unknown>,
     fallbackLanguage: string,
+    options: AdminCopilotRequestContextOptions = {},
   ): AdminCopilotPostCampaignNormalizedInput {
     const args = rawArgs as AdminCopilotPostCampaignInput;
     const rawBrief = (args.brief ?? {}) as Record<string, unknown>;
-    const language = this.normalizeLanguageInput(args.language, fallbackLanguage);
-    const variants = this.parsePositiveInt(args.variants, 1, 1, 3) ?? 1;
-    const format = this.normalizeFormat(args.format);
-    const hashtags = this.normalizeStringArray(args.hashtags, 12);
+    const language = normalizeLanguageInput(args.language, fallbackLanguage);
+    const variants = parsePositiveInt(args.variants, 1, 1, 3) ?? 1;
+    const format = normalizeFormat(args.format);
+    const hashtags = normalizeStringArray(args.hashtags, 12);
 
     const brief = this.mergePostBrief(rawBrief, null);
+    const meta = options.requestMeta ?? null;
+    const attachments = options.attachments?.length ? options.attachments : undefined;
 
     return {
       language,
@@ -1803,6 +1779,8 @@ export class AdminCopilotService {
       format,
       hashtags,
       brief,
+      meta,
+      attachments,
     };
   }
 
@@ -1846,20 +1824,16 @@ export class AdminCopilotService {
 
     const map = source as Record<string, unknown>;
 
-    const campaignName = this.normalizeString(map.campaignName);
-    const objective = this.normalizeString(map.objective);
-    const targetAudience = this.normalizeString(map.targetAudience ?? map.audience);
-    const tone = this.normalizeString(map.tone ?? map.voice);
-    const productFocus = this.normalizeString(map.productFocus ?? map.product);
-    const keyMessages = this.normalizeStringArray(
-      map.keyMessages ?? map.keypoints ?? map.messages,
-      10,
-    );
-    const offers = this.normalizeStringArray(map.offers ?? map.promotions ?? map.deals, 8);
-    const callToAction = this.normalizeString(map.callToAction ?? map.cta);
+    const campaignName = normalizeString(map.campaignName);
+    const objective = normalizeString(map.objective);
+    const targetAudience = normalizeString(map.targetAudience ?? map.audience);
+    const tone = normalizeString(map.tone ?? map.voice);
+    const productFocus = normalizeString(map.productFocus ?? map.product);
+    const keyMessages = normalizeStringArray(map.keyMessages ?? map.keypoints ?? map.messages, 10);
+    const offers = normalizeStringArray(map.offers ?? map.promotions ?? map.deals, 8);
+    const callToAction = normalizeString(map.callToAction ?? map.cta);
     const schedule = this.normalizePostSchedule(map.schedule) ?? base.schedule;
-    const notes =
-      this.normalizeString(map.notes ?? map.remarks ?? map.additionalNotes) ?? base.notes;
+    const notes = normalizeString(map.notes ?? map.remarks ?? map.additionalNotes) ?? base.notes;
 
     return {
       campaignName: campaignName ?? base.campaignName ?? null,
@@ -1889,10 +1863,10 @@ export class AdminCopilotService {
     }
 
     const map = source as Record<string, unknown>;
-    const hookIdeas = this.normalizeStringArray(map.hookIdeas ?? map.hooks, 8);
-    const assetIdeas = this.normalizeStringArray(map.assetIdeas ?? map.visualIdeas, 8);
-    const publishingTips = this.normalizeStringArray(map.publishingTips ?? map.tips, 8);
-    const hashtags = this.normalizeStringArray(map.hashtags ?? map.tags, 12);
+    const hookIdeas = normalizeStringArray(map.hookIdeas ?? map.hooks, 8);
+    const assetIdeas = normalizeStringArray(map.assetIdeas ?? map.visualIdeas, 8);
+    const publishingTips = normalizeStringArray(map.publishingTips ?? map.tips, 8);
+    const hashtags = normalizeStringArray(map.hashtags ?? map.tags, 12);
 
     return {
       hookIdeas,
@@ -1935,6 +1909,111 @@ export class AdminCopilotService {
     ];
   }
 
+  private normalizeAttachments(
+    raw?: AdminCopilotChatRequestDto['attachments'],
+  ): AdminCopilotAttachment[] {
+    if (!raw?.length) {
+      return [];
+    }
+
+    return raw
+      .map<AdminCopilotAttachment | null>((item) => {
+        if (!item || typeof item !== 'object') {
+          return null;
+        }
+
+        const url = normalizeString((item as { url?: string }).url);
+        if (!url) {
+          return null;
+        }
+
+        const typeInput = normalizeString((item as { type?: string }).type)?.toLowerCase();
+        const normalizedType: AdminCopilotAttachment['type'] =
+          typeInput === 'image' || typeInput === 'video' || typeInput === 'link'
+            ? (typeInput as AdminCopilotAttachment['type'])
+            : 'file';
+
+        const id = normalizeString((item as { id?: string }).id) ?? randomUUID();
+        const mimeType = normalizeString((item as { mimeType?: string }).mimeType) ?? null;
+        const sizeValue = (item as { size?: unknown }).size;
+        const size = typeof sizeValue === 'number' && Number.isFinite(sizeValue) ? sizeValue : null;
+        const metaValue = (item as { meta?: unknown }).meta;
+        const meta =
+          metaValue && typeof metaValue === 'object' && !Array.isArray(metaValue)
+            ? (metaValue as Record<string, unknown>)
+            : null;
+        const name = normalizeString((item as { name?: string }).name) ?? null;
+
+        const attachment: AdminCopilotAttachment = {
+          id,
+          type: normalizedType,
+          url,
+          name,
+          mimeType,
+          size,
+          meta,
+        };
+        return attachment;
+      })
+      .filter((attachment): attachment is AdminCopilotAttachment => Boolean(attachment));
+  }
+
+  private buildAdminMessageMetadata(
+    meta?: Record<string, unknown>,
+    attachments?: AdminCopilotAttachment[],
+  ): Record<string, unknown> | undefined {
+    const payload: Record<string, unknown> = {
+      type: 'admin_message',
+    };
+
+    if (meta && Object.keys(meta).length) {
+      payload.contextMeta = meta;
+    }
+
+    if (attachments?.length) {
+      payload.attachments = attachments;
+    }
+
+    return payload;
+  }
+
+  private resolveProductContextFromMeta(meta?: Record<string, unknown>): {
+    productId?: number;
+    productName?: string;
+  } {
+    if (!meta || typeof meta !== 'object') {
+      return {};
+    }
+
+    const directId = parsePositiveInt(meta['productId'], undefined, 1);
+    const productSource =
+      meta['product'] && typeof meta['product'] === 'object' && !Array.isArray(meta['product'])
+        ? (meta['product'] as Record<string, unknown>)
+        : undefined;
+    const nestedId = productSource
+      ? parsePositiveInt(productSource['id'], undefined, 1)
+      : undefined;
+
+    const productName =
+      normalizeString(meta['productName']) ??
+      (productSource ? normalizeString(productSource['name']) : undefined);
+
+    return {
+      productId: directId ?? nestedId,
+      productName: productName ?? undefined,
+    };
+  }
+
+  private pickPrimaryImageAttachment(
+    attachments?: AdminCopilotAttachment[],
+  ): AdminCopilotAttachment | undefined {
+    if (!attachments?.length) {
+      return undefined;
+    }
+
+    return attachments.find((attachment) => attachment.type === 'image' && Boolean(attachment.url));
+  }
+
   private normalizeSinglePostDraft(
     source: unknown,
     index: number,
@@ -1945,31 +2024,29 @@ export class AdminCopilotService {
     }
 
     const map = source as Record<string, unknown>;
-    const caption = this.normalizeString(map.caption);
+    const caption = normalizeString(map.caption);
     if (!caption) {
       return null;
     }
 
-    const variantId = this.normalizeString(map.variantId ?? map.id) ?? `variant-${index + 1}`;
+    const variantId = normalizeString(map.variantId ?? map.id) ?? `variant-${index + 1}`;
 
-    const hashtags = this.normalizeStringArray(map.hashtags ?? map.tags, 12);
+    const hashtags = normalizeStringArray(map.hashtags ?? map.tags, 12);
     const schedule =
       this.normalizePostSchedule(map.schedule) ?? normalizedInput.brief.schedule ?? null;
 
     return {
       variantId,
-      headline: this.normalizeString(map.headline ?? map.title) ?? null,
-      subHeadline: this.normalizeString(map.subHeadline ?? map.subtitle ?? map.subheading) ?? null,
+      headline: normalizeString(map.headline ?? map.title) ?? null,
+      subHeadline: normalizeString(map.subHeadline ?? map.subtitle ?? map.subheading) ?? null,
       caption,
       callToAction:
-        this.normalizeString(map.callToAction ?? map.cta) ??
-        normalizedInput.brief.callToAction ??
-        null,
+        normalizeString(map.callToAction ?? map.cta) ?? normalizedInput.brief.callToAction ?? null,
       hashtags: hashtags.length ? hashtags : normalizedInput.hashtags,
       schedule,
-      preview: this.normalizeString(map.preview ?? map.summary) ?? null,
-      notes: this.normalizeString(map.notes ?? map.comments) ?? null,
-      suggestedAssets: this.normalizeStringArray(map.suggestedAssets ?? map.assetIdeas, 6),
+      preview: normalizeString(map.preview ?? map.summary) ?? null,
+      notes: normalizeString(map.notes ?? map.comments) ?? null,
+      suggestedAssets: normalizeStringArray(map.suggestedAssets ?? map.assetIdeas, 6),
     };
   }
 
@@ -1979,9 +2056,9 @@ export class AdminCopilotService {
     }
 
     const map = value as Record<string, unknown>;
-    const date = this.normalizeString(map.date ?? map.day ?? map.publishDate);
-    const time = this.normalizeString(map.time ?? map.publishTime ?? map.window);
-    const timezone = this.normalizeString(map.timezone ?? map.tz ?? map.timeZone);
+    const date = normalizeString(map.date ?? map.day ?? map.publishDate);
+    const time = normalizeString(map.time ?? map.publishTime ?? map.window);
+    const timezone = normalizeString(map.timezone ?? map.tz ?? map.timeZone);
 
     if (!date && !time && !timezone) {
       return null;
@@ -1994,62 +2071,6 @@ export class AdminCopilotService {
     };
   }
 
-  private normalizeLanguageInput(value: unknown, fallback: string): string {
-    const normalized = this.normalizeString(value);
-    if (!normalized) {
-      return fallback;
-    }
-    return normalized.toLowerCase();
-  }
-
-  private normalizeFormat(value: unknown): 'short' | 'medium' | 'long' | null {
-    const normalized = this.normalizeString(value);
-    if (!normalized) {
-      return null;
-    }
-
-    switch (normalized.toLowerCase()) {
-      case 'short':
-      case 'short_form':
-      case 'short-form':
-        return 'short';
-      case 'long':
-      case 'long_form':
-      case 'long-form':
-        return 'long';
-      case 'medium':
-      case 'mid':
-        return 'medium';
-      default:
-        return null;
-    }
-  }
-
-  private normalizeString(value: unknown): string | undefined {
-    if (typeof value !== 'string') {
-      return undefined;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return undefined;
-    }
-    return trimmed;
-  }
-
-  private normalizeStringArray(value: unknown, limit = 10): string[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    const normalized = value
-      .map((item) => this.normalizeString(item))
-      .filter((item): item is string => Boolean(item));
-
-    const unique = Array.from(new Set(normalized));
-    return unique.slice(0, Math.max(1, limit));
-  }
-
   private normalizeGranularity(value: unknown): TrendGranularity | undefined {
     if (typeof value !== 'string') {
       return undefined;
@@ -2058,28 +2079,5 @@ export class AdminCopilotService {
       return value;
     }
     return undefined;
-  }
-
-  private parsePositiveInt(
-    value: unknown,
-    fallback: number | undefined,
-    min = 0,
-    max = Number.MAX_SAFE_INTEGER,
-  ): number | undefined {
-    if (value === undefined || value === null) {
-      return fallback;
-    }
-    const num = Number(value);
-    if (!Number.isFinite(num)) {
-      return fallback;
-    }
-    const clamped = Math.max(min, Math.min(max, Math.floor(num)));
-    return clamped;
-  }
-
-  private subtractDays(date: Date, days: number): Date {
-    const clone = new Date(date.getTime());
-    clone.setDate(clone.getDate() - days);
-    return clone;
   }
 }
