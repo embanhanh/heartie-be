@@ -1,9 +1,24 @@
-import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+  Req,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { AdminGuard } from '../auth/guards/admin.guard';
 import { AdminCopilotService } from './admin-copilot.service';
-import { AdminCopilotChatRequestDto, AdminCopilotResponseDto } from './dto/admin-copilot-chat.dto';
+import {
+  AdminCopilotAttachmentDto,
+  AdminCopilotChatRequestDto,
+  AdminCopilotResponseDto,
+} from './dto/admin-copilot-chat.dto';
 import {
   AdminCopilotRevenueOverviewQueryDto,
   AdminCopilotStockAlertsQueryDto,
@@ -14,6 +29,9 @@ import {
   AdminCopilotHistoryResponseDto,
 } from './dto/admin-copilot-history.dto';
 import { Request } from 'express';
+import { createModuleMulterOptions, resolveModuleUploadPath } from '../../common/utils/upload.util';
+import { UploadedFile as MulterUploadedFile } from '../../common/types/uploaded-file.type';
+import { randomUUID } from 'crypto';
 
 @ApiTags('admin-copilot')
 @ApiBearerAuth()
@@ -24,12 +42,52 @@ export class AdminCopilotController {
 
   @Post('chat')
   @ApiOperation({ summary: 'Trò chuyện với trợ lý AI dành cho admin Fashia' })
+  @UseInterceptors(
+    FileInterceptor(
+      'attachment',
+      createModuleMulterOptions({
+        moduleName: 'ads-ai',
+        allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+        limits: { fileSize: 5 * 1024 * 1024 },
+      }),
+    ),
+  )
   chat(
     @Body() dto: AdminCopilotChatRequestDto,
+    @UploadedFile() attachment: MulterUploadedFile | undefined,
     @Req() req: Request,
   ): Promise<AdminCopilotResponseDto> {
+    console.log('Received DTO:', dto);
+
     const user = req.user as { id: number };
-    return this.service.chat(dto, user.id);
+    let normalizedDto: AdminCopilotChatRequestDto = dto;
+
+    if (attachment) {
+      const storedPath = resolveModuleUploadPath('ads-ai', attachment);
+      if (storedPath) {
+        const attachmentRecord: AdminCopilotAttachmentDto = {
+          id: randomUUID(),
+          type: 'image',
+          url: storedPath,
+          name: attachment.originalname ?? undefined,
+          mimeType: attachment.mimetype,
+          size: attachment.size,
+          meta: {
+            module: 'ads-ai',
+            uploadedAt: new Date().toISOString(),
+          },
+        };
+
+        normalizedDto = {
+          ...dto,
+          attachments: [...(dto.attachments ?? []), attachmentRecord],
+        };
+      }
+    }
+
+    console.log('Normalized DTO:', normalizedDto);
+
+    return this.service.chat(normalizedDto, user.id);
   }
 
   @Get('history')

@@ -15,10 +15,6 @@
           "- Recommend concrete operational steps to improve branch performance."
         ]
       }
-    },
-    "postCampaign": {
-      "system": "You are the Fashia content strategist who converts admin briefs into ready-to-publish social posts. Always return valid JSON following the schema { brief, strategy, posts }. Make sure every textual field (headlines, captions, notes) is written in {{languageName}} and reflects the brand tone described in the brief. When the admin confirms a variant, call the tool finalize_post_campaign with the approved content so it is saved in Ads AI. When they approve a schedule, call schedule_post_campaign with the campaign id and ISO timestamp.",
-      "userTemplate": "# Campaign brief\n{{payload}}\n\nDeliver exactly {{variantCount}} tailored Facebook post variants. For each variant include: headline (optional), caption, callToAction, hashtags, schedule suggestion (date/time/timezone), preview summary, and suggestedAssets. Provide an overall strategy section with hookIdeas, assetIdeas, publishingTips, and hashtags. Keep everything in {{languageName}} and align with Fashia's fashion retail voice."
     }
   },
   "messages": {
@@ -35,6 +31,13 @@
     "status": {
       "connected": "Connected to the admin copilot successfully.",
       "typing": "The assistant is preparing a response..."
+    }
+  },
+  "validation": {
+    "message": {
+      "required": "Please enter a message before sending.",
+      "string": "Message must be text.",
+      "maxLength": "Message must not exceed 4000 characters."
     }
   }
 }

@@ -1,6 +1,12 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
 import { Request, Response } from 'express';
-import { I18nContext, I18nService } from 'nestjs-i18n';
+import {
+  I18nContext,
+  I18nService,
+  I18nValidationException,
+  I18nValidationError,
+} from 'nestjs-i18n';
+import { formatI18nErrors } from 'nestjs-i18n/dist/utils/util';
 import { AppLogger } from '../logger/app-logger.service';
 import { AppException } from '../errors/app.exception';
 import {
@@ -20,6 +26,7 @@ interface ResolvedExceptionData {
   translationKey?: string;
   fallbackMessage: string;
   details?: Record<string, unknown>;
+  validationErrors?: I18nValidationError[];
   stack?: string;
 }
 
@@ -61,7 +68,7 @@ export class AppExceptionFilter implements ExceptionFilter {
       code: data.code,
       message,
       translationKey: data.translationKey,
-      details: data.details,
+      details: this.resolveDetails(data, lang),
       path: request?.url,
       timestamp: new Date().toISOString(),
     };
@@ -87,6 +94,18 @@ export class AppExceptionFilter implements ExceptionFilter {
   }
 
   private resolveExceptionData(exception: unknown): ResolvedExceptionData {
+    if (exception instanceof I18nValidationException) {
+      const status = exception.getStatus();
+      return {
+        status,
+        code: 'VALIDATION_FAILED',
+        translationKey: 'errors.validation.invalidPayload',
+        fallbackMessage: 'Validation failed',
+        validationErrors: exception.errors,
+        stack: exception.stack,
+      };
+    }
+
     if (exception instanceof AppException) {
       const status = exception.getStatus();
       const responseBody = exception.getResponse() as Record<string, unknown>;
@@ -188,6 +207,23 @@ export class AppExceptionFilter implements ExceptionFilter {
       translationKey: 'errors.common.internal',
       fallbackMessage: 'Internal server error',
     };
+  }
+
+  private resolveDetails(
+    data: ResolvedExceptionData,
+    lang: string,
+  ): Record<string, unknown> | undefined {
+    const baseDetails = data.details ? { ...data.details } : undefined;
+
+    if (data.validationErrors?.length) {
+      const formatted = formatI18nErrors(data.validationErrors, this.i18n, { lang });
+      return {
+        ...(baseDetails ?? {}),
+        errors: formatted,
+      };
+    }
+
+    return baseDetails;
   }
 
   private resolveLanguage(host: ArgumentsHost, request?: Request): string {

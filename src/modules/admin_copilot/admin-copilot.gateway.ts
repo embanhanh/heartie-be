@@ -14,6 +14,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { AdminCopilotService } from './admin-copilot.service';
 import {
+  AdminCopilotAttachmentDto,
   AdminCopilotChatRequestDto,
   AdminCopilotHistoryMessageDto,
 } from './dto/admin-copilot-chat.dto';
@@ -38,6 +39,8 @@ interface AdminCopilotChatPayload {
   message: string;
   history?: AdminCopilotHistoryMessageDto[];
   conversationId?: number;
+  meta?: Record<string, unknown>;
+  attachments?: AdminCopilotAttachmentDto[];
 }
 
 interface AdminCopilotHistoryPayload {
@@ -128,7 +131,7 @@ export class AdminCopilotGateway
     const lang = this.getSocketLanguage(client);
     this.logger.debug(
       `Received chat event from client ${client.id} (adminId=${client.data?.adminUserId ?? 'unknown'}) ` +
-        `conversationId=${payload?.conversationId ?? 'auto'} historyLength=${payload?.history?.length ?? 0}`,
+        `conversationId=${payload?.conversationId ?? 'auto'}`,
     );
 
     if (!payload?.message || !payload.message.trim()) {
@@ -158,8 +161,9 @@ export class AdminCopilotGateway
 
     const request: AdminCopilotChatRequestDto = {
       message: payload.message.trim(),
-      history: payload.history ?? [],
       conversationId: payload.conversationId,
+      meta: payload.meta,
+      attachments: payload.attachments,
     };
 
     this.logger.debug(

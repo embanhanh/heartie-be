@@ -22,10 +22,6 @@ export type I18nTranslations = {
                     ];
                 };
             };
-            "postCampaign": {
-                "system": string;
-                "userTemplate": string;
-            };
         };
         "messages": {
             "errors": {
@@ -41,6 +37,13 @@ export type I18nTranslations = {
             "status": {
                 "connected": string;
                 "typing": string;
+            };
+        };
+        "validation": {
+            "message": {
+                "required": string;
+                "string": string;
+                "maxLength": string;
             };
         };
     };
