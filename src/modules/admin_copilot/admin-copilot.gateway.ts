@@ -39,7 +39,7 @@ interface AdminCopilotChatPayload {
   message: string;
   history?: AdminCopilotHistoryMessageDto[];
   conversationId?: number;
-  meta?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   attachments?: AdminCopilotAttachmentDto[];
 }
 
@@ -131,7 +131,7 @@ export class AdminCopilotGateway
     const lang = this.getSocketLanguage(client);
     this.logger.debug(
       `Received chat event from client ${client.id} (adminId=${client.data?.adminUserId ?? 'unknown'}) ` +
-        `conversationId=${payload?.conversationId ?? 'auto'}`,
+        `conversationId=${payload?.conversationId ?? 'auto'} lang=${lang} payload=${JSON.stringify(payload)}`,
     );
 
     if (!payload?.message || !payload.message.trim()) {
@@ -162,7 +162,7 @@ export class AdminCopilotGateway
     const request: AdminCopilotChatRequestDto = {
       message: payload.message.trim(),
       conversationId: payload.conversationId,
-      meta: payload.meta,
+      metadata: payload.metadata,
       attachments: payload.attachments,
     };
 

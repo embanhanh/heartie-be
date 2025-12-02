@@ -23,6 +23,7 @@ import { UploadedFile } from 'src/common/types/uploaded-file.type';
 import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
 import { SemanticSearchService } from '../semantic_search/semantic-search.service';
 import { RankedProductRow } from '../semantic_search/semantic-search.service';
+import { StatsTrackingService } from '../stats/services/stats-tracking.service';
 
 type VariantSummary = {
   id: number;
@@ -72,6 +73,7 @@ export class ProductsService extends BaseService<Product> {
     @InjectRepository(Branch)
     private readonly branchRepo: Repository<Branch>,
     private readonly semanticSearchService: SemanticSearchService,
+    private readonly statsTrackingService: StatsTrackingService,
   ) {
     super(productRepo, 'product');
   }
@@ -511,6 +513,11 @@ export class ProductsService extends BaseService<Product> {
     if (!product) {
       return null;
     }
+
+    this.statsTrackingService.recordProductView(product.id).catch((error) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Failed to record product view for id=${product.id}: ${reason}`);
+    });
 
     const { productAttributes = [], ...rest } = product;
 

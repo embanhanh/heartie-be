@@ -69,7 +69,15 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
       {
         name: 'generate_post_campaign',
         description:
-          'Tạo kế hoạch nội dung bài đăng Facebook (caption, hashtag, gợi ý lịch đăng) dựa trên brief được cung cấp.',
+          // Vietnamese:
+          // - Dùng tool này cho BƯỚC LÊN KẾ HOẠCH/NHÁP ban đầu:
+          //   + Khi admin yêu cầu gợi ý nội dung, nhiều phiên bản caption, hashtag, lịch đăng.
+          //   + Khi brief còn đang được làm rõ.
+          // - KHÔNG dùng tool này để lưu bản nháp cuối cùng vào Ads AI.
+          // - Khi admin nói các câu như "tạo mẫu chính thức", "lưu mẫu này", "tạo mẫu từ nội dung trên", "thêm hình ảnh tôi vừa gửi vào mẫu trên và tạo mẫu"
+          //   thì HÃY DÙNG tool "finalize_post_campaign" thay vì tool này.
+          'Tạo kế hoạch nội dung bài đăng Facebook (caption, hashtag, gợi ý lịch đăng) dựa trên brief được cung cấp. ' +
+          'Dùng cho bước lên kế hoạch/nháp ban đầu, KHÔNG dùng để lưu mẫu chính thức.',
         parameters: {
           type: SchemaType.OBJECT,
           properties: {
@@ -156,7 +164,21 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
       {
         name: 'finalize_post_campaign',
         description:
-          'Lưu bài viết đã chốt vào Ads AI để quản lý và theo dõi, sử dụng toàn bộ nội dung đã đồng ý.',
+          // Vietnamese:
+          // - Dùng tool này khi admin đã CHỐT nội dung hoặc yêu cầu "tạo mẫu/lưu mẫu" dựa trên nội dung đã trao đổi.
+          // - Các trigger điển hình:
+          //   + "tạo mẫu cho bài trên", "tạo mẫu chính thức", "lưu mẫu này", "tạo ads từ gợi ý trên"
+          //   + "thêm hình ảnh tôi đã đính kèm vào mẫu trên và tạo mẫu", "dùng sản phẩm này để tạo mẫu"
+          // - Metadata của tin nhắn (nếu có) có thể chứa:
+          //   + productId hoặc product: { id, name }
+          //   + productName
+          //   + imageUrl hoặc image: { url, ... }
+          // - Khi gọi tool:
+          //   + Nếu metadata có productId/product/productName thì hãy map sang các field productId, productName tương ứng.
+          //   + Nếu metadata có imageUrl hoặc image.url thì HÃY ĐIỀN vào field "image" để Ads AI biết asset sẽ dùng.
+          'Lưu bài viết đã chốt vào Ads AI để quản lý và theo dõi, sử dụng toàn bộ nội dung đã đồng ý. ' +
+          'Dùng khi admin yêu cầu “tạo mẫu/lưu mẫu” dựa trên nội dung đã trao đổi (ví dụ: chốt caption, thêm hình ảnh vừa gửi). ' +
+          'Nếu metadata của tin nhắn có productId/productName hoặc imageUrl/image.url thì hãy map sang các field productId, productName và image tương ứng.',
         parameters: {
           type: SchemaType.OBJECT,
           properties: {

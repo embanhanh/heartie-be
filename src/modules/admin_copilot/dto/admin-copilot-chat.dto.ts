@@ -133,7 +133,7 @@ export class AdminCopilotChatRequestDto {
   @ApiPropertyOptional({ description: 'Đối tượng meta bổ sung cho ngữ cảnh', type: Object })
   @IsOptional()
   @Transform(({ value }) => parseJsonObject(value))
-  meta?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
 
   @ApiPropertyOptional({
     description: 'Danh sách đính kèm hiện có',
