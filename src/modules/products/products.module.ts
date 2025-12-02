@@ -12,6 +12,7 @@ import { AttributesModule } from '../attributes/attributes.module';
 import { MulterModule } from '@nestjs/platform-express';
 import { createModuleMulterOptions } from 'src/common/utils/upload.util';
 import { SemanticSearchModule } from '../semantic_search/semantic-search.module';
+import { StatsModule } from '../stats/stats.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { SemanticSearchModule } from '../semantic_search/semantic-search.module'
     AttributesModule,
     MulterModule.register(createModuleMulterOptions({ moduleName: 'products' })),
     SemanticSearchModule,
+    StatsModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService],

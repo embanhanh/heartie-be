@@ -91,16 +91,6 @@ export interface AdminCopilotPostCampaignResult {
   posts: AdminCopilotPostDraft[];
 }
 
-export interface AdminCopilotAttachment {
-  id: string;
-  type: 'image' | 'file' | 'video' | 'link';
-  url: string;
-  name?: string | null;
-  mimeType?: string | null;
-  size?: number | null;
-  meta?: Record<string, unknown> | null;
-}
-
 export interface AdminCopilotPostCampaignNormalizedInput {
   language: string;
   variants: number;
@@ -108,7 +98,6 @@ export interface AdminCopilotPostCampaignNormalizedInput {
   hashtags: string[];
   brief: AdminCopilotPostBrief;
   meta?: Record<string, unknown> | null;
-  attachments?: AdminCopilotAttachment[];
 }
 
 export interface AdminCopilotRangeConfig {

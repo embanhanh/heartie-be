@@ -1,26 +1,27 @@
+import { GenerativeModel, GoogleGenerativeAI } from '@google/generative-ai';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThanOrEqual } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
+import { InjectRepository } from '@nestjs/typeorm';
 import axios, { AxiosError, AxiosInstance } from 'axios';
-import { join } from 'path';
-import { existsSync, promises as fsPromises, createReadStream } from 'fs';
 import * as FormData from 'form-data';
+import { createReadStream, existsSync, promises as fsPromises } from 'fs';
+import { join } from 'path';
 import { BaseService } from 'src/common/services/base.service';
-import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
-import { Product } from '../products/entities/product.entity';
+import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
+import { LessThanOrEqual, Repository } from 'typeorm';
 import { ProductVariantStatus } from '../product_variants/entities/product_variant.entity';
-import { AdsAiCampaign, AdsAiPostType, AdsAiStatus } from './entities/ads-ai-campaign.entity';
-import { CreateAdsAiDto } from './dto/create-ads-ai.dto';
-import { UpdateAdsAiDto } from './dto/update-ads-ai.dto';
+import { Product } from '../products/entities/product.entity';
 import { AdsAiQueryDto } from './dto/ads-ai-query.dto';
-import { ScheduleAdsAiDto } from './dto/schedule-ads-ai.dto';
-import { PublishAdsAiDto } from './dto/publish-ads-ai.dto';
+import { CreateAdsAiDto } from './dto/create-ads-ai.dto';
 import { GenerateAdsAiDto } from './dto/generate-ads-ai.dto';
+import { PublishAdsAiDto } from './dto/publish-ads-ai.dto';
+import { ScheduleAdsAiDto } from './dto/schedule-ads-ai.dto';
+import { UpdateAdsAiDto } from './dto/update-ads-ai.dto';
+import { AdsAiCampaign, AdsAiPostType, AdsAiStatus } from './entities/ads-ai-campaign.entity';
 import { GeneratedAdContent } from './interfaces/generated-ad-content.interface';
+import { StatsTrackingService } from '../stats/services/stats-tracking.service';
 
 const MODULE_NAME = 'ads-ai';
 
@@ -39,6 +40,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     @InjectRepository(Product)
     private readonly productRepo: Repository<Product>,
     private readonly configService: ConfigService,
+    private readonly statsTrackingService: StatsTrackingService,
   ) {
     super(repo, 'ad');
     this.httpClient = axios.create({ timeout: 10000 });
@@ -97,6 +99,10 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     const scheduledAt = this.normalizeScheduledDate(dto.scheduledAt);
     const status = scheduledAt ? AdsAiStatus.SCHEDULED : AdsAiStatus.DRAFT;
 
+    // Nếu có hình ảnh (từ upload hoặc đường dẫn sẵn có) thì ưu tiên postType là PHOTO
+    const basePostType = this.normalizePostTypeInput(dto.postType);
+    const resolvedPostType = imagePath ? AdsAiPostType.PHOTO : basePostType;
+
     const product = await this.resolveProduct(dto.productId, { strict: !!dto.productId });
 
     const entity = this.repo.create({
@@ -114,7 +120,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       description: dto.description ?? null,
       hashtags: this.normalizeStoredHashtags(dto.hashtags),
       image: imagePath ?? null,
-      postType: this.normalizePostTypeInput(dto.postType),
+      postType: resolvedPostType,
       status,
       scheduledAt,
     });
@@ -192,6 +198,15 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       }
     }
 
+    // Tự động đồng bộ postType với trạng thái ảnh:
+    // - Nếu có ảnh -> PHOTO
+    // - Nếu không có ảnh và đang là PHOTO -> quay về LINK để tránh lỗi publish
+    if (ad.image) {
+      ad.postType = AdsAiPostType.PHOTO;
+    } else if (ad.postType === AdsAiPostType.PHOTO) {
+      ad.postType = AdsAiPostType.LINK;
+    }
+
     if (dto.scheduledAt !== undefined) {
       const scheduledAt = this.normalizeScheduledDate(dto.scheduledAt);
       ad.scheduledAt = scheduledAt;
@@ -242,8 +257,17 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     });
   }
 
-  findOne(id: number) {
-    return this.repo.findOne({ where: { id } });
+  async findOne(id: number) {
+    const campaign = await this.repo.findOne({ where: { id } });
+
+    if (campaign) {
+      this.statsTrackingService.recordArticleView(campaign.id).catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to record article view for campaign ${campaign.id}: ${reason}`);
+      });
+    }
+
+    return campaign;
   }
 
   async schedule(id: number, dto: ScheduleAdsAiDto) {

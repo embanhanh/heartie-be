@@ -1,19 +1,44 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { ConfigService } from '@nestjs/config';
-import { I18nContext, I18nService } from 'nestjs-i18n';
 import { FunctionCall, FunctionResponsePart } from '@google/generative-ai';
+import { BadRequestException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
 import { plainToInstance } from 'class-transformer';
 import { validate, ValidationError } from 'class-validator';
+import { I18nContext, I18nService } from 'nestjs-i18n';
 import { Repository } from 'typeorm';
-import { randomUUID } from 'crypto';
-import { GeminiService, GeminiChatMessage, GeminiChatRole } from '../gemini/gemini.service';
+import { AppException } from '../../common/errors/app.exception';
+import {
+  normalizeFormat,
+  normalizeLanguageInput,
+  normalizeScheduleIso,
+  normalizeString,
+  normalizeStringArray,
+  parsePositiveInt,
+  subtractDays,
+} from '../../common/utils/data-normalization.util';
 import { AdsAiService } from '../ads_ai/ads_ai.service';
-import { GenerateAdsAiDto } from '../ads_ai/dto/generate-ads-ai.dto';
 import { CreateAdsAiDto } from '../ads_ai/dto/create-ads-ai.dto';
+import { GenerateAdsAiDto } from '../ads_ai/dto/generate-ads-ai.dto';
 import { ScheduleAdsAiDto } from '../ads_ai/dto/schedule-ads-ai.dto';
 import { AdsAiCampaign } from '../ads_ai/entities/ads-ai-campaign.entity';
 import { GeneratedAdContent } from '../ads_ai/interfaces/generated-ad-content.interface';
+import { ConversationParticipant } from '../conversation_participants/entities/conversation_participant.entity';
+import { Conversation } from '../conversations/entities/conversation.entity';
+import { ParticipantRole } from '../conversations/enums/conversation.enums';
+import { GeminiChatMessage, GeminiChatRole, GeminiService } from '../gemini/gemini.service';
+import { ProductVariantInventory } from '../inventory/entities/product-variant-inventory.entity';
+import { Message } from '../messages/entities/message.entity';
+import { MessageRole } from '../messages/enums/message.enums';
+import { OrderItem } from '../order_items/entities/order-item.entity';
+import { TrendGranularity } from '../trend_forecasting/dto/trend-forecast-query.dto';
+import { TrendForecastingService } from '../trend_forecasting/trend-forecasting.service';
+import { User } from '../users/entities/user.entity';
+import {
+  ADMIN_COPILOT_DEFAULT_RANGE,
+  ADMIN_COPILOT_FULFILLED_ORDER_STATUSES,
+  ADMIN_COPILOT_RANGE_OPTIONS,
+} from './constants/admin-copilot.constants';
+import { ADMIN_COPILOT_TOOLS } from './constants/admin-copilot.tools';
 import {
   AdminCopilotChatRequestDto,
   AdminCopilotHistoryMessageDto,
@@ -25,55 +50,28 @@ import {
   AdminCopilotHistoryQueryDto,
   AdminCopilotHistoryResponseDto,
 } from './dto/admin-copilot-history.dto';
-import { TrendForecastingService } from '../trend_forecasting/trend-forecasting.service';
-import { TrendGranularity } from '../trend_forecasting/dto/trend-forecast-query.dto';
-import { OrderItem } from '../order_items/entities/order-item.entity';
-import { ProductVariantInventory } from '../inventory/entities/product-variant-inventory.entity';
-import { Conversation } from '../conversations/entities/conversation.entity';
-import { ConversationParticipant } from '../conversation_participants/entities/conversation_participant.entity';
-import { ParticipantRole } from '../conversations/enums/conversation.enums';
-import { Message } from '../messages/entities/message.entity';
-import { MessageRole } from '../messages/enums/message.enums';
-import { User } from '../users/entities/user.entity';
+import {
+  AdminCopilotPostCampaignInput,
+  AdminCopilotRevenueOverviewInput,
+  AdminCopilotStockAlertsInput,
+  AdminCopilotTopProductsInput,
+} from './types/admin-copilot-tool-inputs';
 import {
   AdminCopilotAdminContext,
+  AdminCopilotPostBrief,
+  AdminCopilotPostCampaignNormalizedInput,
+  AdminCopilotPostCampaignResult,
+  AdminCopilotPostDraft,
+  AdminCopilotPostSchedule,
+  AdminCopilotPostStrategy,
+  AdminCopilotRangeConfig,
   AdminCopilotRangeKey,
   AdminCopilotRevenueOverviewResult,
   AdminCopilotStockAlertRow,
   AdminCopilotStockAlertsResult,
   AdminCopilotTopProductRow,
   AdminCopilotTopProductsResult,
-  AdminCopilotPostBrief,
-  AdminCopilotPostDraft,
-  AdminCopilotPostSchedule,
-  AdminCopilotPostStrategy,
-  AdminCopilotPostCampaignResult,
-  AdminCopilotPostCampaignNormalizedInput,
-  AdminCopilotRangeConfig,
-  AdminCopilotAttachment,
 } from './types/admin-copilot.types';
-import {
-  AdminCopilotRevenueOverviewInput,
-  AdminCopilotStockAlertsInput,
-  AdminCopilotTopProductsInput,
-  AdminCopilotPostCampaignInput,
-} from './types/admin-copilot-tool-inputs';
-import {
-  ADMIN_COPILOT_DEFAULT_RANGE,
-  ADMIN_COPILOT_FULFILLED_ORDER_STATUSES,
-  ADMIN_COPILOT_RANGE_OPTIONS,
-} from './constants/admin-copilot.constants';
-import { ADMIN_COPILOT_TOOLS } from './constants/admin-copilot.tools';
-import { AppException } from '../../common/errors/app.exception';
-import {
-  normalizeFormat,
-  normalizeLanguageInput,
-  normalizeScheduleIso,
-  normalizeString,
-  normalizeStringArray,
-  parsePositiveInt,
-  subtractDays,
-} from '../../common/utils/data-normalization.util';
 
 const ADMIN_COPILOT_CONVERSATION_TYPE = 'ADMIN_COPILOT';
 const ADMIN_COPILOT_HISTORY_LIMIT = 40;
@@ -86,7 +84,6 @@ const RANGE_CONFIGS: AdminCopilotRangeConfig[] = [
 
 interface AdminCopilotRequestContextOptions {
   requestMeta?: Record<string, unknown>;
-  attachments?: AdminCopilotAttachment[];
 }
 
 @Injectable()
@@ -131,11 +128,18 @@ export class AdminCopilotService {
     const adminContext = await this.resolveAdminContext(adminUserId);
     const systemPrompt = await this.buildSystemPrompt(adminContext, lang);
     const tools = ADMIN_COPILOT_TOOLS;
-    const requestMeta = request.meta ?? undefined;
-    const attachments = this.normalizeAttachments(request.attachments);
+    const requestMeta = request.metadata ?? undefined;
+
+    let geminiMessage = trimmedMessage;
+
+    // HANDLE META
+    if (requestMeta) {
+      this.logger.debug(`Admin copilot request meta: ${JSON.stringify(requestMeta)}`);
+      geminiMessage += `\n[Metadata Context]: ${JSON.stringify(requestMeta)}`;
+    }
+
     const requestContext: AdminCopilotRequestContextOptions = {
       requestMeta,
-      attachments,
     };
 
     this.logger.debug(
@@ -160,14 +164,14 @@ export class AdminCopilotService {
 
     const historyMessages = this.mapMessagesToGemini(historyEntities.reverse());
 
-    const adminMessageMetadata = this.buildAdminMessageMetadata(requestMeta, attachments);
+    // const adminMessageMetadata = this.buildAdminMessageMetadata(requestMeta, attachments);
 
     const adminMessageEntity = this.messageRepository.create({
       conversationId: context.conversation.id,
       senderParticipantId: context.adminParticipant?.id ?? null,
       role: MessageRole.ADMIN,
       content: trimmedMessage,
-      metadata: adminMessageMetadata,
+      metadata: requestMeta,
     });
     await this.messageRepository.save(adminMessageEntity);
 
@@ -175,36 +179,59 @@ export class AdminCopilotService {
       {
         role: AdminCopilotMessageRole.USER,
         content: trimmedMessage,
-        metadata: adminMessageMetadata,
+        metadata: requestMeta,
       },
     ];
 
     this.logger.debug(`call with system prompt: ${systemPrompt}`);
 
-    const firstCall = await this.geminiService.generateContent(trimmedMessage, historyMessages, {
-      systemPrompt,
-      temperature: 0.1,
-      tools,
-      model: this.getAdminModelName(),
-    });
+    let firstCall:
+      | {
+          text: string | null;
+          functionCall: FunctionCall | null;
+        }
+      | null
+      | undefined;
+    try {
+      firstCall = await this.geminiService.generateContent(geminiMessage, historyMessages, {
+        systemPrompt,
+        temperature: 0.1,
+        tools,
+        model: this.getAdminModelName(),
+      });
+    } catch (error) {
+      // Chuẩn hoá lỗi Gemini "không trả về nội dung" thành lỗi nghiệp vụ dễ hiểu cho admin
+      if (error instanceof BadRequestException) {
+        this.logger.warn(
+          `Gemini did not return any content for admin ${adminUserId} (conversationId=${context.conversation.id})`,
+        );
+        throw new AppException({
+          status: HttpStatus.BAD_REQUEST,
+          code: 'ADMIN_COPILOT_NO_ANSWER',
+          translationKey: 'errors.adminCopilot.geminiNoAnswer',
+          cause: error,
+        });
+      }
+      throw error;
+    }
 
-    if (firstCall.functionCall) {
+    if (firstCall?.functionCall) {
       this.logger.debug(
         `Gemini requested function call ${firstCall.functionCall.name} for conversation ${context.conversation.id}`,
       );
     }
 
-    if (!firstCall.text) {
+    if (!firstCall?.text) {
       this.logger.debug(
         `Gemini returned empty text on first call for conversation ${context.conversation.id}`,
       );
     }
 
-    let reply = firstCall.text ?? '';
+    let reply = firstCall?.text ?? '';
     let functionCall: AdminCopilotResponseDto['functionCall'] = null;
     let toolResult: Record<string, unknown> | null = null;
 
-    if (firstCall.functionCall) {
+    if (firstCall?.functionCall) {
       const toolExecution = await this.dispatchTool(
         firstCall.functionCall,
         adminContext,
@@ -542,13 +569,17 @@ export class AdminCopilotService {
       if (message.role === MessageRole.ASSISTANT) {
         return {
           role: GeminiChatRole.MODEL,
-          content: message.content ?? '',
+          content: message.metadata
+            ? `${message.content ?? ''}\n[Metadata Context]: ${JSON.stringify(message.metadata)}`
+            : (message.content ?? ''),
         } satisfies GeminiChatMessage;
       }
 
       return {
         role: GeminiChatRole.USER,
-        content: message.content ?? '',
+        content: message.metadata
+          ? `${message.content ?? ''}\n[Metadata Context]: ${JSON.stringify(message.metadata)}`
+          : (message.content ?? ''),
       } satisfies GeminiChatMessage;
     });
   }
@@ -1313,9 +1344,9 @@ export class AdminCopilotService {
       normalizedProductName = productContext.productName;
     }
     if (!image) {
-      const imageAttachment = this.pickPrimaryImageAttachment(options.attachments);
-      if (imageAttachment) {
-        image = imageAttachment.url;
+      const imageFromMeta = this.resolveImageFromMeta(options.requestMeta);
+      if (imageFromMeta) {
+        image = imageFromMeta;
       }
     }
 
@@ -1771,7 +1802,6 @@ export class AdminCopilotService {
 
     const brief = this.mergePostBrief(rawBrief, null);
     const meta = options.requestMeta ?? null;
-    const attachments = options.attachments?.length ? options.attachments : undefined;
 
     return {
       language,
@@ -1780,7 +1810,6 @@ export class AdminCopilotService {
       hashtags,
       brief,
       meta,
-      attachments,
     };
   }
 
@@ -1909,74 +1938,6 @@ export class AdminCopilotService {
     ];
   }
 
-  private normalizeAttachments(
-    raw?: AdminCopilotChatRequestDto['attachments'],
-  ): AdminCopilotAttachment[] {
-    if (!raw?.length) {
-      return [];
-    }
-
-    return raw
-      .map<AdminCopilotAttachment | null>((item) => {
-        if (!item || typeof item !== 'object') {
-          return null;
-        }
-
-        const url = normalizeString((item as { url?: string }).url);
-        if (!url) {
-          return null;
-        }
-
-        const typeInput = normalizeString((item as { type?: string }).type)?.toLowerCase();
-        const normalizedType: AdminCopilotAttachment['type'] =
-          typeInput === 'image' || typeInput === 'video' || typeInput === 'link'
-            ? (typeInput as AdminCopilotAttachment['type'])
-            : 'file';
-
-        const id = normalizeString((item as { id?: string }).id) ?? randomUUID();
-        const mimeType = normalizeString((item as { mimeType?: string }).mimeType) ?? null;
-        const sizeValue = (item as { size?: unknown }).size;
-        const size = typeof sizeValue === 'number' && Number.isFinite(sizeValue) ? sizeValue : null;
-        const metaValue = (item as { meta?: unknown }).meta;
-        const meta =
-          metaValue && typeof metaValue === 'object' && !Array.isArray(metaValue)
-            ? (metaValue as Record<string, unknown>)
-            : null;
-        const name = normalizeString((item as { name?: string }).name) ?? null;
-
-        const attachment: AdminCopilotAttachment = {
-          id,
-          type: normalizedType,
-          url,
-          name,
-          mimeType,
-          size,
-          meta,
-        };
-        return attachment;
-      })
-      .filter((attachment): attachment is AdminCopilotAttachment => Boolean(attachment));
-  }
-
-  private buildAdminMessageMetadata(
-    meta?: Record<string, unknown>,
-    attachments?: AdminCopilotAttachment[],
-  ): Record<string, unknown> | undefined {
-    const payload: Record<string, unknown> = {
-      type: 'admin_message',
-    };
-
-    if (meta && Object.keys(meta).length) {
-      payload.contextMeta = meta;
-    }
-
-    if (attachments?.length) {
-      payload.attachments = attachments;
-    }
-
-    return payload;
-  }
-
   private resolveProductContextFromMeta(meta?: Record<string, unknown>): {
     productId?: number;
     productName?: string;
@@ -2004,14 +1965,23 @@ export class AdminCopilotService {
     };
   }
 
-  private pickPrimaryImageAttachment(
-    attachments?: AdminCopilotAttachment[],
-  ): AdminCopilotAttachment | undefined {
-    if (!attachments?.length) {
+  private resolveImageFromMeta(meta?: Record<string, unknown>): string | undefined {
+    if (!meta || typeof meta !== 'object') {
       return undefined;
     }
 
-    return attachments.find((attachment) => attachment.type === 'image' && Boolean(attachment.url));
+    const direct = normalizeString(meta['imageUrl']) ?? normalizeString(meta['image']) ?? undefined;
+    if (direct) {
+      return direct;
+    }
+
+    const imageSource =
+      meta['image'] && typeof meta['image'] === 'object' && !Array.isArray(meta['image'])
+        ? (meta['image'] as Record<string, unknown>)
+        : undefined;
+
+    const url = imageSource ? normalizeString(imageSource['url']) : undefined;
+    return url ?? undefined;
   }
 
   private normalizeSinglePostDraft(

@@ -67,6 +67,7 @@ The codebase follows NestJS modular design. Each domain lives in `src/modules/<f
 | `user_customer_groups`      | Junction table mapping users to customer groups with assignment auditing.                       |
 | `promotional_combos`        | Combo campaigns linking multiple products with validity and limits.                             |
 | `promotional_combo_details` | Line-level combo details (quantity, discount per item).                                         |
+| `stats`                     | Dashboard KPIs (overview, charts, leaderboards) with Redis caching and cron snapshots.          |
 
 Each module exports its controller/service pair and, when needed, registers repositories through `TypeOrmModule.forFeature([...])` inside the module definition.
 
@@ -290,6 +291,19 @@ For large catalogs consider scheduling the reindex command nightly or after bulk
 - Common route prefixes:
   - `/auth` → register, login, logout, refresh
   - `/products`, `/categories`, `/product-variants`, `/banners`, `/interactions`, `/ratings`, `/orders`, `/vouchers`, etc.
+
+### Dashboard & statistics API
+
+The `stats` module exposes cached dashboard endpoints that combine live queries, Redis caching, and daily snapshots written by a cron job into the `daily_statistics` table.
+
+- `GET /stats/overview?from=&to=&branchId=` — KPI block for revenue, orders, customers with previous-period deltas.
+- `GET /stats/revenue-chart?from=&to=&branchId=&bucketDays=` — Daily (or bucketed) revenue/order counts blending historical snapshots with same-day live data.
+- `GET /stats/order-status?from=&to=&branchId=` — Grouped order status breakdown (pending, shipping, completed, cancelled).
+- `GET /stats/product-views?branchId=&limit=` and `GET /stats/article-views?limit=` — Leaderboards sourced from Redis sorted sets (`ZINCRBY` on every product/article detail request).
+- `GET /products/top-selling?from=&to=&branchId=&limit=` — Heavy aggregation served from Redis cache with a short TTL.
+- `GET /products/low-stock?branchId=&threshold=&limit=` — Surface variants that are below branch/global stock thresholds.
+
+> Redis keys are automatically namespaced with `stats:*`. To keep dashboards responsive, every cached response has a small TTL (5–10 minutes) and the cron snapshot (1AM server time) pre-populates long-range data so the UI is never blocked by large `GROUP BY` scans.
 
 ## Testing
 
