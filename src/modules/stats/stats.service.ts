@@ -1,17 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
-import { Order, OrderStatus } from '../orders/entities/order.entity';
-import { OrderItem } from '../order_items/entities/order-item.entity';
-import { Product } from '../products/entities/product.entity';
-import { ProductVariantInventory } from '../inventory/entities/product-variant-inventory.entity';
 import { AdsAiCampaign } from '../ads_ai/entities/ads-ai-campaign.entity';
-import { StatsOverviewQueryDto } from './dto/stats-overview-query.dto';
-import { RevenueChartQueryDto } from './dto/revenue-chart-query.dto';
-import { OrderStatusQueryDto } from './dto/order-status-query.dto';
-import { TopSellingQueryDto } from './dto/top-selling-query.dto';
-import { LowStockQueryDto } from './dto/low-stock-query.dto';
+import { Branch } from '../branches/entities/branch.entity';
+import { ProductVariantInventory } from '../inventory/entities/product-variant-inventory.entity';
+import { OrderItem } from '../order_items/entities/order-item.entity';
+import { Order, OrderStatus } from '../orders/entities/order.entity';
+import { Product } from '../products/entities/product.entity';
 import { LeaderboardQueryDto } from './dto/leaderboard-query.dto';
+import { LowStockQueryDto } from './dto/low-stock-query.dto';
+import { OrderStatusQueryDto } from './dto/order-status-query.dto';
+import { RevenueChartQueryDto } from './dto/revenue-chart-query.dto';
+import { StatsOverviewQueryDto } from './dto/stats-overview-query.dto';
+import { TopSellingQueryDto } from './dto/top-selling-query.dto';
+import { DailyStatistic } from './entities/daily-statistic.entity';
 import {
   LowStockProduct,
   OrderStatusSlice,
@@ -21,11 +23,10 @@ import {
   TrendMetric,
   ViewLeaderboardItem,
 } from './interfaces/stats.types';
-import { DailyStatistic } from './entities/daily-statistic.entity';
 import { StatsCacheService } from './services/stats-cache.service';
 import { StatsTrackingService } from './services/stats-tracking.service';
-import { computeTrend } from './utils/trend.util';
 import { EXCLUDED_ORDER_STATUSES } from './stats.constants';
+import { computeTrend } from './utils/trend.util';
 
 const STATUS_GROUPS: Record<string, { label: string; statuses: OrderStatus[] }> = {
   pending: {
@@ -65,6 +66,8 @@ export class StatsService {
     private readonly adsRepo: Repository<AdsAiCampaign>,
     @InjectRepository(DailyStatistic)
     private readonly dailyStatsRepo: Repository<DailyStatistic>,
+    @InjectRepository(Branch)
+    private readonly branchRepo: Repository<Branch>,
     private readonly cache: StatsCacheService,
     private readonly tracking: StatsTrackingService,
   ) {}
@@ -103,13 +106,20 @@ export class StatsService {
         })
         .getMany();
 
-      rows.forEach((row) => {
-        pointsMap.set(row.date, {
-          date: row.date,
-          revenue: Number(row.totalRevenue ?? 0),
-          orderCount: row.totalOrders ?? 0,
+      if (rows.length) {
+        rows.forEach((row) => {
+          pointsMap.set(row.date, {
+            date: row.date,
+            revenue: Number(row.totalRevenue ?? 0),
+            orderCount: row.totalOrders ?? 0,
+          });
         });
-      });
+      } else {
+        const fallbackRows = await this.liveRevenueByDay(range.from, historicalEnd, query.branchId);
+        fallbackRows.forEach((row) => {
+          pointsMap.set(row.date, row);
+        });
+      }
     }
 
     if (range.to >= todayStart) {
@@ -231,11 +241,14 @@ export class StatsService {
       .createQueryBuilder('inventory')
       .innerJoin('inventory.variant', 'variant')
       .innerJoin('variant.product', 'product')
+      .innerJoin('inventory.branch', 'branch')
       .select('product.id', 'productId')
       .addSelect('product.name', 'name')
       .addSelect('product.image', 'image')
       .addSelect('SUM(inventory.stock)', 'stock')
       .addSelect('inventory.branchId', 'branchId')
+      .addSelect('branch.name', 'branchName')
+      .addSelect('branch.address', 'branchAddress')
       .where(query.branchId ? 'inventory.branchId = :branchId' : '1=1', {
         branchId: query.branchId,
       })
@@ -243,15 +256,21 @@ export class StatsService {
       .addGroupBy('product.id')
       .addGroupBy('product.name')
       .addGroupBy('product.image')
+      .addGroupBy('branch.name')
+      .addGroupBy('branch.address')
       .having('SUM(inventory.stock) <= :threshold', { threshold })
       .orderBy('SUM(inventory.stock)', 'ASC')
       .limit(limit);
 
-    const rows = await qb.getRawMany<LowStockProduct>();
+    const rows = await qb.getRawMany<
+      LowStockProduct & { branchName: string; branchAddress?: string | null }
+    >();
     const normalized = rows.map((row) => ({
       ...row,
       stock: Number(row.stock ?? 0),
       branchId: row.branchId ? Number(row.branchId) : null,
+      branchName: row.branchName ?? null,
+      branchAddress: row.branchAddress ?? null,
     }));
 
     await this.cache.setJSON(cacheKey, normalized, LOW_STOCK_TTL);
@@ -309,7 +328,20 @@ export class StatsService {
   private async aggregateOverview(from: Date, to: Date, branchId?: number | null) {
     const qb = this.orderRepo
       .createQueryBuilder('order')
-      .select('COALESCE(SUM(order.totalAmount), 0)', 'revenue')
+      .select(
+        `
+        COALESCE(
+          SUM(
+            CASE
+              WHEN "order"."status" = :completedStatus THEN "order"."totalAmount"
+              ELSE 0
+            END
+          ),
+          0
+        )
+      `,
+        'revenue',
+      )
       .addSelect('COUNT(order.id)', 'orders')
       .addSelect('COUNT(DISTINCT order.userId)', 'customers')
       .where('order.createdAt BETWEEN :from AND :to', { from, to })
@@ -321,7 +353,7 @@ export class StatsService {
       qb.andWhere('order.branchId = :branchId', { branchId });
     }
 
-    const aggregates = await qb.getRawOne<{
+    const aggregates = await qb.setParameter('completedStatus', OrderStatus.DELIVERED).getRawOne<{
       revenue: string;
       orders: string;
       customers: string;

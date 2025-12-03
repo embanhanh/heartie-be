@@ -93,6 +93,22 @@ export class LowStockProductDto {
     description: 'Branch ID where the stock level applies',
   })
   branchId?: number | null;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    example: 'Chi nhánh Hà Nội',
+    description: 'Name of the branch where the stock level applies',
+  })
+  branchName?: string | null;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    example: '123 Đường ABC, Quận XYZ',
+    description: 'Address of the branch where the stock level applies',
+  })
+  branchAddress?: string | null;
 }
 
 export class ViewLeaderboardItemDto {
