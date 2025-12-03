@@ -39,6 +39,8 @@ export interface LowStockProduct {
   image?: string | null;
   stock: number;
   branchId?: number | null;
+  branchName?: string | null;
+  branchAddress?: string | null;
 }
 
 export interface ViewLeaderboardItem {
