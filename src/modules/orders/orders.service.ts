@@ -1,10 +1,16 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsRelations, Repository } from 'typeorm';
 import { FulfillmentMethod, Order, OrderStatus, PaymentMethod } from './entities/order.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
-import { User } from '../users/entities/user.entity';
+import { User, UserRole } from '../users/entities/user.entity';
 import { Branch } from '../branches/entities/branch.entity';
 import { OrderItem } from '../order_items/entities/order-item.entity';
 import { Address } from '../addresses/entities/address.entity';
@@ -25,11 +31,17 @@ import {
   OrderStatusChangedPayload,
 } from '../notifications/notifications.service';
 import { BaseService } from '../../common/services/base.service';
-import { PaginationOptionsDto, SortParam } from '../../common/dto/pagination.dto';
+import { SortParam } from '../../common/dto/pagination.dto';
+import { OrdersQueryDto } from './dto/orders-query.dto';
 
 interface AutoGiftLine {
   variant: ProductVariant;
   quantity: number;
+}
+
+interface RequestUserContext {
+  id: number;
+  role: UserRole;
 }
 
 @Injectable()
@@ -74,17 +86,17 @@ export class OrdersService extends BaseService<Order> {
     super(repo, 'order');
   }
 
-  async create(dto: CreateOrderDto) {
+  async create(dto: CreateOrderDto, userId?: number) {
     const resolvedAddressId = await this.resolveAddressId({
       providedAddressId: dto.addressId,
       addressPayload: dto.address,
-      userId: dto.userId,
+      userId,
     });
 
     const effectiveAddressId = resolvedAddressId ?? undefined;
 
     await this.validateRelations({
-      userId: dto.userId,
+      userId,
       branchId: dto.branchId,
       addressId: effectiveAddressId,
     });
@@ -94,14 +106,14 @@ export class OrdersService extends BaseService<Order> {
       promotionCode: dto.promotionCode,
       branchId: dto.branchId,
       addressId: effectiveAddressId,
-      userId: dto.userId,
+      userId,
     });
 
     const autoGiftLines = await this.resolveAutoGiftLines(pricing);
     const giftTotals = this.calculateGiftTotals(autoGiftLines);
 
     const entity = this.repo.create({
-      userId: dto.userId ?? null,
+      userId: userId ?? null,
       branchId: dto.branchId ?? null,
       addressId: resolvedAddressId ?? null,
       note: dto.note,
@@ -124,8 +136,8 @@ export class OrdersService extends BaseService<Order> {
 
     await this.saveOrderItems(savedOrder.id, pricing, autoGiftLines);
 
-    if (dto.userId) {
-      await this.removePurchasedCartItems(dto.userId, dto.items);
+    if (userId) {
+      await this.removePurchasedCartItems(userId, dto.items);
     }
 
     await this.notifyAdminsOrderCreated({
@@ -212,18 +224,61 @@ export class OrdersService extends BaseService<Order> {
     };
   }
 
-  async findAll(pagination: PaginationOptionsDto = new PaginationOptionsDto()) {
-    return this.paginate(pagination, (qb) => {
+  async findAll(query: OrdersQueryDto = new OrdersQueryDto()) {
+    return this.paginate(query, (qb) => {
       qb.leftJoinAndSelect('order.user', 'user')
         .leftJoinAndSelect('order.branch', 'branch')
         .leftJoinAndSelect('order.address', 'address')
         .leftJoinAndSelect('order.items', 'items')
         .leftJoinAndSelect('items.variant', 'variant')
         .leftJoinAndSelect('variant.product', 'variantProduct');
+
+      if (query.statuses?.length) {
+        qb.andWhere('order.status IN (:...statuses)', { statuses: query.statuses });
+      }
+
+      if (query.paymentMethods?.length) {
+        qb.andWhere('order.paymentMethod IN (:...paymentMethods)', {
+          paymentMethods: query.paymentMethods,
+        });
+      }
+
+      if (query.fulfillmentMethods?.length) {
+        qb.andWhere('order.fulfillmentMethod IN (:...fulfillmentMethods)', {
+          fulfillmentMethods: query.fulfillmentMethods,
+        });
+      }
+
+      if (query.branchId) {
+        qb.andWhere('order.branchId = :branchId', { branchId: query.branchId });
+      }
+
+      if (query.userId) {
+        qb.andWhere('order.userId = :userId', { userId: query.userId });
+      }
+
+      if (typeof query.minTotal === 'number') {
+        qb.andWhere('order.totalAmount >= :minTotal', { minTotal: query.minTotal });
+      }
+
+      if (typeof query.maxTotal === 'number') {
+        qb.andWhere('order.totalAmount <= :maxTotal', { maxTotal: query.maxTotal });
+      }
+
+      const search = query.search?.trim();
+      if (search) {
+        const formattedSearch = `%${search.replace(/\s+/g, '%')}%`;
+        qb.andWhere(
+          'order.orderNumber ILIKE :search OR user.firstName ILIKE :search OR user.lastName ILIKE :search OR user.email ILIKE :search OR user.phoneNumber ILIKE :search',
+          { search: formattedSearch },
+        );
+      }
+
+      this.applyDateFilter(qb, 'createdAt', query.createdFrom, query.createdTo);
     });
   }
 
-  async findOne(id: number) {
+  async findOne(id: number, requester?: RequestUserContext) {
     const order = await this.repo.findOne({
       where: { id },
       relations: this.orderRelations,
@@ -233,10 +288,12 @@ export class OrdersService extends BaseService<Order> {
       throw new NotFoundException(`Order ${id} not found`);
     }
 
+    this.ensureCustomerOwnership(order, requester);
+
     return order;
   }
 
-  async update(id: number, dto: UpdateOrderDto) {
+  async update(id: number, dto: UpdateOrderDto, requester?: RequestUserContext) {
     const existing = await this.repo.findOne({
       where: { id },
       relations: { items: true },
@@ -246,14 +303,18 @@ export class OrdersService extends BaseService<Order> {
       throw new NotFoundException(`Order ${id} not found`);
     }
 
+    this.ensureCustomerOwnership(existing, requester);
+
     const { items, promotionCode, address, ...rest } = dto;
+    type MutableOrderFields = Partial<Omit<CreateOrderDto, 'items' | 'promotionCode' | 'address'>>;
+    const restPayload: MutableOrderFields = { ...rest };
 
     const previousStatus = existing.status;
 
-    const targetUserId = rest.userId ?? existing.userId ?? undefined;
-    const targetBranchId = rest.branchId ?? existing.branchId ?? undefined;
+    const targetUserId = existing.userId ?? undefined;
+    const targetBranchId = restPayload.branchId ?? existing.branchId ?? undefined;
     const resolvedAddressId = await this.resolveAddressId({
-      providedAddressId: rest.addressId,
+      providedAddressId: restPayload.addressId,
       addressPayload: address,
       userId: targetUserId,
     });
@@ -278,7 +339,7 @@ export class OrdersService extends BaseService<Order> {
       });
     }
 
-    const merged = this.repo.merge(existing, rest);
+    const merged = this.repo.merge(existing, restPayload);
 
     merged.addressId = resolvedAddressId ?? existing.addressId ?? null;
 
@@ -315,7 +376,7 @@ export class OrdersService extends BaseService<Order> {
         });
       }
 
-      return this.findOne(saved.id);
+      return this.findOne(saved.id, requester);
     }
 
     const saved = await this.repo.save(merged);
@@ -331,7 +392,7 @@ export class OrdersService extends BaseService<Order> {
       });
     }
 
-    return this.findOne(saved.id);
+    return this.findOne(saved.id, requester);
   }
 
   async remove(id: number) {
@@ -631,6 +692,31 @@ export class OrdersService extends BaseService<Order> {
       await this.notificationsService.notifyUserOrderStatusChanged(payload);
     } catch (error: unknown) {
       this.logNotificationError(error, 'notify user order status updated');
+    }
+  }
+
+  async ensureOrderBelongsToUserOrFail(orderId: number, userId: number) {
+    const order = await this.repo.findOne({
+      where: { id: orderId },
+      select: { id: true, userId: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Order ${orderId} not found`);
+    }
+
+    if (order.userId !== userId) {
+      throw new ForbiddenException('Customers can only manage their own orders.');
+    }
+  }
+
+  private ensureCustomerOwnership(order: Order, requester?: RequestUserContext) {
+    if (!requester || requester.role !== UserRole.CUSTOMER) {
+      return;
+    }
+
+    if (order.userId !== requester.id) {
+      throw new ForbiddenException('Customers can only manage their own orders.');
     }
   }
 }

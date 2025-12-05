@@ -15,8 +15,8 @@ export class ConversationParticipantsController {
   @Get(':conversationId')
   @ApiOperation({ summary: 'Lấy danh sách participants của 1 hội thoại' })
   async findAll(@Param('conversationId') conversationId: number, @Req() req: Request) {
-    const user = req.user as { sub: number };
-    return this.participantsService.listParticipants(user.sub, conversationId);
+    const user = req.user as { id: number };
+    return this.participantsService.listParticipants(user.id, conversationId);
   }
 
   @Post(':id')
@@ -26,14 +26,14 @@ export class ConversationParticipantsController {
     @Req() req: Request,
     @Param('id') id: number,
   ) {
-    const user = req.user as { sub: number };
-    return this.participantsService.addAdmin(user.sub, id, dto.userId);
+    const user = req.user as { id: number };
+    return this.participantsService.addAdmin(user.id, id, dto.userId);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Xóa participant khỏi hội thoại (chỉ admin hoặc chính user)' })
   async remove(@Param('id') id: number, @Req() req: Request) {
-    const user = req.user as { sub: number };
-    return this.participantsService.leaveConversation(user.sub, id);
+    const user = req.user as { id: number };
+    return this.participantsService.leaveConversation(user.id, id);
   }
 }

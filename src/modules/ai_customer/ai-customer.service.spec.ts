@@ -3,11 +3,18 @@ import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AiCustomerService } from './ai-customer.service';
 import { ProductsService } from '../products/products.service';
+import { CartInsightsService } from './services/cart-insights.service';
+import { CartAnalysisRequestDto } from './dto/cart-analysis.dto';
+import {
+  ProductComparisonRequestDto,
+  ProductComparisonResponse,
+} from './dto/product-comparison.dto';
 
 describe('AiCustomerService', () => {
   let service: AiCustomerService;
   let productsService: { findOne: jest.Mock; buildStylistCatalogue: jest.Mock };
   let configService: { get: jest.Mock };
+  let cartInsightsService: { analyzeCart: jest.Mock; compareProducts: jest.Mock };
 
   beforeEach(async () => {
     productsService = {
@@ -26,12 +33,17 @@ describe('AiCustomerService', () => {
         return undefined;
       }),
     };
+    cartInsightsService = {
+      analyzeCart: jest.fn(),
+      compareProducts: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AiCustomerService,
         { provide: ProductsService, useValue: productsService },
         { provide: ConfigService, useValue: configService },
+        { provide: CartInsightsService, useValue: cartInsightsService },
       ],
     }).compile();
 
@@ -206,50 +218,36 @@ describe('AiCustomerService', () => {
     geminiSpy.mockRestore();
   });
 
-  it('should parse cart analysis insight from structured Gemini payload', async () => {
-    const productDetail = {
-      id: 3,
-      name: 'Áo khoác len',
-      variants: [{ id: 31, price: 990000 }],
+  it('should delegate cart analysis to CartInsightsService', async () => {
+    const payload: CartAnalysisRequestDto = { items: [{ productId: 1 }] };
+    const response = {
+      greeting: { headline: 'Hi', subtitle: 'subtitle' },
+      promotionOpportunities: [],
+      comparisonOpportunities: [],
+      fallbackApplied: false,
+      inspectedItems: 1,
+      generatedAt: new Date().toISOString(),
     };
 
-    productsService.findOne.mockResolvedValue(productDetail);
+    cartInsightsService.analyzeCart.mockResolvedValue(response);
 
-    const geminiPayload = JSON.stringify({
-      suggestion: {
-        category: 'cross-sell',
-        title: 'Bổ sung khăn choàng len',
-        message: 'Khăn len cùng tông giúp outfit hoàn chỉnh hơn.',
-        recommendation: 'Thử thêm khăn len màu be vào giỏ.',
-      },
-    });
+    await expect(service.analyzeCart(payload)).resolves.toBe(response);
+    expect(cartInsightsService.analyzeCart).toHaveBeenCalledWith(payload);
+  });
 
-    const geminiSpy = jest
-      .spyOn<any, any>(service as any, 'generateGeminiContent')
-      .mockResolvedValueOnce(geminiPayload);
+  it('should delegate product comparison to CartInsightsService', async () => {
+    const payload: ProductComparisonRequestDto = { productIds: [1, 2] };
+    const response: ProductComparisonResponse = {
+      headline: 'So sánh',
+      summary: 'summary',
+      comparedProducts: [],
+      featureMatrix: [],
+      generatedAt: new Date().toISOString(),
+    };
 
-    const result = await service.analyzeCart({
-      items: [
-        { productId: 3, quantity: 1 },
-        { productId: 3, quantity: 2 },
-      ],
-    });
+    cartInsightsService.compareProducts.mockResolvedValue(response);
 
-    expect(result.suggestion).toEqual(
-      expect.objectContaining({
-        category: 'cross-sell',
-        title: 'Bổ sung khăn choàng len',
-      }),
-    );
-    expect(result.fallbackApplied).toBe(false);
-    expect(geminiSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        modelName: 'test-model',
-        responseMimeType: 'application/json',
-        temperature: 0.2,
-      }),
-    );
-
-    geminiSpy.mockRestore();
+    await expect(service.compareProducts(payload)).resolves.toBe(response);
+    expect(cartInsightsService.compareProducts).toHaveBeenCalledWith(payload);
   });
 });

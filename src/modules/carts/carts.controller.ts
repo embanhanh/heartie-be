@@ -13,8 +13,8 @@ export class CartsController {
 
   @Get('me')
   getMyCart(@Req() req: Request) {
-    const user = req.user as { sub: number };
-    return this.service.getMyCart(user.sub);
+    const user = req.user as { id: number };
+    return this.service.getMyCart(user.id);
   }
 
   // Carts module only exposes get-my-cart; item operations are in cart-items module

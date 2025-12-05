@@ -1,12 +1,15 @@
 import { Module } from '@nestjs/common';
 import { ProductsModule } from '../products/products.module';
+import { PricingModule } from '../pricing/pricing.module';
 import { AiCustomerController } from './ai-customer.controller';
 import { AiCustomerService } from './ai-customer.service';
+import { CartInsightsService } from './services/cart-insights.service';
+import { CartProductContextFactory } from './services/cart-product-context.factory';
 
 @Module({
-  imports: [ProductsModule],
+  imports: [ProductsModule, PricingModule],
   controllers: [AiCustomerController],
-  providers: [AiCustomerService],
+  providers: [AiCustomerService, CartInsightsService, CartProductContextFactory],
   exports: [AiCustomerService],
 })
 export class AiCustomerModule {}
