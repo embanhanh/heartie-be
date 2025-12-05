@@ -24,8 +24,8 @@ export class RatingsController {
   @ApiBearerAuth()
   @UseGuards(AuthGuard('jwt'))
   create(@Req() req: Request, @Body() dto: CreateRatingDto) {
-    const user = req.user as { sub: number };
-    return this.service.create(dto, user.sub);
+    const user = req.user as { id: number };
+    return this.service.create(dto, user.id);
   }
 
   @Get()

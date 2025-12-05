@@ -4,6 +4,10 @@ import { ProactiveStylistRequestDto, ProactiveStylistResponse } from './dto/proa
 import { CartAnalysisRequestDto, CartAnalysisResponse } from './dto/cart-analysis.dto';
 import { ProductSummaryRequestDto, ProductSummaryResponse } from './dto/product-summary.dto';
 import { ReviewsSummaryRequestDto, ReviewsSummaryResponse } from './dto/reviews-summary.dto';
+import {
+  ProductComparisonRequestDto,
+  ProductComparisonResponse,
+} from './dto/product-comparison.dto';
 
 @Controller('ai/customer')
 export class AiCustomerController {
@@ -26,6 +30,14 @@ export class AiCustomerController {
   @HttpCode(HttpStatus.OK)
   analyzeCart(@Body() payload: CartAnalysisRequestDto): Promise<CartAnalysisResponse> {
     return this.aiCustomerService.analyzeCart(payload);
+  }
+
+  @Post('compare-products')
+  @HttpCode(HttpStatus.OK)
+  compareProducts(
+    @Body() payload: ProductComparisonRequestDto,
+  ): Promise<ProductComparisonResponse> {
+    return this.aiCustomerService.compareProducts(payload);
   }
 
   @Post('product-summary')

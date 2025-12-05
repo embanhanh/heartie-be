@@ -163,7 +163,6 @@ export class NotificationsService {
       notification: {
         title: 'Đơn hàng mới',
         body: `Đơn hàng ${payload.orderNumber} trị giá ${formattedAmount}.`,
-        imageUrl: DEFAULT_WEB_ICON,
       },
       data: {
         type: 'order_created',

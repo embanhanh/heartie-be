@@ -6,8 +6,8 @@ import { AddCartItemDto, UpdateCartItemDto } from './dto/cart-item.dto';
 import { Request } from 'express';
 
 function getUserId(req: Request): number {
-  const user = req.user as { sub: number };
-  return user?.sub ?? 0;
+  const user = req.user as { id: number };
+  return user?.id ?? null;
 }
 
 @ApiTags('cart-items')

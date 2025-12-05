@@ -27,13 +27,6 @@ class OrderItemDto {
 }
 
 export class CreateOrderDto {
-  @ApiPropertyOptional({ example: 5, description: 'FK -> users.id' })
-  @IsOptional()
-  @IsInt()
-  @IsPositive()
-  @Type(() => Number)
-  userId?: number;
-
   @ApiPropertyOptional({ example: 2, description: 'FK -> branches.id' })
   @IsOptional()
   @IsInt()

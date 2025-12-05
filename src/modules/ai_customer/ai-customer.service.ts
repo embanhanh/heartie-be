@@ -7,9 +7,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
-
 import { ProductsService, StylistCandidateProduct } from '../products/products.service';
-import { CART_ASSISTANT_SYSTEM_PROMPT, PROACTIVE_STYLIST_SYSTEM_PROMPT } from './constants/prompts';
+import { PROACTIVE_STYLIST_SYSTEM_PROMPT } from './constants/prompts';
 import type {
   AiCustomerManifestResponse,
   GeminiStylistPlanOutfit,
@@ -31,12 +30,12 @@ import {
   ProactiveStylistSuggestion,
   ProactiveStylistOutfitItemSuggestion,
 } from './dto/proactive-stylist.dto';
+import { CartAnalysisRequestDto, CartAnalysisResponse } from './dto/cart-analysis.dto';
 import {
-  CartAnalysisRequestDto,
-  CartAnalysisResponse,
-  CartAnalysisSuggestion,
-  CartInsightCategory,
-} from './dto/cart-analysis.dto';
+  ProductComparisonRequestDto,
+  ProductComparisonResponse,
+} from './dto/product-comparison.dto';
+import { CartInsightsService } from './services/cart-insights.service';
 
 const manifestFeatures: AiCustomerFeatureManifestItem[] = [
   {
@@ -79,6 +78,7 @@ export class AiCustomerService {
   constructor(
     private readonly productsService: ProductsService,
     private readonly configService: ConfigService,
+    private readonly cartInsightsService: CartInsightsService,
   ) {}
 
   /**
@@ -201,54 +201,12 @@ export class AiCustomerService {
     };
   }
 
-  async analyzeCart(payload: CartAnalysisRequestDto): Promise<CartAnalysisResponse> {
-    const uniqueProductIds = Array.from(new Set(payload.items.map((item) => item.productId)));
+  analyzeCart(payload: CartAnalysisRequestDto): Promise<CartAnalysisResponse> {
+    return this.cartInsightsService.analyzeCart(payload);
+  }
 
-    const productDetails = await Promise.all(
-      uniqueProductIds.map(async (productId) => {
-        try {
-          const detail = (await this.productsService.findOne(
-            productId,
-          )) as ProductDetailHydrated | null;
-
-          if (!detail) {
-            this.logger.warn(`Cart analysis skipped missing product ${productId}`);
-          }
-
-          return detail;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.logger.error(`Failed to load product ${productId} for cart analysis: ${message}`);
-          return null;
-        }
-      }),
-    );
-
-    const productCatalogue = productDetails
-      .filter((item): item is ProductDetailHydrated => Boolean(item))
-      .map((item) => this.composeProductSnapshot(item));
-
-    const prompt = this.renderCartAnalysisPrompt(payload, productCatalogue);
-
-    const text = await this.generateGeminiContent({
-      modelName: this.resolveModelName('GEMINI_CART_MODEL'),
-      prompt,
-      systemInstruction: CART_ASSISTANT_SYSTEM_PROMPT,
-      temperature: 0.2,
-      maxOutputTokens: 768,
-      responseMimeType: 'application/json',
-    });
-
-    const parsed = this.parseCartAnalysisResponse(text);
-    if (!parsed) {
-      this.logger.warn('Gemini returned unparsable cart insight, defaulting to null suggestion');
-    }
-
-    return {
-      suggestion: parsed?.suggestion ?? null,
-      fallbackApplied: !parsed,
-      inspectedItems: payload.items.length,
-    };
+  compareProducts(payload: ProductComparisonRequestDto): Promise<ProductComparisonResponse> {
+    return this.cartInsightsService.compareProducts(payload);
   }
 
   async generateProductSummary(payload: {
@@ -761,38 +719,6 @@ export class AiCustomerService {
     ].join('\n\n');
   }
 
-  private renderCartAnalysisPrompt(
-    payload: CartAnalysisRequestDto,
-    catalogue: ProductSnapshot[],
-  ): string {
-    const cartSummary = payload.items
-      .map(
-        (item) =>
-          `- productId=${item.productId}, variantId=${item.variantId ?? 'n/a'}, quantity=${item.quantity ?? 1}`,
-      )
-      .join('\n');
-
-    return `Bạn là trợ lý giỏ hàng thông minh của Fashia. Phân tích giỏ hàng và đưa ra duy nhất 1 gợi ý hữu ích (hoặc null nếu không cần).
-
-Dữ liệu sản phẩm (catalogue):
-${JSON.stringify(catalogue, null, 2)}
-
-Giỏ hàng hiện tại:
-${cartSummary}
-
-Trả về JSON với schema:
-{
-  "suggestion": null | {
-    "category": "duplicates" | "comparison" | "cross-sell" | "promotion" | "shipping" | "styling" | "none",
-    "title": string,
-    "message": string,
-    "recommendation": string | null
-  }
-}
-
-Không viết thêm mô tả, chỉ xuất JSON.`;
-  }
-
   private parseProactiveStylistResponse(
     raw: string | null,
     candidates: Map<number, StylistCandidateSummary>,
@@ -1119,75 +1045,6 @@ Không viết thêm mô tả, chỉ xuất JSON.`;
 
     return item;
   }
-
-  private parseCartAnalysisResponse(
-    raw?: string | null,
-  ): { suggestion: CartAnalysisSuggestion | null } | null {
-    const json = this.extractJson(raw);
-    if (!json) {
-      return null;
-    }
-
-    if (json.suggestion === null) {
-      return { suggestion: null };
-    }
-
-    const suggestion = this.normalizeCartSuggestion(json.suggestion);
-    if (!suggestion) {
-      return null;
-    }
-
-    return { suggestion };
-  }
-
-  private normalizeCartSuggestion(entry: unknown): CartAnalysisSuggestion | null {
-    if (!entry || typeof entry !== 'object') {
-      return null;
-    }
-
-    const candidate = entry as Record<string, unknown>;
-    const category = this.normalizeCartCategory(candidate.category);
-    const title = typeof candidate.title === 'string' ? candidate.title.trim() : '';
-    const message = typeof candidate.message === 'string' ? candidate.message.trim() : '';
-
-    if (!category || !title || !message) {
-      return null;
-    }
-
-    const suggestion: CartAnalysisSuggestion = {
-      category,
-      title,
-      message,
-    };
-
-    if (typeof candidate.recommendation === 'string') {
-      const trimmed = candidate.recommendation.trim();
-      if (trimmed.length) {
-        suggestion.recommendation = trimmed;
-      }
-    }
-
-    return suggestion;
-  }
-
-  private normalizeCartCategory(category: unknown): CartInsightCategory | null {
-    const allowed: CartInsightCategory[] = [
-      'duplicates',
-      'comparison',
-      'cross-sell',
-      'promotion',
-      'shipping',
-      'styling',
-      'none',
-    ];
-
-    if (typeof category === 'string' && allowed.includes(category as CartInsightCategory)) {
-      return category as CartInsightCategory;
-    }
-
-    return null;
-  }
-
   private extractJson(raw?: string | null): Record<string, unknown> | null {
     if (!raw) {
       return null;
