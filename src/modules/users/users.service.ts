@@ -1,13 +1,22 @@
-import { Injectable, ConflictException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  ConflictException,
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User, UserRole } from './entities/user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { UserSafe } from './types/user-safe.type';
 import { BaseService } from '../../common/services/base.service';
 import * as bcrypt from 'bcrypt';
 import { FilterUserDto } from './dto/filter-users.dto';
 import { PaginatedResult, SortParam } from '../../common/dto/pagination.dto';
+import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
+import { UploadedFile } from 'src/common/types/uploaded-file.type';
 
 @Injectable()
 export class UsersService extends BaseService<User> {
@@ -31,7 +40,42 @@ export class UsersService extends BaseService<User> {
     return safeUser;
   }
 
-  async create(createUserDto: CreateUserDto): Promise<UserSafe> {
+  private normalizeBirthdate(input?: string | Date | null): Date | null {
+    if (input === undefined || input === null) {
+      return null;
+    }
+
+    const normalizedInput = typeof input === 'string' ? input.trim() : input;
+
+    if (!normalizedInput) {
+      return null;
+    }
+
+    const date = normalizedInput instanceof Date ? normalizedInput : new Date(normalizedInput);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  private normalizeGender(input?: string | null): string | null {
+    if (!input) {
+      return null;
+    }
+    const trimmed = input.trim();
+    return trimmed.length ? trimmed : null;
+  }
+
+  private resolveAvatarPath(file?: UploadedFile, fallback?: string | null): string | null {
+    return resolveModuleUploadPath('users', file, fallback ?? null) ?? null;
+  }
+
+  private normalizeAvatarFallback(value?: string | null): string | null {
+    if (!value) {
+      return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  }
+
+  async create(createUserDto: CreateUserDto, avatarFile?: UploadedFile): Promise<UserSafe> {
     const [existingUserByEmail, existingUserByPhone] = await Promise.all([
       this.userRepository.findOne({ where: { email: createUserDto.email } }),
       this.userRepository.findOne({ where: { phoneNumber: createUserDto.phoneNumber } }),
@@ -55,11 +99,19 @@ export class UsersService extends BaseService<User> {
       }
     }
 
+    const avatarUrl = this.resolveAvatarPath(
+      avatarFile,
+      this.normalizeAvatarFallback(createUserDto.avatarUrl ?? null),
+    );
+
     const newUser = this.userRepository.create({
       ...createUserDto,
       role: createUserDto.role ?? UserRole.CUSTOMER,
       branchId: createUserDto.branchId ?? null,
       password: hashedPassword,
+      birthdate: this.normalizeBirthdate(createUserDto.birthdate),
+      gender: this.normalizeGender(createUserDto.gender),
+      avatarUrl,
     });
 
     const savedUser = await this.userRepository.save(newUser);
@@ -67,6 +119,94 @@ export class UsersService extends BaseService<User> {
     if (!safeUser) {
       throw new Error('Không thể khởi tạo người dùng mới');
     }
+    return safeUser;
+  }
+
+  async update(
+    id: number,
+    updateUserDto: UpdateUserDto,
+    updaterId: number,
+    avatarFile?: UploadedFile,
+  ): Promise<UserSafe> {
+    if (updaterId !== id) {
+      throw new ForbiddenException('Bạn chỉ có thể cập nhật thông tin của chính mình');
+    }
+
+    const user = await this.userRepository.findOne({ where: { id } });
+
+    if (!user) {
+      throw new NotFoundException(`Không tìm thấy user với id ${id}`);
+    }
+
+    if (updateUserDto.email && updateUserDto.email !== user.email) {
+      const existingByEmail = await this.userRepository.findOne({
+        where: { email: updateUserDto.email },
+      });
+      if (existingByEmail && existingByEmail.id !== id) {
+        throw new ConflictException('Email đã tồn tại');
+      }
+    }
+
+    if (updateUserDto.phoneNumber && updateUserDto.phoneNumber !== user.phoneNumber) {
+      const existingByPhone = await this.userRepository.findOne({
+        where: { phoneNumber: updateUserDto.phoneNumber },
+      });
+      if (existingByPhone && existingByPhone.id !== id) {
+        throw new ConflictException('Số điện thoại đã tồn tại');
+      }
+    }
+
+    const targetRole = updateUserDto.role ?? user.role;
+    const nextBranchId =
+      updateUserDto.branchId !== undefined ? updateUserDto.branchId : (user.branchId ?? null);
+
+    if (
+      (targetRole === UserRole.BRANCH_MANAGER || targetRole === UserRole.STAFF) &&
+      (nextBranchId === null || nextBranchId === undefined)
+    ) {
+      throw new BadRequestException('Branch assignment is required for staff and branch managers');
+    }
+
+    const nextBirthdate =
+      updateUserDto.birthdate === undefined
+        ? (user.birthdate ?? null)
+        : this.normalizeBirthdate(updateUserDto.birthdate);
+
+    const nextGender =
+      updateUserDto.gender !== undefined
+        ? this.normalizeGender(updateUserDto.gender)
+        : (user.gender ?? null);
+
+    const requestedAvatar =
+      updateUserDto.avatarUrl !== undefined ? updateUserDto.avatarUrl : (user.avatarUrl ?? null);
+    const avatarUrl = this.resolveAvatarPath(
+      avatarFile,
+      this.normalizeAvatarFallback(requestedAvatar),
+    );
+
+    const payload: Partial<User> = {
+      ...updateUserDto,
+      branchId: nextBranchId,
+      birthdate: nextBirthdate,
+      gender: nextGender,
+      avatarUrl,
+    };
+
+    delete (payload as Partial<CreateUserDto>).password;
+
+    const merged = this.userRepository.merge(user, payload);
+
+    if (updateUserDto.password) {
+      merged.password = await bcrypt.hash(updateUserDto.password, 10);
+    }
+
+    const savedUser = await this.userRepository.save(merged);
+    const safeUser = this.sanitizeUser(savedUser);
+
+    if (!safeUser) {
+      throw new Error('Không thể cập nhật người dùng');
+    }
+
     return safeUser;
   }
 
