@@ -18,7 +18,7 @@ export class OrdersQueryDto extends PaginationOptionsDto {
     acceptedValues: Object.values(OrderStatus),
     case: 'upper',
   })
-  statuses?: OrderStatus[];
+  status?: OrderStatus[];
 
   @ApiPropertyOptional({
     description: 'Filter by payment methods',

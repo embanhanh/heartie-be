@@ -233,8 +233,8 @@ export class OrdersService extends BaseService<Order> {
         .leftJoinAndSelect('items.variant', 'variant')
         .leftJoinAndSelect('variant.product', 'variantProduct');
 
-      if (query.statuses?.length) {
-        qb.andWhere('order.status IN (:...statuses)', { statuses: query.statuses });
+      if (query.status?.length) {
+        qb.andWhere('order.status IN (:...status)', { status: query.status });
       }
 
       if (query.paymentMethods?.length) {

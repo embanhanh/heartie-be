@@ -47,6 +47,15 @@ export class User {
   @Column({ type: 'varchar', length: 255, select: false, nullable: true, default: null })
   hashedRefreshToken?: string | null;
 
+  @Column({ type: 'date', nullable: true })
+  birthdate?: Date | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  gender?: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  avatarUrl?: string | null;
+
   @Column({ type: 'enum', enum: UserRole, default: UserRole.CUSTOMER })
   role: UserRole;
 

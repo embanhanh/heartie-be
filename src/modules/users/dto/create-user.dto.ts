@@ -1,5 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsDateString,
   IsEmail,
   IsEnum,
   IsInt,
@@ -48,4 +49,25 @@ export class CreateUserDto {
   @IsOptional()
   @IsInt()
   branchId?: number;
+
+  @ApiPropertyOptional({ type: String, format: 'date', example: '1995-05-20' })
+  @IsOptional()
+  @IsDateString()
+  birthdate?: string;
+
+  @ApiPropertyOptional({ description: 'Gender', example: 'female', nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  gender?: string;
+
+  @ApiPropertyOptional({
+    description: 'Avatar URL',
+    example: '/uploads/users/avatar.png',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  avatarUrl?: string | null;
 }
