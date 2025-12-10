@@ -30,6 +30,8 @@ import { ChatGatewayModule } from './modules/chat_gateway/chat_gateway.module';
 import { ConversationParticipantsModule } from './modules/conversation_participants/conversation_participants.module';
 import { ConversationsModule } from './modules/conversations/conversations.module';
 import { CustomerGroupsModule } from './modules/customer_groups/customer_groups.module';
+import { CollectionsModule } from './modules/collections/collections.module';
+import { CollectionProductsModule } from './modules/collection_products/collection_products.module';
 import { GeminiModule } from './modules/gemini/gemini.module';
 import { InteractionsModule } from './modules/interactions/interactions.module';
 import { MessagesModule } from './modules/messages/messages.module';
@@ -121,6 +123,8 @@ const BullModuleTyped = BullModule as unknown as {
     ProductsModule,
     ProductVariantsModule,
     VariantAttributeValuesModule,
+    CollectionsModule,
+    CollectionProductsModule,
     InteractionsModule,
     OrderProductDetailsModule,
     OrdersModule,

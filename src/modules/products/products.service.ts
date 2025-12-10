@@ -7,6 +7,7 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { Brand } from '../brands/entities/brand.entity';
 import { PaginatedResult, SortParam } from 'src/common/dto/pagination.dto';
 import { BaseService } from 'src/common/services/base.service';
+import { normalizeString } from 'src/common/utils/data-normalization.util';
 import {
   ProductVariant,
   ProductVariantStatus,
@@ -376,11 +377,35 @@ export class ProductsService extends BaseService<Product> {
     }
 
     const useSimilarity = shouldApplySearch && this.similarityAvailable;
+    const collectionIdFilter =
+      typeof options.collectionId === 'number' && options.collectionId > 0
+        ? options.collectionId
+        : undefined;
+    const collectionSlugFilter = normalizeString(options.collectionSlug)?.toLowerCase();
 
     try {
       const result = await this.paginate(options, (qb) => {
         qb.leftJoinAndSelect('product.brand', 'brand');
         qb.leftJoinAndSelect('product.category', 'category');
+
+        if (collectionIdFilter || collectionSlugFilter) {
+          qb.innerJoin('product.collectionProducts', 'collectionProductFilter');
+
+          if (collectionIdFilter) {
+            qb.andWhere('collectionProductFilter.collectionId = :collectionId', {
+              collectionId: collectionIdFilter,
+            });
+          }
+
+          if (collectionSlugFilter) {
+            qb.innerJoin('collectionProductFilter.collection', 'collectionFilter');
+            qb.andWhere('LOWER(collectionFilter.slug) = :collectionSlug', {
+              collectionSlug: collectionSlugFilter,
+            });
+          }
+
+          qb.distinct(true);
+        }
 
         if (options.categoryIds?.length) {
           qb.andWhere('product.categoryId IN (:...categoryIds)', {
