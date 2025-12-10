@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { IsArray, IsInt, IsNumber, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import { PaginationOptionsDto } from 'src/common/dto/pagination.dto';
 
@@ -90,4 +90,21 @@ export class ProductQueryDto extends PaginationOptionsDto {
   @IsNumber()
   @Min(0)
   priceMax?: number;
+
+  @ApiPropertyOptional({ description: 'Lọc sản phẩm thuộc bộ sưu tập cụ thể', example: 3 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  collectionId?: number;
+
+  @ApiPropertyOptional({
+    description: 'Lọc sản phẩm theo slug của bộ sưu tập',
+    example: 'summer-2025',
+  })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : undefined))
+  @IsString()
+  @MaxLength(255)
+  collectionSlug?: string;
 }

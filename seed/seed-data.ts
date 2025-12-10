@@ -7,6 +7,7 @@ import { seedBanners } from './modules/banners.seed';
 import { seedUsers } from './modules/users.seed';
 import { seedProducts } from './modules/products.seed';
 import { seedCustomerGroups } from './modules/customer-groups.seed';
+import { seedCollections } from './modules/collections.seed';
 import type { DataSource } from 'typeorm';
 
 const seedRegistry = {
@@ -16,6 +17,7 @@ const seedRegistry = {
   branches: seedBranches,
   banners: seedBanners,
   users: seedUsers,
+  collections: seedCollections,
   products: seedProducts,
   customerGroups: seedCustomerGroups,
 } satisfies Record<string, (dataSource: DataSource) => Promise<void>>;
