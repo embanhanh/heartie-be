@@ -62,6 +62,14 @@ export class CollectionsController {
     };
   }
 
+  @Get('slug/:slug')
+  @ApiOperation({ summary: 'Chi tiết bộ sưu tập theo slug' })
+  @ApiOkResponse({ type: CollectionResponseDto })
+  async findBySlug(@Param('slug') slug: string): Promise<CollectionResponseDto> {
+    const entity = await this.collectionsService.findBySlug(slug);
+    return CollectionResponseDto.from(entity);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Chi tiết bộ sưu tập' })
   @ApiOkResponse({ type: CollectionResponseDto })
