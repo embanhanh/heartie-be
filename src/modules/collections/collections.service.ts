@@ -71,6 +71,25 @@ export class CollectionsService extends BaseService<Collection> {
     return collection;
   }
 
+  async findBySlug(slug: string): Promise<Collection> {
+    const normalizedSlug = slug?.trim().toLowerCase();
+    if (!normalizedSlug) {
+      throw new NotFoundException('Collection slug is required');
+    }
+
+    const collection = await this.collectionRepository
+      .createQueryBuilder('collection')
+      .leftJoinAndSelect('collection.collectionProducts', 'collectionProducts')
+      .where('LOWER(collection.slug) = :slug', { slug: normalizedSlug })
+      .getOne();
+
+    if (!collection) {
+      throw new NotFoundException(`Collection ${slug} not found`);
+    }
+
+    return collection;
+  }
+
   async update(
     id: number,
     dto: UpdateCollectionDto,
