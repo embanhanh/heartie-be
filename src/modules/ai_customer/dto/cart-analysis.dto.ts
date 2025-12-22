@@ -49,6 +49,7 @@ export interface CartAssistantGreeting {
 export interface CartPromotionProductGap {
   productId: number;
   productName?: string | null;
+  productSlug?: string | null;
   productImage?: string | null;
   productPrice?: number | null;
   requiredQuantity: number;

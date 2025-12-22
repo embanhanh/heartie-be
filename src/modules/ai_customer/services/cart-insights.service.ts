@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { LessThanOrEqual, MoreThanOrEqual, Repository } from 'typeorm';
 import { PricingService } from '../../pricing/pricing.service';
 import { PricingItemInput, PromotionSuggestionItem } from '../../pricing/types/pricing.types';
+import { DiscountType, Promotion, PromotionType } from '../../promotions/entities/promotion.entity';
+import { PromotionConditionRole } from '../../promotion_conditions/entities/promotion-condition.entity';
 import {
   CartAnalysisRequestDto,
   CartAnalysisResponse,
@@ -25,6 +29,8 @@ export class CartInsightsService {
   constructor(
     private readonly pricingService: PricingService,
     private readonly contextFactory: CartProductContextFactory,
+    @InjectRepository(Promotion)
+    private readonly promotionRepository: Repository<Promotion>,
   ) {}
 
   async analyzeCart(payload: CartAnalysisRequestDto): Promise<CartAnalysisResponse> {
@@ -191,44 +197,186 @@ export class CartInsightsService {
       `[buildPromotionOpportunities] Applied promotions=${pricingSummary.appliedPromotions.length} carriersWithSuggestions=${carriers.length}`,
     );
 
-    if (!carriers.length) {
+    // We don't return early here anymore. Even if PricingService found nothing applied,
+    // we still want to check for "Near Miss" manual combo opportunities.
+
+    let opportunities: CartPromotionOpportunity[] = [];
+
+    if (carriers.length > 0) {
+      const suggestionProductIds = carriers
+        .flatMap((carrier) => carrier.suggestions ?? [])
+        .map((suggestion) => suggestion.productId)
+        .filter((id): id is number => typeof id === 'number' && id > 0);
+
+      await this.contextFactory.ensure(suggestionProductIds, contextMap);
+      const copy = getCartCopy(locale);
+
+      opportunities = carriers.map((carrier) => {
+        const missingProducts = (carrier.suggestions ?? []).map((suggestion) =>
+          this.toPromotionProductGap(suggestion, contextMap.get(suggestion.productId)),
+        );
+
+        const missingQuantity = missingProducts.reduce((sum, gap) => sum + gap.missingQuantity, 0);
+
+        return {
+          promotionId: carrier.promotionId,
+          promotionName: carrier.promotionName,
+          description: carrier.description ?? undefined,
+          comboType: carrier.comboType ?? undefined,
+          summary: missingQuantity
+            ? copy.promotionSummary({ promotionName: carrier.promotionName, missingQuantity })
+            : copy.promotionFallback(),
+          potentialDiscount: carrier.amount || null,
+          primaryProductId: missingProducts[0]?.productId,
+          missingProducts,
+        } satisfies CartPromotionOpportunity;
+      });
+    }
+
+    const existingPromotionIds = new Set(
+      opportunities.map((opportunity) => opportunity.promotionId),
+    );
+    const comboGapOpportunities = await this.buildComboGapOpportunities(
+      items,
+      locale,
+      contextMap,
+      existingPromotionIds,
+    );
+
+    if (comboGapOpportunities.length) {
+      this.logger.debug(
+        `[buildPromotionOpportunities] Combo gap opportunities=${comboGapOpportunities.length}`,
+      );
+    }
+
+    const promoOutputLog = this.safeJson({
+      opportunityCount: opportunities.length + comboGapOpportunities.length,
+      // suggestionProducts: suggestionProductIds,
+    });
+    this.logger.debug(`[buildPromotionOpportunities] Output=${promoOutputLog}`);
+
+    return [...opportunities, ...comboGapOpportunities];
+  }
+
+  private async buildComboGapOpportunities(
+    items: Array<{ productId: number; variantId?: number; quantity: number }>,
+    locale: SupportedLocale,
+    contextMap: Map<number, CartProductContext>,
+    excludedPromotionIds: Set<number>,
+  ): Promise<CartPromotionOpportunity[]> {
+    const copy = getCartCopy(locale);
+    const productQuantities = new Map<number, number>();
+    items.forEach((item) => {
+      const current = productQuantities.get(item.productId) ?? 0;
+      productQuantities.set(item.productId, current + item.quantity);
+    });
+
+    if (!productQuantities.size) {
       return [];
     }
 
-    const suggestionProductIds = carriers
-      .flatMap((carrier) => carrier.suggestions ?? [])
-      .map((suggestion) => suggestion.productId)
-      .filter((id): id is number => typeof id === 'number' && id > 0);
+    const now = new Date();
+    const promotions = await this.promotionRepository.find({
+      where: {
+        type: PromotionType.COMBO,
+        isActive: true,
+        startDate: LessThanOrEqual(now),
+        endDate: MoreThanOrEqual(now),
+      },
+      relations: {
+        conditions: true,
+      },
+    });
 
-    await this.contextFactory.ensure(suggestionProductIds, contextMap);
-    const copy = getCartCopy(locale);
+    this.logger.debug(
+      `[buildComboGapOpportunities] Found ${promotions.length} active combo promotions. Excluded IDs: ${Array.from(excludedPromotionIds).join(',')}`,
+    );
 
-    const opportunities = carriers.map((carrier) => {
-      const missingProducts = (carrier.suggestions ?? []).map((suggestion) =>
-        this.toPromotionProductGap(suggestion, contextMap.get(suggestion.productId)),
+    const opportunities: CartPromotionOpportunity[] = [];
+
+    for (const promotion of promotions) {
+      if (excludedPromotionIds.has(promotion.id)) {
+        continue;
+      }
+
+      const buyConditions = (promotion.conditions ?? []).filter(
+        (condition) => condition.role === PromotionConditionRole.BUY,
       );
 
-      const missingQuantity = missingProducts.reduce((sum, gap) => sum + gap.missingQuantity, 0);
+      if (!buyConditions.length) {
+        this.logger.debug(`[combo-gap] Promo ${promotion.id} skipped: No BUY conditions`);
+        continue;
+      }
 
-      return {
-        promotionId: carrier.promotionId,
-        promotionName: carrier.promotionName,
-        description: carrier.description ?? undefined,
-        comboType: carrier.comboType ?? undefined,
-        summary: missingQuantity
-          ? copy.promotionSummary({ promotionName: carrier.promotionName, missingQuantity })
-          : copy.promotionFallback(),
-        potentialDiscount: carrier.amount || null,
+      // Snapshot status of each condition against current cart
+      const conditionSnapshots = buyConditions.map((condition) => {
+        const requiredQuantity = Math.max(1, condition.quantity);
+        const currentQuantity = productQuantities.get(condition.productId) ?? 0;
+        // Missing is distinct from total required; it's the gap to fill
+        const missingQuantity = Math.max(0, requiredQuantity - currentQuantity);
+        return { condition, requiredQuantity, currentQuantity, missingQuantity };
+      });
+
+      // To be a valid "Gap Opportunity", the user must have at least ONE item from the combo explicitly in cart
+      // OR they have fulfilled at least one condition fully.
+      // Basically: hasPresence means "User has started checking out this combo"
+      const hasPresence = conditionSnapshots.some((entry) => entry.currentQuantity > 0);
+
+      // We only care if there is actually something MISSING. If missingQuantity is 0 for all, the promo is fully applied (handled by PricingService)
+      const missingProductsSnapshots = conditionSnapshots.filter(
+        (entry) => entry.missingQuantity > 0,
+      );
+
+      if (!hasPresence || !missingProductsSnapshots.length) {
+        this.logger.debug(
+          `[combo-gap] Promo ${promotion.id} skipped: hasPresence=${hasPresence} missing=${missingProductsSnapshots.length}`,
+        );
+        continue;
+      }
+
+      const missingProductIds = missingProductsSnapshots.map((entry) => entry.condition.productId);
+      await this.contextFactory.ensure(missingProductIds, contextMap);
+
+      const missingProducts = missingProductsSnapshots.map((entry) =>
+        this.buildGapFromCondition(
+          entry.condition,
+          entry.currentQuantity,
+          entry.missingQuantity,
+          contextMap.get(entry.condition.productId),
+        ),
+      );
+
+      const missingQuantityTotal = missingProducts.reduce(
+        (sum, gap) => sum + gap.missingQuantity,
+        0,
+      );
+
+      // Calculate potential discount if they complete the combo
+      // This is an estimation: "If you add these missing items, you get X discount"
+      const potentialDiscount = this.estimatePromotionDiscount(
+        promotion,
+        buyConditions,
+        contextMap,
+      );
+
+      this.logger.debug(
+        `[combo-gap] Found opportunity promo=${promotion.id} missing=${missingQuantityTotal} discount=${potentialDiscount}`,
+      );
+
+      opportunities.push({
+        promotionId: promotion.id,
+        promotionName: promotion.name,
+        description: promotion.description ?? undefined,
+        comboType: promotion.comboType ?? undefined,
+        summary: copy.promotionSummary({
+          promotionName: promotion.name,
+          missingQuantity: missingQuantityTotal,
+        }),
+        potentialDiscount,
         primaryProductId: missingProducts[0]?.productId,
         missingProducts,
-      } satisfies CartPromotionOpportunity;
-    });
-
-    const promoOutputLog = this.safeJson({
-      opportunityCount: opportunities.length,
-      suggestionProducts: suggestionProductIds,
-    });
-    this.logger.debug(`[buildPromotionOpportunities] Output=${promoOutputLog}`);
+      });
+    }
 
     return opportunities;
   }
@@ -240,6 +388,7 @@ export class CartInsightsService {
     return {
       productId: suggestion.productId,
       productName: context?.name ?? suggestion.productName ?? null,
+      productSlug: context?.slug ?? null,
       productImage: context?.image ?? suggestion.productImage ?? null,
       productPrice: context?.minPrice ?? suggestion.productPrice ?? null,
       requiredQuantity: suggestion.requiredQuantity,
@@ -247,6 +396,63 @@ export class CartInsightsService {
       missingQuantity: suggestion.missingQuantity,
       autoAdd: suggestion.autoAdd,
     };
+  }
+
+  private buildGapFromCondition(
+    condition: { productId: number; quantity: number },
+    currentQuantity: number,
+    missingQuantity: number,
+    context?: CartProductContext,
+  ): CartPromotionProductGap {
+    return {
+      productId: condition.productId,
+      productName: context?.name ?? null,
+      productSlug: context?.slug ?? null,
+      productImage: context?.image ?? null,
+      productPrice: context?.minPrice ?? null,
+      requiredQuantity: Math.max(1, condition.quantity),
+      currentQuantity,
+      missingQuantity,
+      autoAdd: false,
+    };
+  }
+
+  private estimatePromotionDiscount(
+    promotion: Promotion,
+    buyConditions: Array<{ productId: number; quantity: number }>,
+    contextMap: Map<number, CartProductContext>,
+  ): number | null {
+    let estimatedBaseAmount = 0;
+    for (const condition of buyConditions) {
+      const context = contextMap.get(condition.productId);
+      const price = Number(context?.minPrice); // Safely cast to number
+
+      if (!context || isNaN(price)) {
+        continue;
+      }
+      estimatedBaseAmount += price * Math.max(1, condition.quantity);
+    }
+
+    if (!estimatedBaseAmount) {
+      return null;
+    }
+
+    let discountAmount: number;
+    if (promotion.discountType === DiscountType.PERCENT) {
+      discountAmount = (estimatedBaseAmount * promotion.discountValue) / 100;
+    } else {
+      discountAmount = promotion.discountValue;
+    }
+
+    if (promotion.maxDiscount && promotion.maxDiscount > 0) {
+      discountAmount = Math.min(discountAmount, promotion.maxDiscount);
+    }
+
+    if (!Number.isFinite(discountAmount) || discountAmount <= 0) {
+      return null;
+    }
+
+    return Math.round(discountAmount);
   }
 
   private buildComparisonOpportunities(
