@@ -5,6 +5,7 @@ import { ProductDetailHydrated, ProductVariantHydrated } from '../types/internal
 export interface CartProductContext {
   id: number;
   name: string;
+  slug?: string;
   brand?: string | null;
   category?: string | null;
   image?: string | null;
@@ -85,6 +86,7 @@ export class CartProductContextFactory {
     return {
       id: product.id,
       name: product.name,
+      slug: product.slug,
       brand: product.brand?.name ?? null,
       category: product.category?.name ?? null,
       image: heroImage,
