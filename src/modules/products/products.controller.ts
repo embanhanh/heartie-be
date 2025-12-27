@@ -8,14 +8,22 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile as UploadedFileDecorator,
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
-import { ApiBody, ApiConsumes, ApiExtraModels, ApiTags, getSchemaPath } from '@nestjs/swagger';
+import {
+  ApiBody,
+  ApiConsumes,
+  ApiExtraModels,
+  ApiOperation,
+  ApiTags,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import { ProductsService } from './products.service';
 import { ProductQueryDto } from './dto/product-query.dto';
 import { ProductSuggestQueryDto } from './dto/product-suggest-query.dto';
-import { AnyFilesInterceptor } from '@nestjs/platform-express';
+import { AnyFilesInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import {
   AttributePayloadDto,
   AttributeValuePayloadDto,
@@ -23,6 +31,7 @@ import {
   VariantAttributePayloadDto,
   VariantPayloadDto,
 } from './dto/product-form.dto';
+import { BoundingBoxDto } from './dto/image-search.dto';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
 import { plainToInstance } from 'class-transformer';
 import { validateOrReject } from 'class-validator';
@@ -109,6 +118,74 @@ export class ProductsController {
   async suggest(@Query() query: ProductSuggestQueryDto) {
     const data = await this.service.suggestKeywords(query.keyword, query.limit);
     return { data };
+  }
+
+  @Post('search-by-image')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        image: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('image'))
+  async searchByImage(
+    @UploadedFileDecorator() file: Express.Multer.File,
+    @Query() options: ProductQueryDto,
+  ) {
+    return this.service.searchByImage(file, options);
+  }
+
+  @Post('detect-objects')
+  @ApiOperation({ summary: 'Phát hiện các vật thể trong ảnh để người dùng chọn' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        image: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('image'))
+  async detectObjects(@UploadedFileDecorator() file: Express.Multer.File) {
+    return await this.service.detectObjects(file);
+  }
+
+  @Post('search-by-objects')
+  @ApiOperation({ summary: 'Tìm kiếm sản phẩm dựa trên các vật thể được chọn' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        image: {
+          type: 'string',
+          format: 'binary',
+        },
+        boxes: {
+          type: 'string',
+          description: 'JSON string of selected BoundingBoxDto[]',
+        },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('image'))
+  async searchByObjects(
+    @UploadedFileDecorator() file: Express.Multer.File,
+    @Body('boxes') boxesRaw: string,
+    @Query() options: ProductQueryDto,
+  ) {
+    const boxes = this.ensureArrayOfObjects('boxes', boxesRaw) as unknown as BoundingBoxDto[];
+    return await this.service.searchBySelectedObjects(file, boxes, options);
   }
 
   @Get(':id')

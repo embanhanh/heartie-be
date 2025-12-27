@@ -29,6 +29,27 @@ function toNumberArray(value: unknown): number[] | undefined {
   return numbers.length ? numbers : undefined;
 }
 
+function toStringArray(value: unknown): string[] | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  const source: Array<string | number> = Array.isArray(value)
+    ? (value as Array<string | number>)
+    : typeof value === 'string'
+      ? value.split(',')
+      : typeof value === 'number'
+        ? [value]
+        : [];
+
+  const strings = source
+    .flatMap((item) => (typeof item === 'string' ? item.split(',') : [String(item)]))
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  return strings.length ? strings : undefined;
+}
+
 export class ProductQueryDto extends PaginationOptionsDto {
   @ApiPropertyOptional({
     description: 'Từ khóa tìm kiếm fuzzy áp dụng cho tên sản phẩm, mô tả, thương hiệu và danh mục.',
@@ -56,6 +77,7 @@ export class ProductQueryDto extends PaginationOptionsDto {
     example: ['red', 'blue', 'green'],
   })
   @IsOptional()
+  @Transform(({ value }) => toStringArray(value))
   @IsArray()
   @IsString({ each: true })
   colors?: string[];
@@ -67,6 +89,7 @@ export class ProductQueryDto extends PaginationOptionsDto {
     example: ['small', 'medium', 'large'],
   })
   @IsOptional()
+  @Transform(({ value }) => toStringArray(value))
   @IsArray()
   @IsString({ each: true })
   sizes?: string[];
@@ -107,4 +130,15 @@ export class ProductQueryDto extends PaginationOptionsDto {
   @IsString()
   @MaxLength(255)
   collectionSlug?: string;
+
+  @ApiPropertyOptional({
+    description: 'Lọc danh sách các sản phẩm theo ID cụ thể (truyền ?ids=1,2,3).',
+    type: [Number],
+    example: [1, 2, 3],
+  })
+  @IsOptional()
+  @Transform(({ value }) => toNumberArray(value))
+  @IsArray()
+  @IsInt({ each: true })
+  ids?: number[];
 }
