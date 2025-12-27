@@ -81,8 +81,18 @@ export class Product {
     type: 'vector' as unknown as ColumnType,
     nullable: true,
     transformer: VectorTransformer,
+    select: false,
   })
   embedding?: number[] | null;
+
+  @Column({
+    type: 'vector' as unknown as ColumnType,
+    nullable: true,
+    transformer: VectorTransformer,
+    name: 'visualEmbedding',
+    select: false,
+  })
+  visualEmbedding?: number[] | null;
 
   @Column({ type: 'float', default: 0 })
   rating: number;

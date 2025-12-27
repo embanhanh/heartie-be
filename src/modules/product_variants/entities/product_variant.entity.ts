@@ -11,6 +11,8 @@ import {
 import { Product } from '../../products/entities/product.entity';
 import { ProductVariantInventory } from '../../inventory/entities/product-variant-inventory.entity';
 import { VariantAttributeValue } from '../../variant_attribute_values/entities/variant-attribute-value.entity';
+import { ColumnType } from 'typeorm';
+import { VectorTransformer } from 'src/common/transformers/vector.transformer';
 
 export enum ProductVariantStatus {
   ACTIVE = 'active',
@@ -64,4 +66,21 @@ export class ProductVariant {
 
   @OneToMany(() => VariantAttributeValue, (variantValue) => variantValue.variant)
   attributeValues: VariantAttributeValue[];
+
+  @Column({
+    type: 'vector' as unknown as ColumnType,
+    nullable: true,
+    transformer: VectorTransformer,
+    select: false,
+  })
+  embedding?: number[] | null;
+
+  @Column({
+    type: 'vector' as unknown as ColumnType,
+    nullable: true,
+    transformer: VectorTransformer,
+    name: 'visualEmbedding',
+    select: false,
+  })
+  visualEmbedding?: number[] | null;
 }

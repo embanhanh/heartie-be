@@ -1,3 +1,6 @@
+import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, QueryFailedError, Repository, SelectQueryBuilder } from 'typeorm';
@@ -21,10 +24,18 @@ import { VariantAttributeValue } from '../variant_attribute_values/entities/vari
 import { ProductFormPayloadDto } from './dto/product-form.dto';
 import { ProductQueryDto } from './dto/product-query.dto';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
+import { BoundingBoxDto } from './dto/image-search.dto';
 import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
 import { SemanticSearchService } from '../semantic_search/semantic-search.service';
 import { RankedProductRow } from '../semantic_search/semantic-search.service';
 import { StatsTrackingService } from '../stats/services/stats-tracking.service';
+import { GeminiService } from '../gemini/gemini.service';
+import { VisionService } from '../vision/vision.service';
+import {
+  ImageSearchResult,
+  ImageSearchService,
+  MatchResult,
+} from '../image_search/image-search.service';
 
 type VariantSummary = {
   id: number;
@@ -75,6 +86,9 @@ export class ProductsService extends BaseService<Product> {
     private readonly branchRepo: Repository<Branch>,
     private readonly semanticSearchService: SemanticSearchService,
     private readonly statsTrackingService: StatsTrackingService,
+    private readonly geminiService: GeminiService,
+    private readonly visionService: VisionService,
+    private readonly imageSearchService: ImageSearchService,
   ) {
     super(productRepo, 'product');
   }
@@ -413,6 +427,22 @@ export class ProductsService extends BaseService<Product> {
           });
         }
 
+        if (options.ids?.length) {
+          qb.andWhere('product.id IN (:...ids)', {
+            ids: options.ids,
+          });
+
+          // Preserver order of IDs if no other sort is specified
+          if (!options.sorts?.length && !shouldApplySearch) {
+            // Safe to inject numbers directly as they are typed as numbers
+            qb.addSelect(
+              `array_position(ARRAY[${options.ids.join(',')}], product.id)`,
+              'relevance_rank',
+            );
+            qb.addOrderBy('relevance_rank', 'ASC');
+          }
+        }
+
         // Price range filter via variants
         if (typeof options.priceMin === 'number') {
           qb.andWhere(
@@ -436,7 +466,7 @@ export class ProductsService extends BaseService<Product> {
           );
         }
 
-        // Colors filter: match any variant attribute value against provided colors
+        // Colors filter: match variant attribute value against provided colors
         if (options.colors?.length) {
           const colorAttrNames = ['color', 'mau', 'màu', 'mau sac', 'màu sắc', 'colorway'];
 
@@ -448,10 +478,8 @@ export class ProductsService extends BaseService<Product> {
               JOIN attributes a ON a.id = vav."attributeId"
               JOIN attribute_values av ON av.id = vav."attributeValueId"
               WHERE v."productId" = product.id
-                AND (
-                  LOWER(av.value) IN (:...colors)
-                  OR LOWER(a.name) IN (:...colorAttrNames) AND LOWER(av.value) IN (:...colors)
-                )
+                AND (LOWER(TRIM(a.name)) IN (:...colorAttrNames) OR LOWER(TRIM(a.name)) LIKE '%màu%' OR LOWER(TRIM(a.name)) LIKE '%color%')
+                AND LOWER(TRIM(av.value)) IN (:...colors)
             )`,
             {
               colors: options.colors.map((c) => c.toLowerCase()),
@@ -460,7 +488,7 @@ export class ProductsService extends BaseService<Product> {
           );
         }
 
-        // Sizes filter: match any variant attribute value against provided sizes
+        // Sizes filter: match variant attribute value against provided sizes
         if (options.sizes?.length) {
           const sizeAttrNames = ['size', 'kich thuoc', 'kích thước', 'kich co', 'kích cỡ'];
 
@@ -472,10 +500,8 @@ export class ProductsService extends BaseService<Product> {
               JOIN attributes a ON a.id = vav."attributeId"
               JOIN attribute_values av ON av.id = vav."attributeValueId"
               WHERE v."productId" = product.id
-                AND (
-                  LOWER(av.value) IN (:...sizes)
-                  OR LOWER(a.name) IN (:...sizeAttrNames) AND LOWER(av.value) IN (:...sizes)
-                )
+                AND (LOWER(TRIM(a.name)) IN (:...sizeAttrNames) OR LOWER(TRIM(a.name)) LIKE '%size%' OR LOWER(TRIM(a.name)) LIKE '%kích%')
+                AND LOWER(TRIM(av.value)) IN (:...sizes)
             )`,
             {
               sizes: options.sizes.map((s) => s.toLowerCase()),
@@ -505,6 +531,207 @@ export class ProductsService extends BaseService<Product> {
 
       throw error;
     }
+  }
+
+  async searchByImage(file: UploadedFile, options: ProductQueryDto) {
+    this.logger.debug(`searchByImage called with file: ${JSON.stringify(file)}`);
+
+    let buffer = file.buffer;
+
+    // If buffer is missing and path is available, read from disk (Multer diskStorage case)
+    if (!buffer && file.path) {
+      try {
+        buffer = fs.readFileSync(file.path);
+      } catch (error) {
+        const err = error as Error;
+        this.logger.error(`Failed to read uploaded file from disk: ${file.path}`, err.stack);
+        throw new BadRequestException('Could not process the uploaded image.');
+      }
+    }
+
+    if (!buffer) {
+      throw new BadRequestException('File buffer is missing.');
+    }
+
+    // 1. Phân tích ảnh bằng Gemini để lấy keywords (giữ lại để bổ sung ngữ cảnh nếu cần)
+    const keywords = await this.geminiService.analyzeImageForSearch({
+      buffer,
+      mimetype: file.mimetype,
+    });
+
+    this.logger.debug(`Gemini extracted keywords: ${keywords.join(', ')}`);
+
+    // 2. Phân tích hình ảnh chuyên sâu (Similarity Search)
+    const visualSearchItems = await this.imageSearchService.searchByImage(buffer);
+
+    // Nếu có kết quả similarity, ưu tiên trả về kết quả này
+    if (visualSearchItems.length > 0) {
+      // Vì SearchBar hiện tại mong đợi một cấu trúc cụ thể, chúng ta sẽ map lại
+      // Lấy tất cả sản phẩm từ tất cả vật thể được nhận diện
+      const allProductIds = new Set<number>();
+      visualSearchItems.forEach((item) => {
+        item.products.forEach((p) => allProductIds.add(p.id));
+      });
+
+      let products: ProductListItem[] = [];
+      if (allProductIds.size > 0) {
+        // Query chi tiết các sản phẩm này để trả về đầy đủ thông tin (viewMode grid/list mong đợi)
+        const productsRaw = await this.productRepo.find({
+          where: { id: In(Array.from(allProductIds)) },
+          relations: ['brand', 'category'],
+        });
+
+        // Sort items by relevance (matching the order of extraction)
+        const productMap = new Map(productsRaw.map((p) => [p.id, p]));
+        const sortedProductsRaw = Array.from(allProductIds)
+          .map((id) => productMap.get(id))
+          .filter((p): p is Product => !!p);
+
+        // Cần enrich thêm priceList và variants như trong findAll
+        products = await this.attachSummary(sortedProductsRaw);
+      }
+
+      return {
+        data: products,
+        meta: {
+          total: products.length,
+          page: options.page ?? 1,
+          limit: options.limit ?? 10,
+        },
+        keywords,
+        visualSearchItems, // Trả thêm thông tin về các vật thể nhận diện được
+      };
+    }
+
+    if (keywords.length === 0) {
+      return {
+        data: [],
+        meta: {
+          total: 0,
+          page: options.page ?? 1,
+          limit: options.limit ?? 10,
+        },
+        keywords: [],
+      };
+    }
+
+    // 2. Tìm kiếm sản phẩm bằng keywords vừa lấy được
+    const searchQuery = keywords.join(' ');
+    const results = await this.findAll({
+      ...options,
+      search: searchQuery,
+    });
+
+    return {
+      ...results,
+      keywords,
+    };
+  }
+
+  async detectObjects(file: Express.Multer.File) {
+    const buffer = await this.getFileBuffer(file);
+    return this.visionService.detectObjects(buffer);
+  }
+
+  async searchBySelectedObjects(
+    file: Express.Multer.File,
+    boxes: BoundingBoxDto[],
+    options: ProductQueryDto,
+  ) {
+    const buffer = await this.getFileBuffer(file);
+    const allProductIds = new Set<number>();
+    const visualSearchItems: ImageSearchResult[] = [];
+
+    for (const box of boxes) {
+      try {
+        const croppedBuffer = await this.visionService.cropImage(buffer, box);
+        const embedding = await this.visionService.generateEmbedding(croppedBuffer);
+        const matches = await this.imageSearchService.searchByEmbedding(embedding);
+
+        if (matches.length > 0) {
+          matches.forEach((p: MatchResult) => allProductIds.add(p.id));
+          visualSearchItems.push({
+            object: 'selected_object', // Label placeholder as we search by box
+            box,
+            score: 1.0,
+            products: matches,
+          });
+        }
+      } catch (error) {
+        this.logger.error(`Error searching for box ${JSON.stringify(box)}:`, error);
+      }
+    }
+
+    // Nếu không tìm thấy sản phẩm nào qua embedding, dùng Gemini làm fallback
+    if (allProductIds.size === 0) {
+      this.logger.debug('No similarity matches found, falling back to Gemini keywords');
+      const keywords = await this.geminiService.analyzeImageForSearch({
+        buffer,
+        mimetype: file.mimetype,
+      });
+
+      if (keywords.length > 0) {
+        const searchQuery = keywords.join(' ');
+        const results = await this.findAll({
+          ...options,
+          search: searchQuery,
+        });
+        return {
+          ...results,
+          keywords,
+        };
+      }
+
+      return {
+        data: [],
+        meta: { total: 0, page: options.page ?? 1, limit: options.limit ?? 10 },
+        keywords: [],
+      };
+    }
+
+    const productsRaw = await this.productRepo.find({
+      where: { id: In(Array.from(allProductIds)) },
+      relations: ['brand', 'category'],
+    });
+
+    // Sort items by relevance (matching the order of extraction)
+    const productMap = new Map(productsRaw.map((p) => [p.id, p]));
+    const sortedProductsRaw = Array.from(allProductIds)
+      .map((id) => productMap.get(id))
+      .filter((p): p is Product => !!p);
+
+    const products = await this.attachSummary(sortedProductsRaw);
+
+    return {
+      data: products,
+      meta: {
+        total: products.length,
+        page: options.page ?? 1,
+        limit: options.limit ?? 10,
+      },
+      visualSearchItems,
+    };
+  }
+
+  private async getFileBuffer(file: Express.Multer.File): Promise<Buffer> {
+    if (file.buffer) {
+      return file.buffer;
+    }
+
+    if (file.path) {
+      try {
+        const fullPath = path.isAbsolute(file.path)
+          ? file.path
+          : path.join(process.cwd(), file.path);
+        return await fs.promises.readFile(fullPath);
+      } catch (error) {
+        const err = error as Error;
+        this.logger.error(`Failed to read uploaded file from disk: ${file.path}`, err.stack);
+        throw new BadRequestException('Could not process the uploaded image.');
+      }
+    }
+
+    throw new BadRequestException('File buffer is missing.');
   }
 
   private async ensureSimilaritySupport(): Promise<void> {
@@ -1059,11 +1286,52 @@ export class ProductsService extends BaseService<Product> {
   }
 
   private async refreshProductEmbeddingSafely(productId: number) {
+    // 1. Try to refresh text-based embedding (might fail if dimensions mismatched)
     try {
       await this.semanticSearchService.refreshProductEmbedding(productId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Failed to refresh embedding for product ${productId}: ${message}`);
+      this.logger.debug(
+        `Text-based semantic search refresh failed for product ${productId}: ${message}`,
+      );
+    }
+
+    // 2. Try to refresh image-based embedding (CLIP 512d)
+    try {
+      const product = await this.productRepo.findOne({
+        where: { id: productId },
+        select: { id: true, image: true },
+      });
+
+      if (product?.image) {
+        let buffer: Buffer | null = null;
+
+        if (product.image.startsWith('http')) {
+          try {
+            const response = await axios.get(product.image, { responseType: 'arraybuffer' });
+            buffer = Buffer.from(response.data);
+            this.logger.debug(`Fetched remote image for product ${productId}`);
+          } catch (e) {
+            this.logger.warn(`Failed to fetch remote image ${product.image}: ${e}`);
+          }
+        } else {
+          const fullPath = path.join(process.cwd(), product.image);
+          if (fs.existsSync(fullPath)) {
+            buffer = fs.readFileSync(fullPath);
+          } else {
+            this.logger.warn(`Local image file not found: ${fullPath}`);
+          }
+        }
+
+        if (buffer) {
+          const visualEmbedding = await this.visionService.generateEmbedding(buffer);
+          await this.productRepo.update(productId, { visualEmbedding });
+          this.logger.debug(`Generated image embedding for product ${productId}`);
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Failed to generate image embedding for product ${productId}: ${message}`);
     }
   }
 
