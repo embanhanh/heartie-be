@@ -5,6 +5,7 @@ export const ADMIN_COPILOT_RANGE_OPTIONS = ['7d', '30d', '90d'] as const;
 export const ADMIN_COPILOT_DEFAULT_RANGE = '30d';
 
 export const ADMIN_COPILOT_FULFILLED_ORDER_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.PENDING,
   OrderStatus.CONFIRMED,
   OrderStatus.PROCESSING,
   OrderStatus.SHIPPED,

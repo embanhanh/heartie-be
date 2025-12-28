@@ -114,3 +114,21 @@ export interface AdminCopilotAdminContext {
   branchName: string | null;
   isGlobalAdmin: boolean;
 }
+
+export type AdminCopilotProactiveActionType =
+  | 'RESTOCK_REDIRECT'
+  | 'OPEN_COPILOT_DRAFT'
+  | 'VIEW_REPORTS';
+
+export interface AdminCopilotProactiveAction {
+  label: string;
+  type: AdminCopilotProactiveActionType;
+  payload: Record<string, unknown>;
+}
+
+export interface AdminCopilotMorningBriefingResult {
+  greeting: string;
+  briefing: string;
+  actions: AdminCopilotProactiveAction[];
+  generatedAt: string;
+}

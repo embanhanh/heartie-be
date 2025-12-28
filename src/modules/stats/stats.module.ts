@@ -28,6 +28,6 @@ import { StatsService } from './stats.service';
   ],
   controllers: [StatsController, ProductsStatsController],
   providers: [StatsService, StatsCacheService, StatsTrackingService, StatsCronService],
-  exports: [StatsTrackingService],
+  exports: [StatsService, StatsTrackingService],
 })
 export class StatsModule {}
