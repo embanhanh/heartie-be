@@ -7,10 +7,10 @@ import {
   Patch,
   Post,
   Query,
-  UploadedFile,
+  UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { AdsAiService } from './ads_ai.service';
 import { GenerateAdsAiDto } from './dto/generate-ads-ai.dto';
@@ -58,18 +58,35 @@ export class AdsAiController {
         scheduledAt: { type: 'string', format: 'date-time', nullable: true },
         prompt: { type: 'string', nullable: true },
         image: { type: 'string', format: 'binary', nullable: true },
-        postType: { type: 'string', enum: ['link', 'photo'], nullable: true },
+        images: { type: 'array', items: { type: 'string', format: 'binary' }, nullable: true },
+        postType: { type: 'string', enum: ['link', 'photo', 'carousel'], nullable: true },
         hashtags: {
           type: 'array',
           items: { type: 'string' },
           nullable: true,
         },
+        rating: { type: 'number', nullable: true },
+        notes: { type: 'string', nullable: true },
       },
     },
   })
-  @UseInterceptors(FileInterceptor('image', adsImageUploadOptions))
-  create(@UploadedFile() file: UploadedFileType | undefined, @Body() dto: CreateAdsAiDto) {
-    return this.service.createFromForm(dto, file);
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'image', maxCount: 1 },
+        { name: 'images', maxCount: 10 },
+      ],
+      adsImageUploadOptions,
+    ),
+  )
+  create(
+    @UploadedFiles()
+    files: { image?: UploadedFileType[]; images?: UploadedFileType[] },
+    @Body() dto: CreateAdsAiDto,
+  ) {
+    const mainFile = files.image?.[0];
+    const extraFiles = files.images;
+    return this.service.createFromForm(dto, mainFile, extraFiles);
   }
 
   @Get()
@@ -102,22 +119,36 @@ export class AdsAiController {
         scheduledAt: { type: 'string', format: 'date-time', nullable: true },
         prompt: { type: 'string', nullable: true },
         image: { type: 'string', format: 'binary', nullable: true },
-        postType: { type: 'string', enum: ['link', 'photo'], nullable: true },
+        images: { type: 'array', items: { type: 'string', format: 'binary' }, nullable: true },
+        postType: { type: 'string', enum: ['link', 'photo', 'carousel'], nullable: true },
         hashtags: {
           type: 'array',
           items: { type: 'string' },
           nullable: true,
         },
+        rating: { type: 'number', nullable: true },
+        notes: { type: 'string', nullable: true },
       },
     },
   })
-  @UseInterceptors(FileInterceptor('image', adsImageUploadOptions))
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'image', maxCount: 1 },
+        { name: 'images', maxCount: 10 },
+      ],
+      adsImageUploadOptions,
+    ),
+  )
   update(
     @Param('id') id: string,
-    @UploadedFile() file: UploadedFileType | undefined,
+    @UploadedFiles()
+    files: { image?: UploadedFileType[]; images?: UploadedFileType[] },
     @Body() dto: UpdateAdsAiDto,
   ) {
-    return this.service.updateFromForm(Number(id), dto, file);
+    const mainFile = files.image?.[0];
+    const extraFiles = files.images;
+    return this.service.updateFromForm(Number(id), dto, mainFile, extraFiles);
   }
 
   @Post(':id/schedule')

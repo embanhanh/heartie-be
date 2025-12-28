@@ -246,18 +246,59 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
                 postType: {
                   type: SchemaType.STRING,
                   format: 'enum',
-                  enum: ['link', 'photo'],
+                  enum: ['link', 'photo', 'carousel'],
                   description: 'Định dạng bài đăng, ví dụ link hoặc photo.',
                 },
                 image: {
                   type: SchemaType.STRING,
                   description: 'Đường dẫn asset đã có sẵn, nếu cần.',
                 },
+                images: {
+                  type: SchemaType.ARRAY,
+                  items: { type: SchemaType.STRING },
+                  description: 'Danh sách ảnh cho bài Carousel.',
+                },
               },
               required: ['name', 'primaryText'],
             },
           },
           required: ['campaign'],
+        },
+      },
+      {
+        name: 'get_ads_performance',
+        description:
+          'Lấy báo cáo hiệu suất của các chiến dịch quảng cáo gần đây (Reach, Clicks, Conversions, Spend, ROI...).',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            limit: {
+              type: SchemaType.NUMBER,
+              description: 'Số lượng chiến dịch cần lấy báo cáo, mặc định 5.',
+            },
+            status: {
+              type: SchemaType.STRING,
+              description: 'Lọc bài viết theo trạng thái (ví dụ: PUBLISHED, DRAFT).',
+            },
+            search: {
+              type: SchemaType.STRING,
+              description: 'Từ khóa tìm kiếm theo tên bài viết hoặc sản phẩm.',
+            },
+          },
+        },
+      },
+      {
+        name: 'get_ad_details',
+        description: 'Lấy thông tin chi tiết đầy đủ của một bài viết/chiến dịch quảng cáo theo ID.',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            id: {
+              type: SchemaType.NUMBER,
+              description: 'ID của bài viết cần xem chi tiết.',
+            },
+          },
+          required: ['id'],
         },
       },
       {

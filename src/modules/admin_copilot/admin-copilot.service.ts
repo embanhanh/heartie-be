@@ -20,7 +20,8 @@ import { AdsAiService } from '../ads_ai/ads_ai.service';
 import { CreateAdsAiDto } from '../ads_ai/dto/create-ads-ai.dto';
 import { GenerateAdsAiDto } from '../ads_ai/dto/generate-ads-ai.dto';
 import { ScheduleAdsAiDto } from '../ads_ai/dto/schedule-ads-ai.dto';
-import { AdsAiCampaign } from '../ads_ai/entities/ads-ai-campaign.entity';
+import { AdsAiCampaign, AdsAiStatus } from '../ads_ai/entities/ads-ai-campaign.entity';
+import { AdsAiQueryDto } from '../ads_ai/dto/ads-ai-query.dto';
 import { GeneratedAdContent } from '../ads_ai/interfaces/generated-ad-content.interface';
 import { ConversationParticipant } from '../conversation_participants/entities/conversation_participant.entity';
 import { Conversation } from '../conversations/entities/conversation.entity';
@@ -200,6 +201,7 @@ export class AdminCopilotService {
         temperature: 0.1,
         tools,
         model: this.getAdminModelName(),
+        maxOutputTokens: 4096,
       });
     } catch (error) {
       // Chuẩn hoá lỗi Gemini "không trả về nội dung" thành lỗi nghiệp vụ dễ hiểu cho admin
@@ -788,6 +790,10 @@ export class AdminCopilotService {
           context,
           lang,
         );
+      case 'get_ads_performance':
+        return this.handleAdsPerformance((args ?? {}) as Record<string, unknown>, context);
+      case 'get_ad_details':
+        return this.handleAdDetails((args ?? {}) as Record<string, unknown>, context);
       default: {
         this.logger.warn(`Unknown admin copilot tool: ${name}`);
         const errorMessage =
@@ -1286,6 +1292,100 @@ export class AdminCopilotService {
     }
   }
 
+  private async handleAdsPerformance(
+    rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+  ): Promise<FunctionResponsePart> {
+    this.logger.debug(
+      `Handling ads performance tool with payload ${JSON.stringify(rawArgs)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
+    const limit = parsePositiveInt(rawArgs.limit, 5, 1, 20) ?? 5;
+    const search = normalizeString(rawArgs.search);
+    const statusStr = normalizeString(rawArgs.status);
+
+    const query = new AdsAiQueryDto();
+    query.limit = limit;
+    query.search = search;
+    if (statusStr && Object.values(AdsAiStatus).includes(statusStr as AdsAiStatus)) {
+      query.status = statusStr as AdsAiStatus;
+    }
+
+    const result = await this.adsAiService.findAll(query);
+
+    const campaigns = result.data.map((campaign) => ({
+      id: campaign.id,
+      name: campaign.name,
+      status: campaign.status,
+      postType: campaign.postType,
+      publishedAt: campaign.publishedAt,
+      metrics: {
+        reach: campaign.reach,
+        impressions: campaign.impressions,
+        engagement: campaign.engagement,
+        clicks: campaign.clicks,
+        conversions: campaign.conversions,
+        spend: campaign.spend,
+        roi: campaign.spend > 0 ? (campaign.conversions * 50000) / campaign.spend : 0,
+      },
+    }));
+
+    return {
+      functionResponse: {
+        name: 'get_ads_performance',
+        response: {
+          content: { campaigns },
+        },
+      },
+    };
+  }
+
+  private async handleAdDetails(
+    rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+  ): Promise<FunctionResponsePart> {
+    this.logger.debug(
+      `Handling ad details tool for ID ${String(rawArgs.id)} (admin=${context.adminUserId})`,
+    );
+    const id = parsePositiveInt(rawArgs.id, undefined, 1);
+    if (!id) {
+      return {
+        functionResponse: {
+          name: 'get_ad_details',
+          response: { content: { error: 'Thiếu ID bài viết.' } },
+        },
+      };
+    }
+
+    const campaign = await this.adsAiService.findOne(id);
+    if (!campaign) {
+      return {
+        functionResponse: {
+          name: 'get_ad_details',
+          response: { content: { error: `Không tìm thấy bài viết với ID ${id}` } },
+        },
+      };
+    }
+
+    return {
+      functionResponse: {
+        name: 'get_ad_details',
+        response: {
+          content: {
+            details: this.buildAdsAiCampaignResponse(campaign),
+            metrics: {
+              reach: campaign.reach,
+              impressions: campaign.impressions,
+              engagement: campaign.engagement,
+              clicks: campaign.clicks,
+              conversions: campaign.conversions,
+              spend: campaign.spend,
+            },
+          },
+        },
+      },
+    };
+  }
+
   private extractFinalizeCampaignInput(source: Record<string, unknown>): Record<string, unknown> {
     const candidateKeys = ['campaign', 'advertisement', 'payload', 'data'];
 
@@ -1406,6 +1506,11 @@ export class AdminCopilotService {
     }
     if (prompt) {
       dtoInput.prompt = prompt;
+    }
+
+    const images = normalizeStringArray(raw['images']);
+    if (images && images.length > 0) {
+      dtoInput.images = images;
     }
 
     const dto = plainToInstance(CreateAdsAiDto, dtoInput, {
