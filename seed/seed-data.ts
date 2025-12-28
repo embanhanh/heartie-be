@@ -9,6 +9,7 @@ import { seedProducts } from './modules/products.seed';
 import { seedCustomerGroups } from './modules/customer-groups.seed';
 import { seedCollections } from './modules/collections.seed';
 import { seedDemoData } from './modules/demo-data.seed';
+import { seedAdsAiMetrics } from './modules/ads-ai-metrics.seed';
 import type { DataSource } from 'typeorm';
 
 const seedRegistry = {
@@ -22,6 +23,7 @@ const seedRegistry = {
   products: seedProducts,
   customerGroups: seedCustomerGroups,
   demoData: seedDemoData,
+  adsAiMetrics: seedAdsAiMetrics,
 } satisfies Record<string, (dataSource: DataSource) => Promise<void>>;
 
 type SeedKey = keyof typeof seedRegistry;

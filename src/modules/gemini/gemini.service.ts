@@ -437,7 +437,7 @@ export class GeminiService {
    * Phân tích hình ảnh sản phẩm để trích xuất các từ khóa tìm kiếm liên quan đến thời trang.
    */
   async analyzeImageForSearch(file: { buffer: Buffer; mimetype: string }): Promise<string[]> {
-    const modelName = this.configService.get<string>('GEMINI_AI_MODEL') ?? 'gemini-1.5-flash';
+    const modelName = this.configService.get<string>('GEMINI_AI_MODEL') ?? 'gemini-2.5-flash';
     const model = this.getModel(modelName, []); // Không cần tools cho việc phân tích ảnh này
 
     const systemPrompt =
