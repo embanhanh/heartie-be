@@ -10,6 +10,8 @@ import { ProductVariant } from '../product_variants/entities/product_variant.ent
 import { TrendForecastQueryDto, TrendGranularity } from './dto/trend-forecast-query.dto';
 import { TrendForecastResponseDto } from './dto/trend-forecast-response.dto';
 
+import { DailyStatistic } from '../stats/entities/daily-statistic.entity';
+
 type NumericRecord = Record<string, string | number | Date | null>;
 
 type TrendDirection = 'rising' | 'stable' | 'declining';
@@ -45,6 +47,8 @@ export class TrendForecastingService {
     private readonly interactionRepository: Repository<Interaction>,
     @InjectRepository(ProductVariant)
     private readonly productVariantRepository: Repository<ProductVariant>,
+    @InjectRepository(DailyStatistic)
+    private readonly dailyStatsRepository: Repository<DailyStatistic>,
   ) {}
 
   async getSalesForecast(query: TrendForecastQueryDto): Promise<TrendForecastResponseDto> {
@@ -160,8 +164,54 @@ export class TrendForecastingService {
     branchId?: number;
   }): Promise<TimeSeriesPoint[]> {
     const { granularity, startDate, productId, categoryId, branchId } = params;
-    const dateTrunc = this.getDateTruncExpression(granularity, 'order.createdAt');
+    const isGlobal = !productId && !categoryId;
 
+    // We use Order status list that matches dashboard (non-cancelled, non-returned)
+    const statuses = [
+      OrderStatus.PENDING,
+      OrderStatus.CONFIRMED,
+      OrderStatus.PROCESSING,
+      OrderStatus.SHIPPED,
+      OrderStatus.DELIVERED,
+    ];
+
+    if (isGlobal) {
+      // Use DailyStatistic table for global/branch analytics (source of truth)
+      const historicalPoints = await this.loadHistoricalStats(granularity, startDate, branchId);
+
+      // Check if we need live data for "today"
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const livePoints: TimeSeriesPoint[] = [];
+      if (startDate <= today) {
+        livePoints.push(...(await this.loadLiveStats(granularity, today, branchId)));
+      }
+
+      // Merge points by period
+      const mergedMap = new Map<string, TimeSeriesPoint>();
+      [...historicalPoints, ...livePoints].forEach((p) => {
+        const key = p.period.toISOString();
+        if (mergedMap.has(key)) {
+          const existing = mergedMap.get(key)!;
+          // In case of overlap, historical (pre-aggregated) might be more stable or live might be more current.
+          // Usually stats cron runs for PAST days, so live only has today.
+          mergedMap.set(key, {
+            ...existing,
+            revenue: Math.max(existing.revenue, p.revenue),
+            orderCount: Math.max(existing.orderCount, p.orderCount),
+            unitsSold: Math.max(existing.unitsSold, p.unitsSold),
+          });
+        } else {
+          mergedMap.set(key, p);
+        }
+      });
+
+      return Array.from(mergedMap.values()).sort((a, b) => a.period.getTime() - b.period.getTime());
+    }
+
+    // For product/category specific queries, we MUST use OrderItem to filter correctly
+    const dateTrunc = this.getDateTruncExpression(granularity, 'order.createdAt');
     const qb = this.orderItemRepository
       .createQueryBuilder('item')
       .innerJoin('item.order', 'order')
@@ -171,14 +221,7 @@ export class TrendForecastingService {
       .addSelect('SUM(item.totalAmount)', 'revenue')
       .addSelect('COUNT(DISTINCT order.id)', 'orderCount')
       .addSelect('SUM(item.quantity)', 'unitsSold')
-      .where('order.status IN (:...statuses)', {
-        statuses: [
-          OrderStatus.CONFIRMED,
-          OrderStatus.PROCESSING,
-          OrderStatus.SHIPPED,
-          OrderStatus.DELIVERED,
-        ],
-      })
+      .where('order.status IN (:...statuses)', { statuses })
       .andWhere('order.createdAt >= :startDate', { startDate: startDate.toISOString() })
       .groupBy('period')
       .orderBy('period', 'ASC');
@@ -197,6 +240,81 @@ export class TrendForecastingService {
 
     const rows = await qb.getRawMany<NumericRecord>();
 
+    return rows.map((row) => ({
+      period: new Date(row.period as string),
+      revenue: this.asNumber(row.revenue),
+      orderCount: this.asNumber(row.orderCount),
+      unitsSold: this.asNumber(row.unitsSold),
+    }));
+  }
+
+  private async loadHistoricalStats(
+    granularity: TrendGranularity,
+    startDate: Date,
+    branchId?: number,
+  ): Promise<TimeSeriesPoint[]> {
+    const qb = this.dailyStatsRepository.createQueryBuilder('stat');
+
+    // DailyStatistic table has 'date' column as string YYYY-MM-DD
+    // Granularity handling: for 'day', we use as is. For 'week'/'month', we might need to truncate.
+    // However, DailyStatistic is ALREADY daily. We can aggregate it by granularity.
+    const dateTrunc = this.getDateTruncExpression(granularity, 'stat.date::timestamp');
+
+    qb.select(`${dateTrunc}`, 'period')
+      .addSelect('SUM(stat.totalRevenue)', 'revenue')
+      .addSelect('SUM(stat.totalOrders)', 'orderCount')
+      .addSelect('SUM(stat.totalProductsSold)', 'unitsSold')
+      .where('stat.date >= :startDate', { startDate: startDate.toISOString().slice(0, 10) });
+
+    if (branchId) {
+      qb.andWhere('stat.branchId = :branchId', { branchId });
+    } else {
+      qb.andWhere('stat.branchId IS NULL');
+    }
+
+    qb.groupBy('period').orderBy('period', 'ASC');
+
+    const rows = await qb.getRawMany<NumericRecord>();
+    return rows.map((row) => ({
+      period: new Date(row.period as string),
+      revenue: this.asNumber(row.revenue),
+      orderCount: this.asNumber(row.orderCount),
+      unitsSold: this.asNumber(row.unitsSold),
+    }));
+  }
+
+  private async loadLiveStats(
+    granularity: TrendGranularity,
+    today: Date,
+    branchId?: number,
+  ): Promise<TimeSeriesPoint[]> {
+    // Current day live data from Order table
+    const dateTrunc = this.getDateTruncExpression(granularity, 'order.createdAt');
+    const qb = this.orderRepository
+      .createQueryBuilder('order')
+      .leftJoin('order.items', 'item')
+      .select(`${dateTrunc}`, 'period')
+      .addSelect('SUM(DISTINCT order.totalAmount)', 'revenue')
+      .addSelect('COUNT(DISTINCT order.id)', 'orderCount')
+      .addSelect('SUM(item.quantity)', 'unitsSold')
+      .where('order.createdAt >= :today', { today: today.toISOString() })
+      .andWhere('order.status IN (:...statuses)', {
+        statuses: [
+          OrderStatus.PENDING,
+          OrderStatus.CONFIRMED,
+          OrderStatus.PROCESSING,
+          OrderStatus.SHIPPED,
+          OrderStatus.DELIVERED,
+        ],
+      });
+
+    if (branchId) {
+      qb.andWhere('order.branchId = :branchId', { branchId });
+    }
+
+    qb.groupBy('period');
+
+    const rows = await qb.getRawMany<NumericRecord>();
     return rows.map((row) => ({
       period: new Date(row.period as string),
       revenue: this.asNumber(row.revenue),

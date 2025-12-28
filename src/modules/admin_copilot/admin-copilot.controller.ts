@@ -15,12 +15,17 @@ import {
 } from './dto/admin-copilot-history.dto';
 import { Request } from 'express';
 
+import { AdminCopilotProactiveService } from './services/admin-copilot-proactive.service';
+
 @ApiTags('admin-copilot')
 @ApiBearerAuth()
 @UseGuards(AuthGuard('jwt'), AdminGuard)
 @Controller('admin/copilot')
 export class AdminCopilotController {
-  constructor(private readonly service: AdminCopilotService) {}
+  constructor(
+    private readonly service: AdminCopilotService,
+    private readonly proactiveService: AdminCopilotProactiveService,
+  ) {}
 
   @Post('chat')
   @ApiOperation({ summary: 'Trò chuyện với trợ lý AI dành cho admin Fashia' })
@@ -66,5 +71,12 @@ export class AdminCopilotController {
   getStockAlerts(@Query() query: AdminCopilotStockAlertsQueryDto, @Req() req: Request) {
     const user = req.user as { id: number };
     return this.service.getStockAlerts(user.id, query);
+  }
+
+  @Get('morning-briefing')
+  @ApiOperation({ summary: 'Lấy báo cáo tóm tắt chủ động (Morning Briefing)' })
+  getMorningBriefing(@Req() req: Request) {
+    const user = req.user as { id: number };
+    return this.proactiveService.getMorningBriefing(user.id);
   }
 }

@@ -32,6 +32,7 @@ import { MessageRole } from '../messages/enums/message.enums';
 import { OrderItem } from '../order_items/entities/order-item.entity';
 import { TrendGranularity } from '../trend_forecasting/dto/trend-forecast-query.dto';
 import { TrendForecastingService } from '../trend_forecasting/trend-forecasting.service';
+import { StatsService } from '../stats/stats.service';
 import { User } from '../users/entities/user.entity';
 import {
   ADMIN_COPILOT_DEFAULT_RANGE,
@@ -108,6 +109,7 @@ export class AdminCopilotService {
     private readonly participantRepository: Repository<ConversationParticipant>,
     @InjectRepository(Message)
     private readonly messageRepository: Repository<Message>,
+    private readonly statsService: StatsService,
   ) {}
 
   async chat(
@@ -428,7 +430,7 @@ export class AdminCopilotService {
     return this.computeStockAlerts(params, context);
   }
 
-  private async resolveAdminContext(adminUserId: number): Promise<AdminCopilotAdminContext> {
+  public async resolveAdminContext(adminUserId: number): Promise<AdminCopilotAdminContext> {
     const user = await this.userRepository.findOne({
       where: { id: adminUserId },
       relations: { branch: true },
@@ -818,6 +820,22 @@ export class AdminCopilotService {
     const granularity = this.resolveGranularity(params.granularity, config.granularity);
     const forecastPeriods = parsePositiveInt(params.forecastPeriods, 1, 1, 12) ?? 1;
 
+    // 1. Resolve exact date range for StatsService (matching Dashboard logic)
+    const now = new Date();
+    const periodEnd = new Date(now);
+    periodEnd.setHours(23, 59, 59, 999);
+
+    const periodStart = subtractDays(now, config.days - 1);
+    periodStart.setHours(0, 0, 0, 0);
+
+    // 2. Fetch standard aggregates from StatsService (The source of truth for Dashboard)
+    const statsOverview = await this.statsService.getOverview({
+      from: periodStart,
+      to: periodEnd,
+      branchId: context.branchId ?? undefined,
+    });
+
+    // 3. Fetch Trend Forecasting results (for narrative and expected forecast point)
     const forecast = await this.trendForecastingService.getSalesForecast({
       granularity,
       lookbackMonths: config.lookbackMonths,
@@ -825,40 +843,22 @@ export class AdminCopilotService {
       branchId: context.branchId ?? undefined,
     });
 
-    const rangeStart = subtractDays(new Date(), config.days);
-    const filteredSeries = forecast.timeSeries.filter((point) => {
-      const periodDate = new Date(point.period);
-      return Number.isFinite(periodDate.getTime()) && periodDate >= rangeStart;
-    });
-
-    const totals = filteredSeries.reduce(
-      (acc, point) => {
-        acc.revenue += point.revenue;
-        acc.orders += point.orderCount;
-        acc.units += point.unitsSold;
-        return acc;
-      },
-      { revenue: 0, orders: 0, units: 0 },
-    );
-
-    const averageOrderValue = totals.orders > 0 ? totals.revenue / totals.orders : 0;
-
     this.logger.debug(
-      `Revenue overview computed (range=${range}, granularity=${granularity}, orders=${totals.orders}, revenue=${totals.revenue.toFixed(0)}, scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+      `Revenue overview computed via StatsService (range=${range}, days=${config.days}, revenue=${statsOverview.revenue.value}, scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
     );
 
     return {
       range,
       granularity,
-      periodStart: filteredSeries[0]?.period ?? forecast.timeSeries[0]?.period ?? null,
-      periodEnd:
-        filteredSeries[filteredSeries.length - 1]?.period ??
-        forecast.timeSeries.at(-1)?.period ??
-        null,
-      totalRevenue: totals.revenue,
-      totalOrders: totals.orders,
-      totalUnits: totals.units,
-      averageOrderValue,
+      periodStart: periodStart.toISOString(),
+      periodEnd: periodEnd.toISOString(),
+      totalRevenue: statsOverview.revenue.value,
+      totalOrders: statsOverview.orders.value,
+      totalUnits: 0, // StatsOverview (getOverview) doesn't provide unitsSold total directly, but we can usually omit if 0
+      averageOrderValue:
+        statsOverview.orders.value > 0
+          ? statsOverview.revenue.value / statsOverview.orders.value
+          : 0,
       forecast: forecast.forecast[0] ?? null,
       summary: forecast.summary,
     };

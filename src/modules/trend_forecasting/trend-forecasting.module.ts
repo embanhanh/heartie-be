@@ -8,6 +8,7 @@ import { Product } from '../products/entities/product.entity';
 import { ReviewInsight } from '../review_analysis/entities/review-insight.entity';
 import { Interaction } from '../interactions/entities/interaction.entity';
 import { ProductVariant } from '../product_variants/entities/product_variant.entity';
+import { DailyStatistic } from '../stats/entities/daily-statistic.entity';
 import { AuthModule } from '../auth/auth.module';
 
 @Module({
@@ -19,6 +20,7 @@ import { AuthModule } from '../auth/auth.module';
       ReviewInsight,
       Interaction,
       ProductVariant,
+      DailyStatistic,
     ]),
     AuthModule,
   ],
