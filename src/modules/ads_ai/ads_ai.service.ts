@@ -22,6 +22,7 @@ import { UpdateAdsAiDto } from './dto/update-ads-ai.dto';
 import { AdsAiCampaign, AdsAiPostType, AdsAiStatus } from './entities/ads-ai-campaign.entity';
 import { GeneratedAdContent } from './interfaces/generated-ad-content.interface';
 import { StatsTrackingService } from '../stats/services/stats-tracking.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 const MODULE_NAME = 'ads-ai';
 
@@ -41,6 +42,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     private readonly productRepo: Repository<Product>,
     private readonly configService: ConfigService,
     private readonly statsTrackingService: StatsTrackingService,
+    private readonly notificationsService: NotificationsService,
   ) {
     super(repo, 'ad');
     this.httpClient = axios.create({ timeout: 10000 });
@@ -378,6 +380,17 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       try {
         this.ensurePublishable(ad);
         await this.publishCampaign(ad);
+        await this.notificationsService
+          .notifyAdminsAdPublished({
+            id: ad.id,
+            name: ad.name,
+            publishedAt: new Date(),
+            type: ad.postType,
+          })
+          .catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            this.logger.error(`Failed to send ad published notification: ${message}`);
+          });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Không xác định';
         this.logger.error(`Không thể đăng chiến dịch #${ad.id}: ${message}`);
@@ -729,6 +742,14 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       return null;
     }
 
+    // Check for "null" or "undefined" string values that might come from FormData
+    if (typeof value === 'string') {
+      const lower = value.toLowerCase();
+      if (lower === 'null' || lower === 'undefined') {
+        return null;
+      }
+    }
+
     const trimmed = value.trim();
     if (!trimmed) {
       return null;
@@ -765,12 +786,13 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     }
 
     return images
-      .map((img) =>
-        String(img)
-          .trim()
-          .replace(/^upload\//, 'uploads/'),
-      )
-      .filter((img) => img.length > 0);
+      .map((img) => String(img).trim())
+      .filter((img) => {
+        if (!img) return false;
+        const lower = img.toLowerCase();
+        return lower !== 'null' && lower !== 'undefined';
+      })
+      .map((img) => img.replace(/^upload\//, 'uploads/'));
   }
 
   private async deleteImageIfExists(image?: string | null) {

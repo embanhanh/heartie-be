@@ -5,9 +5,10 @@ import { AdsAiService } from './ads_ai.service';
 import { AdsAiCampaign } from './entities/ads-ai-campaign.entity';
 import { Product } from '../products/entities/product.entity';
 import { StatsModule } from '../stats/stats.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([AdsAiCampaign, Product]), StatsModule],
+  imports: [TypeOrmModule.forFeature([AdsAiCampaign, Product]), StatsModule, NotificationsModule],
   controllers: [AdsAiController],
   providers: [AdsAiService],
   exports: [AdsAiService],
