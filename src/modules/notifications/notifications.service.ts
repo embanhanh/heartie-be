@@ -12,6 +12,7 @@ import {
   WebpushNotification,
 } from 'firebase-admin/messaging';
 import { NotificationToken } from './entities/notification-token.entity';
+import { Notification } from './entities/notification.entity';
 import { RegisterNotificationTokenDto } from './dto/register-notification-token.dto';
 import { UserRole } from '../users/entities/user.entity';
 import { FirebaseConfig } from '../../config/firebase.config';
@@ -59,6 +60,8 @@ export class NotificationsService {
   constructor(
     @InjectRepository(NotificationToken)
     private readonly notificationTokenRepo: Repository<NotificationToken>,
+    @InjectRepository(Notification)
+    private readonly notificationRepo: Repository<Notification>,
     private readonly configService: ConfigService,
   ) {
     this.firebaseConfig = this.configService.get<FirebaseConfig>('firebase') ?? {};
@@ -151,6 +154,44 @@ export class NotificationsService {
     return (result.affected ?? 0) > 0;
   }
 
+  async getNotifications(
+    userId: number,
+    page = 1,
+    limit = 20,
+  ): Promise<{ data: Notification[]; total: number }> {
+    const [data, total] = await this.notificationRepo.findAndCount({
+      where: { userId },
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+
+    return { data, total };
+  }
+
+  async markAsRead(userId: number, notificationId: number): Promise<void> {
+    await this.notificationRepo.update({ id: notificationId, userId }, { readAt: new Date() });
+  }
+
+  async markAllAsRead(userId: number): Promise<void> {
+    await this.notificationRepo.update({ userId, readAt: IsNull() }, { readAt: new Date() });
+  }
+
+  private async createNotification(
+    userId: number,
+    title: string,
+    body: string,
+    data?: Record<string, any> | null,
+  ): Promise<Notification> {
+    const notification = this.notificationRepo.create({
+      userId,
+      title,
+      body,
+      data,
+    });
+    return this.notificationRepo.save(notification);
+  }
+
   async notifyAdminsOrderCreated(
     payload: OrderCreatedAdminPayload,
   ): Promise<NotificationDispatchResult> {
@@ -176,9 +217,51 @@ export class NotificationsService {
     });
   }
 
+  async notifyAdminsAdPublished(payload: {
+    id: number;
+    name: string;
+    publishedAt: Date;
+    type: string;
+  }): Promise<NotificationDispatchResult> {
+    const tokens = await this.getAdminTokens();
+
+    return this.dispatchNotification({
+      tokens,
+      topic: this.firebaseConfig.adminTopic,
+      notification: {
+        title: 'Quảng cáo đã được đăng',
+        body: `Chiến dịch "${payload.name}" đã được đăng thành công lên Facebook.`,
+      },
+      data: {
+        type: 'ad_published',
+        id: payload.id,
+        name: payload.name,
+        postType: payload.type,
+        link: `/admin`,
+        icon: DEFAULT_WEB_ICON,
+      },
+    });
+  }
+
   async notifyUserOrderStatusChanged(
     payload: OrderStatusChangedPayload,
   ): Promise<NotificationDispatchResult> {
+    // Persist notification
+    await this.createNotification(
+      payload.userId,
+      `Đơn hàng ${payload.orderNumber}`,
+      this.buildStatusMessage(payload.status),
+      {
+        type: 'order_status',
+        orderId: payload.orderId,
+        orderNumber: payload.orderNumber,
+        status: payload.status,
+        totalAmount: payload.totalAmount,
+        link: `/orders/${payload.orderId}`,
+        icon: DEFAULT_WEB_ICON,
+      },
+    );
+
     const tokens = await this.getUserTokens(payload.userId);
 
     return this.dispatchNotification({

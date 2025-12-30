@@ -662,7 +662,10 @@ export class GeminiService {
       const text = result.response.text()?.trim();
 
       if (!text) {
-        throw new BadRequestException('Gemini did not return any content after function call');
+        this.logger.warn(
+          'Gemini did not return any content after function call. Returning default acknowledgement.',
+        );
+        return { text: 'Đã xử lý yêu cầu của bạn thành công.' };
       }
 
       return { text };

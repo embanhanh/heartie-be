@@ -136,9 +136,22 @@ export class AdminCopilotService {
     let geminiMessage = trimmedMessage;
 
     // HANDLE META
-    if (requestMeta) {
-      this.logger.debug(`Admin copilot request meta: ${JSON.stringify(requestMeta)}`);
-      geminiMessage += `\n[Metadata Context]: ${JSON.stringify(requestMeta)}`;
+    if (requestMeta && Object.keys(requestMeta).length > 0) {
+      const metaStr = JSON.stringify(requestMeta);
+      this.logger.debug(
+        `Admin copilot request meta: ${metaStr.length > 500 ? `${metaStr.slice(0, 500)}... (total ${metaStr.length})` : metaStr}`,
+      );
+
+      // Protect against extremely large metadata that could clog context
+      if (metaStr.length > 10000) {
+        this.logger.warn(
+          `Lớn hơn 10k bytes metadata phát hiện (size=${metaStr.length}). Chỉ gửi phím chính.`,
+        );
+        const keys = Object.keys(requestMeta).join(', ');
+        geminiMessage += `\n[Metadata Keys]: ${keys} (Data too large to include full JSON)`;
+      } else {
+        geminiMessage += `\n[Metadata Context]: ${metaStr}`;
+      }
     }
 
     const requestContext: AdminCopilotRequestContextOptions = {
@@ -268,6 +281,7 @@ export class AdminCopilotService {
           temperature: 0.1,
           tools,
           model: this.getAdminModelName(),
+          maxOutputTokens: 4096,
         },
       );
       reply = second.text ?? '';
@@ -573,17 +587,13 @@ export class AdminCopilotService {
       if (message.role === MessageRole.ASSISTANT) {
         return {
           role: GeminiChatRole.MODEL,
-          content: message.metadata
-            ? `${message.content ?? ''}\n[Metadata Context]: ${JSON.stringify(message.metadata)}`
-            : (message.content ?? ''),
+          content: message.content ?? '',
         } satisfies GeminiChatMessage;
       }
 
       return {
         role: GeminiChatRole.USER,
-        content: message.metadata
-          ? `${message.content ?? ''}\n[Metadata Context]: ${JSON.stringify(message.metadata)}`
-          : (message.content ?? ''),
+        content: message.content ?? '',
       } satisfies GeminiChatMessage;
     });
   }
@@ -1229,6 +1239,34 @@ export class AdminCopilotService {
 
       if (!advertisementId) {
         throw new Error('Thiếu advertisementId để lên lịch.');
+      }
+
+      const confirmReschedule = Boolean(rawArgs.confirmReschedule);
+
+      // Check current status
+      const existingAd = await this.adsAiService.findOne(advertisementId);
+      if (!existingAd) {
+        throw new Error(`Không tìm thấy chiến dịch #${advertisementId}`);
+      }
+
+      if (
+        (existingAd.status === AdsAiStatus.SCHEDULED ||
+          existingAd.status === AdsAiStatus.PUBLISHED) &&
+        !confirmReschedule
+      ) {
+        return {
+          functionResponse: {
+            name: 'schedule_post_campaign',
+            response: {
+              content: {
+                confirmationRequired: true,
+                message: `Chiến dịch #${advertisementId} đang ở trạng thái ${existingAd.status}. Bạn có chắc chắn muốn đặt lại lịch không?`,
+                currentStatus: existingAd.status,
+                scheduledAt: existingAd.scheduledAt,
+              },
+            },
+          },
+        };
       }
 
       const scheduledAtInput =
