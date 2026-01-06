@@ -119,6 +119,7 @@ export class RatingsService {
 
     const qb = this.ratingRepository
       .createQueryBuilder('rating')
+      .leftJoinAndSelect('rating.user', 'user')
       .orderBy('rating.createdAt', 'DESC');
 
     if (query.productId) {

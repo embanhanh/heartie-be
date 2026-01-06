@@ -25,6 +25,7 @@ import {
 import { OrderItem } from '../../src/modules/order_items/entities/order-item.entity';
 import { DailyStatistic } from '../../src/modules/stats/entities/daily-statistic.entity';
 import { ProductVariantInventory } from '../../src/modules/inventory/entities/product-variant-inventory.entity';
+import { Rating } from '../../src/modules/ratings/entities/rating.entity';
 
 // --- Constants & Config ---
 
@@ -319,8 +320,6 @@ const generateVNAddress = () => {
   };
 };
 
-// subDays removed as it was unused
-
 // --- Seed Logic ---
 
 export async function seedDemoData(dataSource: DataSource) {
@@ -334,13 +333,11 @@ export async function seedDemoData(dataSource: DataSource) {
   const categoryRepo = dataSource.getRepository(Category);
   const brandRepo = dataSource.getRepository('Brand'); // Using string if entity not easily imported, or import it
   const statsRepo = dataSource.getRepository(DailyStatistic);
-
-  // Need real Brand repo
-  // realBrandRepo removed unused
+  const ratingRepo = dataSource.getRepository(Rating);
 
   console.log('🚀 Starting Demo Data Seeding...');
 
-  // 1. Ensure Branches exist (reuse existing or Create default)
+  // 1. Ensure Branches exist
   const branches = await branchRepo.find();
   if (!branches.length) {
     console.warn('⚠️ No branches found. Please seed branches first.');
@@ -392,6 +389,7 @@ export async function seedDemoData(dataSource: DataSource) {
 
   // 4. Products & Variants
   const generatedVariants: ProductVariant[] = [];
+  const allProducts: Product[] = [];
 
   for (const blueprint of PRODUCT_BLUEPRINTS) {
     const category = await getCategory(blueprint.category);
@@ -407,7 +405,9 @@ export async function seedDemoData(dataSource: DataSource) {
         brandId: brand ? (brand as { id: number }).id : undefined,
         originalPrice: blueprint.price,
         status: ProductStatus.ACTIVE,
-        rating: 4.5 + Math.random() * 0.5,
+        rating: 0, // Will update via ratings
+        viewCount: 0,
+        soldCount: 0,
         stock: 0, // Will update
         image: blueprint.variants[0].image,
       });
@@ -420,6 +420,7 @@ export async function seedDemoData(dataSource: DataSource) {
         { productId: product.id, attributeId: materialAttr.id, isRequired: true },
       ]);
     }
+    allProducts.push(product);
 
     // Variants
     let totalStock = 0;
@@ -432,48 +433,85 @@ export async function seedDemoData(dataSource: DataSource) {
       for (const size of SIZES) {
         const sizeVal = await getOrCreateAttrValue(sizeAttr, size);
 
-        // Check if variant exists
-        // Simplified check by assuming if product was created, we make variants.
-        // Real check would be complex query.
+        // Check if variant exists logic simplified
+        // We assume we can create/update logic but for seed just creating helps
+        // Ideally checking specific combination via attributeValues:
+        // skip complex check for demo speed, assume if product new, variants new
 
-        const variant = variantRepo.create({
-          productId: product.id,
-          price: blueprint.price,
-          status: ProductVariantStatus.ACTIVE,
-          image: variantBP.image,
-        });
-        await variantRepo.save(variant);
-        generatedVariants.push(variant);
+        /* let variant = await variantRepo.findOne({
+          where: {
+            productId: product.id,
+            attributeValues: { attributeValueId: sizeVal.id },
+          },
+        }); */
+        // Note: checking variant by attr values is complex in TypeORM without join
+        // Just always create if product new... or verify count.
+        // For simplicity in this update, we will leverage existing logic or create if missing
 
-        // Variant Attribute Values
-        await dataSource.getRepository(VariantAttributeValue).save([
-          { variantId: variant.id, attributeId: colorAttr.id, attributeValueId: colorVal.id },
-          { variantId: variant.id, attributeId: sizeAttr.id, attributeValueId: sizeVal.id },
-          { variantId: variant.id, attributeId: materialAttr.id, attributeValueId: materialVal.id },
-        ]);
+        const existingCount = await variantRepo.count({ where: { productId: product.id } });
+        if (existingCount < blueprint.variants.length * SIZES.length) {
+          // Discount Logic: 30% chance for a discount
+          let price = blueprint.price;
+          if (randomBoolean(0.3)) {
+            price = Math.round((Number(blueprint.price) * 0.8) / 1000) * 1000; // 20% off
+          }
 
-        // Inventory
-        const stock = randomInt(10, 50);
-        await dataSource.getRepository(ProductVariantInventory).save({
-          variantId: variant.id,
-          branchId: mainBranch.id,
-          stock: stock,
-        });
-        totalStock += stock;
+          const variant = variantRepo.create({
+            productId: product.id,
+            price: price, // Use discounted price if applicable
+            status: ProductVariantStatus.ACTIVE,
+            image: variantBP.image,
+          });
+          await variantRepo.save(variant);
+          generatedVariants.push(variant);
+
+          // Variant Attribute Values
+          await dataSource.getRepository(VariantAttributeValue).save([
+            { variantId: variant.id, attributeId: colorAttr.id, attributeValueId: colorVal.id },
+            { variantId: variant.id, attributeId: sizeAttr.id, attributeValueId: sizeVal.id },
+            {
+              variantId: variant.id,
+              attributeId: materialAttr.id,
+              attributeValueId: materialVal.id,
+            },
+          ]);
+
+          // Inventory
+          const stock = randomInt(50, 200); // Higher stock for high volume orders
+          await dataSource.getRepository(ProductVariantInventory).save({
+            variantId: variant.id,
+            branchId: mainBranch.id,
+            stock: stock,
+          });
+          totalStock += stock;
+        } else {
+          // Retrieve existing variants for order generation
+          const existing = await variantRepo.find({ where: { productId: product.id } });
+          generatedVariants.push(...existing);
+        }
       }
     }
-
-    product.stock = totalStock;
-    await productRepo.save(product);
+    // Update stock if changed
+    if (product.stock !== totalStock) {
+      product.stock = totalStock;
+      await productRepo.save(product);
+    }
   }
 
-  console.log(`✅ Seeded ${PRODUCT_BLUEPRINTS.length} products and variants.`);
+  // Deduplicate variants list if pushed multiple times
+  const uniqueVariants = Array.from(new Set(generatedVariants.map((v) => v.id))).map(
+    (id) => generatedVariants.find((v) => v.id === id)!,
+  );
 
-  // 5. Users (Members)
+  console.log(`✅ Seeded ${allProducts.length} products and variants.`);
+
+  // 5. Users (Members) - Increased to 300
   const users: User[] = [];
   const hashedPassword = await bcrypt.hash(DEMO_PASSWORD, 10);
+  const TARGET_USERS = 300;
 
-  for (let i = 0; i < 50; i++) {
+  console.log(`Generating ${TARGET_USERS} users...`);
+  for (let i = 0; i < TARGET_USERS; i++) {
     const { firstName, lastName } = generateVNName();
     const email = `user${i + 1}@demo.com`;
     let user = await userRepo.findOne({ where: { email } });
@@ -505,15 +543,18 @@ export async function seedDemoData(dataSource: DataSource) {
     }
     users.push(user);
   }
-  console.log(`✅ Seeded 50 users.`);
+  console.log(`✅ Seeded ${users.length} users.`);
 
-  // 6. Orders
-  // Loop from START_DATE to END_DATE
+  // 6. Orders - High Volume (~4000)
   const currentDate = new Date(START_DATE);
   let totalOrdersGenerated = 0;
+  const productSoldCounts = new Map<number, number>();
+
+  console.log('Generating orders history...');
 
   while (currentDate <= END_DATE) {
-    const dailyOrdersCount = randomInt(3, 10); // Random orders per day
+    // Approx 10-15 orders per day to reach ~4000 in a year
+    const dailyOrdersCount = randomInt(10, 15);
     const dayStats = { revenue: 0, orders: 0, productsSold: 0, customers: new Set<number>() };
 
     for (let i = 0; i < dailyOrdersCount; i++) {
@@ -522,7 +563,6 @@ export async function seedDemoData(dataSource: DataSource) {
       let address: Address;
 
       if (isGuest) {
-        // Mock guest info
         const { firstName, lastName } = generateVNName();
         const addrData = generateVNAddress();
         address = addressRepo.create({
@@ -534,7 +574,14 @@ export async function seedDemoData(dataSource: DataSource) {
         });
         await addressRepo.save(address);
       } else {
-        customer = randomItem(users);
+        // Prefer "VIP" users (first 10% users buy more often)
+        if (randomBoolean(0.4)) {
+          const vipIdx = randomInt(0, Math.floor(users.length * 0.1));
+          customer = users[vipIdx];
+        } else {
+          customer = randomItem(users);
+        }
+
         const userAddrs = await addressRepo.find({ where: { userId: customer.id } });
         address =
           userAddrs[0] ||
@@ -555,7 +602,7 @@ export async function seedDemoData(dataSource: DataSource) {
       let subTotal = 0;
 
       for (let k = 0; k < itemCount; k++) {
-        const variant = randomItem(generatedVariants);
+        const variant = randomItem(uniqueVariants);
         const quantity = randomInt(1, 3);
         const itemTotal = Number(variant.price) * quantity;
 
@@ -570,7 +617,7 @@ export async function seedDemoData(dataSource: DataSource) {
       const shippingFee = randomItem([30000, 15000, 0]);
       const totalAmount = subTotal + shippingFee;
 
-      // Status determination based on date
+      // Status determination
       let status = OrderStatus.DELIVERED;
       let paidAt: Date | null = new Date(currentDate);
       let deliveredAt: Date | null = new Date(currentDate);
@@ -580,7 +627,6 @@ export async function seedDemoData(dataSource: DataSource) {
       const diffDays = (END_DATE.getTime() - currentDate.getTime()) / (1000 * 3600 * 24);
 
       if (randomBoolean(0.05)) {
-        // 5% cancelled
         status = OrderStatus.CANCELLED;
         cancelledAt = new Date(currentDate);
         paidAt = null;
@@ -593,7 +639,6 @@ export async function seedDemoData(dataSource: DataSource) {
         deliveredAt = null;
       }
 
-      // Time randomization within the day
       const orderTime = new Date(currentDate);
       orderTime.setHours(randomInt(8, 22), randomInt(0, 59));
 
@@ -611,7 +656,7 @@ export async function seedDemoData(dataSource: DataSource) {
         paymentMethod: PaymentMethod.COD,
         fulfillmentMethod: FulfillmentMethod.DELIVERY,
         createdAt: orderTime,
-        updatedAt: orderTime, // Simplified
+        updatedAt: orderTime,
         paidAt: paidAt ? orderTime : undefined,
         deliveredAt: deliveredAt || undefined,
         cancelledAt: cancelledAt || undefined,
@@ -621,6 +666,7 @@ export async function seedDemoData(dataSource: DataSource) {
 
       // Save Items
       for (const item of itemsData) {
+        if (!item.variant) continue;
         await orderItemRepo.save({
           orderId: order.id,
           variantId: item.variant.id,
@@ -629,6 +675,18 @@ export async function seedDemoData(dataSource: DataSource) {
           totalAmount: item.itemTotal,
           discountTotal: 0,
         });
+
+        // Track stats for update later
+        if (status === OrderStatus.DELIVERED) {
+          const pid = item.variant.productId; // assuming pre-loaded or available
+          // If variant doesn't have productId loaded, we might need a lookup map.
+          // But uniqueVariants were just created/fetched, checking relations.
+          // Since uniqueVariants came from generatedVariants which has productId set
+          // But let's be safe.
+
+          const currentSold = productSoldCounts.get(pid) ?? 0;
+          productSoldCounts.set(pid, currentSold + item.quantity);
+        }
       }
 
       if (status === OrderStatus.DELIVERED) {
@@ -658,14 +716,82 @@ export async function seedDemoData(dataSource: DataSource) {
       stat.totalOrders += dayStats.orders;
       stat.totalProductsSold += dayStats.productsSold;
       stat.totalCustomers += dayStats.customers.size;
-      // Simplified Update
       await statsRepo.save(stat);
     }
 
-    // Next Day
     currentDate.setDate(currentDate.getDate() + 1);
   }
 
   console.log(`✅ Seeded orders history: ${totalOrdersGenerated} orders created.`);
+
+  // 7. Sync Product Counts & Generate Ratings
+  console.log('🔄 Syncing Product Stats and Generating Ratings...');
+
+  // We need to fetch all delivered orders with items to generate ratings
+  // This could be heavy, so let's use a smarter approach:
+  // Iterate products, find who bought them (via OrderItem -> Order -> User)
+
+  // But first, update soldCounts
+  for (const [productId, soldCount] of productSoldCounts) {
+    // Generate realistic viewCount (soldCount * 10..50)
+    const viewCount = soldCount * randomInt(10, 50);
+    await productRepo.update(productId, { soldCount, viewCount });
+  }
+
+  // Generate Ratings
+  // Strategy: For each user, find their delivered orders, rate some items.
+
+  for (const user of users) {
+    // Find user's delivered orders
+    const orders = await orderRepo.find({
+      where: { userId: user.id, status: OrderStatus.DELIVERED },
+      relations: { items: { variant: true } },
+    });
+
+    if (orders.length === 0) continue;
+
+    // Rate ~30% of items bought
+    for (const order of orders) {
+      if (randomBoolean(0.3)) {
+        // 30% chance to rate an order
+        for (const item of order.items) {
+          if (!item.variant) continue;
+          const productId = item.variant.productId;
+
+          // Check if already rated
+          const existingRating = await ratingRepo.findOne({
+            where: { userId: user.id, productId },
+          });
+
+          if (!existingRating) {
+            // Generate rating
+            // Bias towards 4-5 stars
+            const ratingVal = randomBoolean(0.7) ? randomInt(4, 5) : randomInt(1, 5);
+            const comments = [
+              'Sản phẩm tuyệt vời!',
+              'Chất lượng tốt, đóng gói đẹp.',
+              'Giao hàng nhanh.',
+              'Hơi rộng một chút nhưng vẫn đẹp.',
+              'Màu sắc y hình.',
+              'Vải mềm mịn, rất thích.',
+              'Good product.',
+              'Will buy again.',
+            ];
+
+            const rating = ratingRepo.create({
+              userId: user.id,
+              productId,
+              rating: ratingVal,
+              comment: randomItem(comments),
+              createdAt: order.deliveredAt ?? new Date(),
+            });
+            await ratingRepo.save(rating);
+          }
+        }
+      }
+    }
+  }
+
+  console.log('✅ Ratings generated and Product Stats synced!');
   console.log('✅ Demo Data Generation Complete!');
 }

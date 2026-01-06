@@ -48,6 +48,12 @@ export class Product {
   @Column({ type: 'int', default: 0 })
   stock: number;
 
+  @Column({ type: 'int', default: 0 })
+  viewCount: number;
+
+  @Column({ type: 'int', default: 0 })
+  soldCount: number;
+
   @Column({ type: 'varchar', length: 20, default: ProductStatus.ACTIVE })
   status: ProductStatus;
 

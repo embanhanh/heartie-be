@@ -13,6 +13,7 @@ import { ProductVariant } from '../product_variants/entities/product_variant.ent
 import { Cart } from '../carts/entities/cart.entity';
 import { CartItem } from '../cart_items/entities/cart-item.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { Product } from '../products/entities/product.entity';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
       ProductVariant,
       Cart,
       CartItem,
+      Product,
     ]),
     PricingModule,
     AddressesModule,
