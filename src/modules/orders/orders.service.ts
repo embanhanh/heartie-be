@@ -6,8 +6,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsRelations, Repository } from 'typeorm';
+import { FindOptionsRelations, In, Repository } from 'typeorm';
 import { FulfillmentMethod, Order, OrderStatus, PaymentMethod } from './entities/order.entity';
+import { Product } from '../products/entities/product.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { User, UserRole } from '../users/entities/user.entity';
@@ -79,6 +80,8 @@ export class OrdersService extends BaseService<Order> {
     private readonly addressRepo: Repository<Address>,
     @InjectRepository(ProductVariant)
     private readonly variantRepo: Repository<ProductVariant>,
+    @InjectRepository(Product)
+    private readonly productRepo: Repository<Product>,
     private readonly addressesService: AddressesService,
     private readonly pricingService: PricingService,
     private readonly notificationsService: NotificationsService,
@@ -445,6 +448,39 @@ export class OrdersService extends BaseService<Order> {
 
     if (persistedItems.length > 0) {
       await this.orderItemRepo.save(persistedItems);
+
+      // Group quantity by product ID to update soldCount
+      const variantIds = persistedItems
+        .map((i) => i.variantId)
+        .filter((id): id is number => typeof id === 'number');
+      if (variantIds.length > 0) {
+        const variants = await this.variantRepo.find({
+          where: { id: In(variantIds) },
+          select: { id: true, productId: true },
+        });
+        const variantMap = new Map(variants.map((v) => [v.id, v.productId]));
+        const productSoldMap = new Map<number, number>();
+
+        persistedItems.forEach((item) => {
+          const variantId = item.variantId;
+          if (typeof variantId === 'number') {
+            const productId = variantMap.get(variantId);
+            if (productId) {
+              const current = productSoldMap.get(productId) ?? 0;
+              productSoldMap.set(productId, current + item.quantity);
+            }
+          }
+        });
+
+        for (const [productId, quantity] of productSoldMap) {
+          this.productRepo.increment({ id: productId }, 'soldCount', quantity).catch((err) => {
+            this.logger.error(
+              `Failed to increment soldCount for product ${productId}`,
+              err instanceof Error ? err.stack : undefined,
+            );
+          });
+        }
+      }
     }
   }
 
