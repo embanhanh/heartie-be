@@ -11,5 +11,6 @@ import { ReviewAnalysisModule } from '../review_analysis/review-analysis.module'
   imports: [TypeOrmModule.forFeature([Rating, Product, User]), ReviewAnalysisModule],
   controllers: [RatingsController],
   providers: [RatingsService],
+  exports: [RatingsService],
 })
 export class RatingsModule {}
