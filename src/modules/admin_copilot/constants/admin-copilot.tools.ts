@@ -179,7 +179,7 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
           'Lưu bài viết đã chốt vào Ads AI để quản lý và theo dõi. ' +
           'NẾU người dùng yêu cầu "lưu và lên lịch" hoặc cung cấp thời gian đăng (ví dụ: "lưu bài này và đăng lúc 9h tối"), ' +
           'HÃY ĐIỀN thời gian vào field "scheduledAt" trong campaign để hệ thống vừa lưu vừa lên lịch luôn. ' +
-          'Nếu metadata của tin nhắn có productId/productName hoặc imageUrl/image.url thì hãy map sang các field productId, productName và image tương ứng.',
+          'Nếu metadata của tin nhắn có productId/productName, imageUrl/image.url hoặc images (danh sách ảnh) thì hãy map sang các field tương ứng (productId, productName, image, images).',
         parameters: {
           type: SchemaType.OBJECT,
           properties: {
@@ -213,11 +213,12 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
                 },
                 callToAction: {
                   type: SchemaType.STRING,
-                  description: 'CTA sẽ sử dụng trong bài viết.',
+                  description:
+                    'Nhãn nút CTA (ngắn gọn, VD: Mua ngay). TUYỆT ĐỐI KHÔNG điền "Lưu ý" hay câu văn dài.',
                 },
                 ctaUrl: {
                   type: SchemaType.STRING,
-                  description: 'Đường dẫn gắn với CTA.',
+                  description: 'Đường dẫn liên kết cho nút CTA. Nếu không có link thì để trống.',
                 },
                 primaryText: {
                   type: SchemaType.STRING,
