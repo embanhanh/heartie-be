@@ -1549,6 +1549,11 @@ export class AdminCopilotService {
     const images = normalizeStringArray(raw['images']);
     if (images && images.length > 0) {
       dtoInput.images = images;
+    } else {
+      const imagesFromMeta = this.resolveImagesFromMeta(options.requestMeta);
+      if (imagesFromMeta && imagesFromMeta.length > 0) {
+        dtoInput.images = imagesFromMeta;
+      }
     }
 
     const dto = plainToInstance(CreateAdsAiDto, dtoInput, {
@@ -2106,6 +2111,37 @@ export class AdminCopilotService {
       productId: directId ?? nestedId,
       productName: productName ?? undefined,
     };
+  }
+
+  private resolveImagesFromMeta(meta?: Record<string, unknown>): string[] | undefined {
+    if (!meta || typeof meta !== 'object') {
+      return undefined;
+    }
+
+    // Check for direct array of strings
+    if (Array.isArray(meta['images'])) {
+      return normalizeStringArray(meta['images']);
+    }
+
+    // Check for array of objects (e.g. { url: '...' })
+    if (Array.isArray(meta['images'])) {
+      const raw = meta['images'] as unknown[];
+      const extracted = raw
+        .map((item) => {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object') {
+            return (item as Record<string, unknown>).url as string;
+          }
+          return null;
+        })
+        .filter(Boolean);
+      return normalizeStringArray(extracted);
+    }
+
+    // Check for 'images' inside 'image' or other common patterns if needed
+    // But usually 'images' key at top level is expected for multiple selections.
+
+    return undefined;
   }
 
   private resolveImageFromMeta(meta?: Record<string, unknown>): string | undefined {
