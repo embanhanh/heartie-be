@@ -90,6 +90,26 @@ export class VisionService implements OnModuleInit {
       'bag',
       'wallet',
       'scarf',
+      'jeans',
+      'denim',
+      'footwear',
+      'heels',
+      'boots',
+      'sandals',
+      'sneakers',
+      'handbag',
+      'clutch',
+      'backpack',
+      'tote',
+      'jewelry',
+      'necklace',
+      'earrings',
+      'bracelet',
+      'ring',
+      'sunglasses',
+      'cosmetics',
+      'makeup',
+      'perfume',
     ];
 
     interface InternalDetection {
@@ -99,17 +119,20 @@ export class VisionService implements OnModuleInit {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-    const output = (await this.detector(img, candidateLabels)) as InternalDetection[];
+    const output = (await this.detector(img, candidateLabels, {
+      threshold: 0.1, // Lower threshold to detect more objects
+      percentage: true,
+    })) as InternalDetection[];
 
     return output.map((d) => ({
       label: d.label,
       score: d.score,
       box: {
-        // OwlViT pipeline typically returns absolute coordinates, so we normalize them
-        xmin: d.box.xmin / info.width,
-        ymin: d.box.ymin / info.height,
-        xmax: d.box.xmax / info.width,
-        ymax: d.box.ymax / info.height,
+        // OwlViT with percentage: true returns normalized coordinates [0, 1]
+        xmin: d.box.xmin,
+        ymin: d.box.ymin,
+        xmax: d.box.xmax,
+        ymax: d.box.ymax,
       },
     }));
   }
