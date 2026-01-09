@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { AdminGuard } from '../auth/guards/admin.guard';
@@ -50,6 +50,14 @@ export class AdminCopilotController {
   ): Promise<AdminCopilotHistoryResponseDto> {
     const user = req.user as { id: number };
     return this.service.getHistory(user.id, query);
+  }
+
+  @Delete('conversations/:conversationId/messages')
+  @ApiOperation({ summary: 'Xóa toàn bộ lịch sử tin nhắn của hội thoại' })
+  @ApiResponse({ status: 200, description: 'Lịch sử tin nhắn đã được xóa thành công' })
+  deleteHistory(@Param('conversationId') conversationId: number, @Req() req: Request) {
+    const user = req.user as { id: number };
+    return this.service.clearHistory(user.id, conversationId);
   }
 
   @Get('revenue-overview')

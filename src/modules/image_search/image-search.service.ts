@@ -48,7 +48,7 @@ export class ImageSearchService {
       const { score, label, box } = detection;
       this.logger.debug(`Processing object: ${label} with score ${score}`);
 
-      if (score < 0.3) continue;
+      if (score < 0.15) continue;
 
       try {
         // 3. Crop and Embed

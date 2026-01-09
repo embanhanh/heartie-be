@@ -370,6 +370,35 @@ export class AdminCopilotService {
     return this.computeRevenueOverview(params, context);
   }
 
+  async clearHistory(adminUserId: number, conversationId: number): Promise<void> {
+    this.logger.debug(
+      `Admin ${adminUserId} requesting to clear history for conversation ${conversationId}`,
+    );
+
+    const context = await this.ensureAdminConversation(adminUserId, {
+      conversationId: conversationId,
+    });
+
+    await this.messageRepository.delete({ conversationId: context.conversation.id });
+
+    context.conversation.lastMessageAt = null;
+    context.conversation.lastMessageId = null;
+
+    // Update metadata
+    const metadata = context.conversation.metadata || {};
+    context.conversation.metadata = {
+      ...metadata,
+      lastMessageId: null,
+      lastInteractionUserId: adminUserId,
+    };
+
+    await this.conversationRepository.save(context.conversation);
+
+    this.logger.log(
+      `Cleared message history for conversation ${conversationId} (admin ${adminUserId})`,
+    );
+  }
+
   async getHistory(
     adminUserId: number,
     query: AdminCopilotHistoryQueryDto,
