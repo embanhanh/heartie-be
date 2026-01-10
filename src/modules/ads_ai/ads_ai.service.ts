@@ -49,6 +49,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
   }
 
   async generateCreative(dto: GenerateAdsAiDto): Promise<GeneratedAdContent> {
+    this.logger.debug(`[generateCreative] Input: ${JSON.stringify(dto)}`);
     const { prompt, product, productName, hasExplicitProductName } = await this.buildPrompt(dto);
     const modelName = this.configService.get<string>('GEMINI_AD_MODEL') ?? 'gemini-2.5-flash';
     const model = this.getGeminiModel(modelName);
@@ -93,6 +94,12 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
   }
 
   async createFromForm(dto: CreateAdsAiDto, file?: UploadedFile, extraFiles?: UploadedFile[]) {
+    this.logger.debug(`[createFromForm] DTO: ${JSON.stringify(dto)}`);
+    if (file)
+      this.logger.debug(`[createFromForm] Main File: ${file.originalname} (${file.size} bytes)`);
+    if (extraFiles?.length)
+      this.logger.debug(`[createFromForm] Extra Files: ${extraFiles.length} files`);
+
     const imagePath = resolveModuleUploadPath(
       MODULE_NAME,
       file,
@@ -161,6 +168,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     file?: UploadedFile,
     extraFiles?: UploadedFile[],
   ) {
+    this.logger.debug(`[updateFromForm] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
     const ad = await this.getCampaignOrFail(id);
 
     let product: Product | null = null;
@@ -332,6 +340,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
   }
 
   async schedule(id: number, dto: ScheduleAdsAiDto) {
+    this.logger.debug(`[schedule] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
     const ad = await this.getCampaignOrFail(id);
     const scheduledAt = this.normalizeScheduledDate(dto.scheduledAt);
 
@@ -352,6 +361,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
   }
 
   async publishNow(id: number, dto: PublishAdsAiDto) {
+    this.logger.debug(`[publishNow] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
     const ad = await this.getCampaignOrFail(id);
     this.ensurePublishable(ad);
     return this.publishCampaign(ad, dto.note);
@@ -475,6 +485,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
   }
 
   private async publishCampaign(ad: AdsAiCampaign, note?: string) {
+    this.logger.debug(`[publishCampaign] Ad ID: ${ad.id}, PostType: ${ad.postType}`);
     const accessToken = this.configService.get<string>('FACEBOOK_PAGE_ACCESS_TOKEN');
     const pageId = this.configService.get<string>('FACEBOOK_PAGE_ID');
 

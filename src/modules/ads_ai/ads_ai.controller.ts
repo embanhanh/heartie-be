@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Logger,
   Param,
   Patch,
   Post,
@@ -30,10 +31,13 @@ const adsImageUploadOptions = createModuleMulterOptions({
 @ApiTags('ads-ai')
 @Controller('ads-ai')
 export class AdsAiController {
+  private readonly logger = new Logger(AdsAiController.name);
+
   constructor(private readonly service: AdsAiService) {}
 
   @Post('generate')
   generate(@Body() dto: GenerateAdsAiDto) {
+    this.logger.debug(`[generate] DTO: ${JSON.stringify(dto)}`);
     return this.service.generateCreative(dto);
   }
 
@@ -84,6 +88,7 @@ export class AdsAiController {
     files: { image?: UploadedFileType[]; images?: UploadedFileType[] },
     @Body() dto: CreateAdsAiDto,
   ) {
+    this.logger.debug(`[create] DTO: ${JSON.stringify(dto)}`);
     const mainFile = files.image?.[0];
     const extraFiles = files.images;
     return this.service.createFromForm(dto, mainFile, extraFiles);
@@ -146,6 +151,7 @@ export class AdsAiController {
     files: { image?: UploadedFileType[]; images?: UploadedFileType[] },
     @Body() dto: UpdateAdsAiDto,
   ) {
+    this.logger.debug(`[update] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
     const mainFile = files.image?.[0];
     const extraFiles = files.images;
     return this.service.updateFromForm(Number(id), dto, mainFile, extraFiles);
@@ -153,11 +159,13 @@ export class AdsAiController {
 
   @Post(':id/schedule')
   schedule(@Param('id') id: string, @Body() dto: ScheduleAdsAiDto) {
+    this.logger.debug(`[schedule] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
     return this.service.schedule(Number(id), dto);
   }
 
   @Post(':id/publish')
   publish(@Param('id') id: string, @Body() dto: PublishAdsAiDto) {
+    this.logger.debug(`[publish] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
     return this.service.publishNow(Number(id), dto);
   }
 

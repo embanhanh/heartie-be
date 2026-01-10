@@ -105,7 +105,7 @@ export class ProductsController {
     @UploadedFiles() files: UploadedFile[] | undefined,
     @Body() body: Record<string, unknown>,
   ) {
-    const dto = await this.parseAndValidateForm(body);
+    const dto = await this.parseAndValidateForm(body, false);
     return this.service.createFromForm(dto, files ?? []);
   }
 
@@ -251,7 +251,7 @@ export class ProductsController {
     @UploadedFiles() files: UploadedFile[] | undefined,
     @Body() body: Record<string, unknown>,
   ) {
-    const dto = await this.parseAndValidateForm(body);
+    const dto = await this.parseAndValidateForm(body, true);
     return this.service.updateFromForm(Number(id), dto, files ?? []);
   }
 
@@ -260,17 +260,39 @@ export class ProductsController {
     return this.service.remove(+id);
   }
 
-  private normalizeFormPayload(body: Record<string, unknown>): Record<string, unknown> {
+  private normalizeFormPayload(
+    body: Record<string, unknown>,
+    isUpdate = false,
+  ): Record<string, unknown> {
     const normalized: Record<string, unknown> = { ...body };
 
-    normalized.attributes = this.ensureArrayOfObjects('attributes', body['attributes']);
-    normalized.variants = this.ensureArrayOfObjects('variants', body['variants']);
+    const attributes = this.ensureArrayOfObjects('attributes', body['attributes'], isUpdate);
+    if (attributes !== undefined) {
+      normalized.attributes = attributes;
+    }
+
+    const variants = this.ensureArrayOfObjects('variants', body['variants'], isUpdate);
+    if (variants !== undefined) {
+      normalized.variants = variants;
+    }
+
+    // Remove "payload" field if present, as it's sent redundantly by frontend and triggers whitelist validation error
+    if ('payload' in normalized) {
+      delete normalized.payload;
+    }
 
     return normalized;
   }
 
-  private ensureArrayOfObjects(fieldName: string, rawValue: unknown): Record<string, unknown>[] {
+  private ensureArrayOfObjects(
+    fieldName: string,
+    rawValue: unknown,
+    isOptional = false,
+  ): Record<string, unknown>[] | undefined {
     if (rawValue === undefined || rawValue === null) {
+      if (isOptional) {
+        return undefined;
+      }
       throw new BadRequestException(`${fieldName} is required`);
     }
 
@@ -315,13 +337,15 @@ export class ProductsController {
 
   private async parseAndValidateForm(
     body: Record<string, unknown>,
+    isUpdate = false,
   ): Promise<ProductFormPayloadDto> {
-    const normalizedPayload = this.normalizeFormPayload(body);
+    const normalizedPayload = this.normalizeFormPayload(body, isUpdate);
     const dto = plainToInstance(ProductFormPayloadDto, normalizedPayload);
 
     try {
       await validateOrReject(dto, { whitelist: true, forbidNonWhitelisted: true });
     } catch (err) {
+      console.error('Validation failed:', JSON.stringify(err, null, 2));
       throw new BadRequestException(err);
     }
 

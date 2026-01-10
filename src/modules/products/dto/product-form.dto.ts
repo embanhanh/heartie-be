@@ -79,6 +79,11 @@ export class VariantPayloadDto {
   @Type(() => Number)
   id?: number;
 
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  productId?: number;
+
   @IsNumber({ maxDecimalPlaces: 2 })
   @Type(() => Number)
   price: number;
@@ -109,20 +114,22 @@ export class VariantPayloadDto {
 }
 
 export class ProductFormPayloadDto {
+  @IsOptional()
   @IsInt()
   @IsPositive()
   @Type(() => Number)
-  branchId: number;
+  branchId?: number;
 
   @IsOptional()
   @IsInt()
   @Type(() => Number)
   id?: number;
 
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
-  name: string;
+  name?: string;
 
   @IsOptional()
   @IsInt()
@@ -151,14 +158,16 @@ export class ProductFormPayloadDto {
   @IsEnum(ProductStatus)
   status?: ProductStatus;
 
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => AttributePayloadDto)
-  attributes: AttributePayloadDto[];
+  attributes?: AttributePayloadDto[];
 
+  @IsOptional()
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => VariantPayloadDto)
-  variants: VariantPayloadDto[];
+  variants?: VariantPayloadDto[];
 }

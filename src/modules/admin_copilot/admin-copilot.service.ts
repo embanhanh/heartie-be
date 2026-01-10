@@ -273,18 +273,32 @@ export class AdminCopilotService {
         { role: GeminiChatRole.USER, content: JSON.stringify(toolExecution) },
       ];
 
-      const second = await this.geminiService.generateContentWithFunctionResponse(
-        tempHistory,
-        toolExecution,
-        {
-          systemPrompt,
-          temperature: 0.1,
-          tools,
-          model: this.getAdminModelName(),
-          maxOutputTokens: 4096,
-        },
-      );
-      reply = second.text ?? '';
+      try {
+        const second = await this.geminiService.generateContentWithFunctionResponse(
+          tempHistory,
+          toolExecution,
+          {
+            systemPrompt,
+            temperature: 0.1,
+            tools,
+            model: this.getAdminModelName(),
+            maxOutputTokens: 4096,
+          },
+        );
+        reply = second.text ?? '';
+      } catch (error) {
+        this.logger.warn(
+          `Gemini second call failed for conversation ${context.conversation.id}: ${error}`,
+        );
+        // Fallback message if Gemini fails to generate summary after tool execution
+        reply =
+          (await this.translateString(
+            'admin-copilot.messages.toolSuccessFallback',
+            lang,
+            {},
+            'Yêu cầu của bạn đã được xử lý thành công.',
+          )) || 'Yêu cầu của bạn đã được xử lý thành công.';
+      }
 
       if (!reply) {
         this.logger.warn(
@@ -1492,7 +1506,7 @@ export class AdminCopilotService {
     const callToAction =
       normalizeString(raw['callToAction']) ?? normalizeString(raw['cta']) ?? undefined;
 
-    const ctaUrl = normalizeString(raw['ctaUrl'] ?? raw['url']);
+    const ctaUrl = normalizeString(raw['ctaUrl'] ?? raw['url']) ?? 'http://localhost:3000';
     const productName = normalizeString(raw['productName'] ?? raw['productFocus']);
     const targetAudience = normalizeString(raw['targetAudience']);
     const tone = normalizeString(raw['tone']);
