@@ -153,13 +153,15 @@ export class ProductsService extends BaseService<Product> {
       }
     }
 
-    const branchExists = await this.branchRepo.exist({
-      where: { id: branchId },
-    });
+    if (branchId) {
+      const branchExists = await this.branchRepo.exist({
+        where: { id: branchId },
+      });
 
-    if (!branchExists) {
-      this.logger.warn(`Branch not found: ${branchId}`);
-      throw new BadRequestException(`Branch not found: ${branchId}`);
+      if (!branchExists) {
+        this.logger.warn(`Branch not found: ${branchId}`);
+        throw new BadRequestException(`Branch not found: ${branchId}`);
+      }
     }
 
     this.logger.debug(`Received ${files.length} uploaded file(s)`);
@@ -180,7 +182,7 @@ export class ProductsService extends BaseService<Product> {
       const inventoryRepo = manager.getRepository(ProductVariantInventory);
 
       const productEntity = productRepo.create();
-      productEntity.name = productPayload.name;
+      if (productPayload.name) productEntity.name = productPayload.name;
       productEntity.brandId = normalizedBrandId;
       productEntity.categoryId = normalizedCategoryId;
       productEntity.description = productPayload.description ?? undefined;
@@ -201,7 +203,7 @@ export class ProductsService extends BaseService<Product> {
       const attributeValueByAttrAndValue = new Map<string, AttributeValue>();
       const linkedProductAttributeIds = new Set<number>();
 
-      for (const attributePayload of attributes) {
+      for (const attributePayload of attributes ?? []) {
         let attributeEntity: Attribute | null = null;
 
         if (attributePayload.id) {
@@ -277,7 +279,7 @@ export class ProductsService extends BaseService<Product> {
 
       let totalStock = 0;
 
-      for (const [index, variantPayload] of variants.entries()) {
+      for (const [index, variantPayload] of (variants ?? []).entries()) {
         const variantImage = variantImages.get(index);
 
         const variantEntity = variantRepo.create();
@@ -1027,13 +1029,15 @@ export class ProductsService extends BaseService<Product> {
       }
     }
 
-    const branchExists = await this.branchRepo.exist({
-      where: { id: branchId },
-    });
+    if (branchId) {
+      const branchExists = await this.branchRepo.exist({
+        where: { id: branchId },
+      });
 
-    if (!branchExists) {
-      this.logger.warn(`Branch not found for update: ${branchId}`);
-      throw new BadRequestException(`Branch not found: ${branchId}`);
+      if (!branchExists) {
+        this.logger.warn(`Branch not found for update: ${branchId}`);
+        throw new BadRequestException(`Branch not found: ${branchId}`);
+      }
     }
 
     this.logger.debug(`Received ${files.length} uploaded file(s) for update`);
@@ -1057,9 +1061,15 @@ export class ProductsService extends BaseService<Product> {
         throw new NotFoundException(`Product not found: ${id}`);
       }
 
-      productEntity.name = productPayload.name;
-      productEntity.brandId = normalizedBrandId;
-      productEntity.categoryId = normalizedCategoryId;
+      if (productPayload.name) {
+        productEntity.name = productPayload.name;
+      }
+      if (normalizedBrandId !== undefined) {
+        productEntity.brandId = normalizedBrandId;
+      }
+      if (normalizedCategoryId !== undefined) {
+        productEntity.categoryId = normalizedCategoryId;
+      }
 
       if (Object.prototype.hasOwnProperty.call(productPayload, 'description')) {
         productEntity.description = productPayload.description ?? undefined;
@@ -1072,25 +1082,52 @@ export class ProductsService extends BaseService<Product> {
       }
 
       productEntity.status = productPayload.status ?? productEntity.status ?? ProductStatus.ACTIVE;
-      productEntity.originalPrice = this.resolveOriginalPrice(
+      const newOriginalPrice = this.resolveOriginalPrice(
         explicitOriginalPrice,
-        variants,
+        variants ?? [],
         productEntity.originalPrice,
       );
-      productEntity.stock = 0;
-
-      const savedProduct = await productRepo.save(productEntity);
-
-      const existingVariants = await variantRepo.find({ where: { productId: savedProduct.id } });
-      const existingVariantIds = existingVariants.map((variant) => variant.id);
-
-      if (existingVariantIds.length) {
-        await variantAttributeRepo.delete({ variantId: In(existingVariantIds) });
-        await inventoryRepo.delete({ variantId: In(existingVariantIds) });
+      if (newOriginalPrice > 0) {
+        productEntity.originalPrice = newOriginalPrice;
+      }
+      if (variants) {
+        productEntity.stock = 0; // Will be recalculated from variants if variants are updated
       }
 
-      await variantRepo.delete({ productId: savedProduct.id });
-      await productAttributeRepo.delete({ productId: savedProduct.id });
+      const savedProduct = await productRepo.save(productEntity);
+      let totalStock = savedProduct.stock; // Initialize with current stock
+
+      let fallbackBranchId = typeof branchId === 'number' ? branchId : 1;
+
+      if (variants) {
+        // Only delete old variants if we are updating variants
+        const existingVariants = await variantRepo.find({
+          where: { productId: savedProduct.id },
+          relations: ['inventories'],
+        });
+
+        // Try to capture an existing branchId to use as fallback
+        if (!branchId && existingVariants.length > 0) {
+          const firstInv = existingVariants[0].inventories?.[0];
+          if (firstInv?.branchId) {
+            fallbackBranchId = firstInv.branchId;
+          }
+        }
+
+        const existingVariantIds = existingVariants.map((variant) => variant.id);
+
+        if (existingVariantIds.length) {
+          await variantAttributeRepo.delete({ variantId: In(existingVariantIds) });
+          await inventoryRepo.delete({ variantId: In(existingVariantIds) });
+        }
+
+        await variantRepo.delete({ productId: savedProduct.id });
+        totalStock = 0; // Reset stock calculation for new variants
+      }
+
+      if (attributes) {
+        await productAttributeRepo.delete({ productId: savedProduct.id });
+      }
 
       const attributeById = new Map<number, Attribute>();
       const attributeByName = new Map<string, Attribute>();
@@ -1098,7 +1135,45 @@ export class ProductsService extends BaseService<Product> {
       const attributeValueByAttrAndValue = new Map<string, AttributeValue>();
       const linkedProductAttributeIds = new Set<number>();
 
-      for (const attributePayload of attributes) {
+      if (!attributes) {
+        this.logger.debug('Partial update: reloading existing attributes...');
+        const existingProductAttributes = await productAttributeRepo.find({
+          where: { productId: savedProduct.id },
+          relations: ['attribute'],
+        });
+
+        this.logger.debug(`Found ${existingProductAttributes.length} existing attributes`);
+
+        for (const pa of existingProductAttributes) {
+          if (pa.attribute) {
+            attributeById.set(pa.attribute.id, pa.attribute);
+            attributeByName.set(pa.attribute.name.toLowerCase(), pa.attribute);
+            linkedProductAttributeIds.add(pa.attribute.id);
+            this.logger.debug(
+              `Loaded existing attribute: ${pa.attribute.name} (${pa.attribute.id})`,
+            );
+          }
+        }
+
+        // Also load existing attribute values for these attributes to populate value maps
+        if (linkedProductAttributeIds.size > 0) {
+          const existingValues = await attributeValueRepo.find({
+            where: { attributeId: In(Array.from(linkedProductAttributeIds)) },
+          });
+
+          this.logger.debug(`Found ${existingValues.length} existing attribute values`);
+
+          for (const val of existingValues) {
+            attributeValueById.set(val.id, val);
+            attributeValueByAttrAndValue.set(
+              this.getAttributeValueKey(val.attributeId, val.value),
+              val,
+            );
+          }
+        }
+      }
+
+      for (const attributePayload of attributes ?? []) {
         let attributeEntity: Attribute | null = null;
 
         if (attributePayload.id) {
@@ -1174,9 +1249,9 @@ export class ProductsService extends BaseService<Product> {
         }
       }
 
-      let totalStock = 0;
+      totalStock = 0;
 
-      for (const [index, variantPayload] of variants.entries()) {
+      for (const [index, variantPayload] of (variants ?? []).entries()) {
         const variantImage = variantImages.get(index);
 
         const variantEntity = variantRepo.create();
@@ -1197,7 +1272,7 @@ export class ProductsService extends BaseService<Product> {
         if (variantStock > 0) {
           const inventoryRecord = inventoryRepo.create({
             variantId: savedVariant.id,
-            branchId,
+            branchId: fallbackBranchId,
             stock: variantStock,
           });
 
@@ -1210,6 +1285,11 @@ export class ProductsService extends BaseService<Product> {
         totalStock += variantStock;
 
         for (const attributeRef of variantPayload.attributes) {
+          // Add logging here to debug lookups
+          this.logger.debug(
+            `Resolving attribute for variant: id=${attributeRef.attributeId}, name=${attributeRef.attributeName}`,
+          );
+
           const attributeEntity =
             (attributeRef.attributeId ? attributeById.get(attributeRef.attributeId) : undefined) ??
             (attributeRef.attributeName
@@ -1217,10 +1297,12 @@ export class ProductsService extends BaseService<Product> {
               : undefined);
 
           if (!attributeEntity) {
-            this.logger.warn(
-              `Attribute not found for variant during update: ${
-                attributeRef.attributeName ?? attributeRef.attributeId
-              }`,
+            this.logger.error(`Failed to resolve attribute: ${JSON.stringify(attributeRef)}`);
+            this.logger.debug(
+              `Available attributes (IDs): ${Array.from(attributeById.keys()).join(', ')}`,
+            );
+            this.logger.debug(
+              `Available attributes (Names): ${Array.from(attributeByName.keys()).join(', ')}`,
             );
             throw new BadRequestException(
               `Attribute not found for variant: ${
@@ -1246,7 +1328,6 @@ export class ProductsService extends BaseService<Product> {
               value: normalizedVariantValue,
               meta: {},
             });
-
             valueEntity = await attributeValueRepo.save(valueEntity);
             this.logger.debug(
               `Update created attribute value id=${valueEntity.id} for attributeId=${attributeEntity.id}`,

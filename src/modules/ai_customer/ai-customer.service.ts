@@ -9,7 +9,10 @@ import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { ProductsService, StylistCandidateProduct } from '../products/products.service';
 import { RatingsService } from '../ratings/ratings.service';
-import { PROACTIVE_STYLIST_SYSTEM_PROMPT } from './constants/prompts';
+import {
+  PRODUCT_COMPARISON_SYSTEM_PROMPT,
+  PROACTIVE_STYLIST_SYSTEM_PROMPT,
+} from './constants/prompts';
 import type {
   AiCustomerManifestResponse,
   GeminiStylistPlanOutfit,
@@ -207,8 +210,54 @@ export class AiCustomerService {
     return this.cartInsightsService.analyzeCart(payload);
   }
 
-  compareProducts(payload: ProductComparisonRequestDto): Promise<ProductComparisonResponse> {
-    return this.cartInsightsService.compareProducts(payload);
+  async compareProducts(payload: ProductComparisonRequestDto): Promise<ProductComparisonResponse> {
+    // 1. Get base comparison (data + feature matrix) from CartInsights
+    const baseResponse = await this.cartInsightsService.compareProducts(payload);
+
+    try {
+      // 2. Prepare payload for AI
+      const context = {
+        products: baseResponse.comparedProducts,
+        feature_matrix: baseResponse.featureMatrix,
+      };
+
+      const prompt = `Dữ liệu so sánh:\n${JSON.stringify(context, null, 2)}`;
+
+      // 3. Generate "Behavioral Verdict"
+      const text = await this.generateGeminiContent({
+        modelName: this.resolveModelName('GEMINI_PRODUCT_SUMMARY_MODEL'),
+        prompt,
+        systemInstruction: PRODUCT_COMPARISON_SYSTEM_PROMPT,
+        temperature: 0.4,
+        maxOutputTokens: 800,
+        responseMimeType: 'application/json',
+      });
+
+      // 4. Parse and merge
+      interface AiComparisonResult {
+        headline?: string;
+        summary?: string;
+        featureMatrix?: unknown[];
+      }
+
+      const aiResult = JSON.parse(text) as AiComparisonResult;
+
+      if (aiResult.headline) baseResponse.headline = aiResult.headline;
+      if (aiResult.summary) baseResponse.summary = aiResult.summary;
+      // Optional: Update matrix insights if AI provides better ones
+      if (Array.isArray(aiResult.featureMatrix)) {
+        // Simple merge strategy: If AI returns matrix items, try to match and update insights
+        // For now, we rely on the base matrix structure but trust the AI's "Insight" text if it matches
+      }
+
+      this.logger.debug(`[compareProducts] AI enrichment success: ${baseResponse.headline}`);
+    } catch (error) {
+      this.logger.warn(
+        `[compareProducts] AI enrichment failed, returning base response. Error: ${error}`,
+      );
+    }
+
+    return baseResponse;
   }
 
   async generateProductSummary(payload: {
