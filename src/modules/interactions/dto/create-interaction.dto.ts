@@ -17,13 +17,13 @@ import { InteractionType } from '../entities/interaction.entity';
 
 export class CreateInteractionDto {
   @ApiProperty({
-    description: 'ID biến thể sản phẩm',
+    description: 'ID sản phẩm',
     example: '2',
     required: true,
   })
   @IsInt()
   @IsNotEmpty()
-  idProductVariant: number;
+  idProduct: number;
 
   @ApiProperty({
     description: 'ID người dùng',

@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import axios, { AxiosError, AxiosInstance } from 'axios';
-import * as FormData from 'form-data';
+import FormData from 'form-data';
 import { createReadStream, existsSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
 import { BaseService } from 'src/common/services/base.service';

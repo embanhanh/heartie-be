@@ -8,6 +8,7 @@ import { seedUsers } from './modules/users.seed';
 import { seedProducts } from './modules/products.seed';
 import { seedCustomerGroups } from './modules/customer-groups.seed';
 import { seedCollections } from './modules/collections.seed';
+import { seedTikiProducts } from './modules/tiki-products.seed';
 import type { DataSource } from 'typeorm';
 
 const seedRegistry = {
@@ -19,6 +20,7 @@ const seedRegistry = {
   users: seedUsers,
   collections: seedCollections,
   products: seedProducts,
+  tikiProducts: seedTikiProducts,
   customerGroups: seedCustomerGroups,
 } satisfies Record<string, (dataSource: DataSource) => Promise<void>>;
 

@@ -774,26 +774,45 @@ export class GeminiService {
 
     const model = this.getEmbeddingModel(embeddingModelName);
 
-    try {
-      const response = await model.embedContent({
-        content: { role: 'user', parts: [{ text: trimmed }] },
-      });
+    const maxAttempts = 3;
+    let attempt = 0;
 
-      const values = response.embedding?.values;
-      if (!values || !values.length) {
-        this.logger.warn(`Gemini did not return embedding values for model ${embeddingModelName}`);
-        return [];
-      }
+    while (attempt < maxAttempts) {
+      attempt += 1;
+      try {
+        const response = await model.embedContent({
+          content: { role: 'user', parts: [{ text: trimmed }] },
+        });
 
-      return values;
-    } catch (error) {
-      const normalized = this.normalizeGeminiError(error);
-      this.logger.error('Gemini embedText error:', normalized.logMessage);
-      if (normalized.stack) {
-        this.logger.error(normalized.stack);
+        const values = response.embedding?.values;
+        if (!values || !values.length) {
+          this.logger.warn(
+            `Gemini did not return embedding values for model ${embeddingModelName}`,
+          );
+          return [];
+        }
+
+        return values;
+      } catch (error) {
+        const normalized = this.normalizeGeminiError(error);
+
+        if (!this.isRetryableGeminiError(error) || attempt >= maxAttempts) {
+          this.logger.error('Gemini embedText error:', normalized.logMessage);
+          if (normalized.stack) {
+            this.logger.error(normalized.stack);
+          }
+          throw new BadRequestException(normalized.clientMessage);
+        }
+
+        this.logger.warn(
+          `Gemini embedText attempt ${attempt} failed (${normalized.logMessage}); retrying...`,
+        );
+
+        await this.delay(this.getRetryDelay(attempt));
       }
-      throw new BadRequestException(normalized.clientMessage);
     }
+
+    throw new BadRequestException('Gemini embedText failed after retries');
   }
 
   private getEmbeddingModel(modelName: string): GenerativeModel {

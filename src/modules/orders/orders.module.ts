@@ -13,6 +13,7 @@ import { ProductVariant } from '../product_variants/entities/product_variant.ent
 import { Cart } from '../carts/entities/cart.entity';
 import { CartItem } from '../cart_items/entities/cart-item.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { MomoModule } from '../momo/momo.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     PricingModule,
     AddressesModule,
     NotificationsModule,
+    MomoModule,
   ],
   controllers: [OrdersController],
   providers: [OrdersService],

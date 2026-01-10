@@ -16,6 +16,7 @@ import { NumericTransformer } from 'src/common/transformers/numeric.transformer'
 
 export enum OrderStatus {
   PENDING = 'PENDING',
+  PENDING_PAYMENT = 'PENDING_PAYMENT',
   CONFIRMED = 'CONFIRMED',
   PROCESSING = 'PROCESSING',
   SHIPPED = 'SHIPPED',
@@ -33,6 +34,7 @@ export enum PaymentMethod {
   COD = 'cod',
   BANK = 'bank',
   STORE = 'store',
+  MOMO = 'momo',
 }
 
 @Entity({ name: 'orders' })

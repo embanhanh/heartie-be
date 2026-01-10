@@ -365,6 +365,8 @@ export class TrendForecastingService {
       [InteractionType.SEARCH]: 'Tìm kiếm',
       [InteractionType.FILTER]: 'Lọc',
       [InteractionType.COMPARE]: 'So sánh',
+      [InteractionType.RATING]: 'Đánh giá',
+      [InteractionType.PURCHASE]: 'Mua hàng',
     };
 
     return rows.map((row) => ({

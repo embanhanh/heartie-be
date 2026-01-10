@@ -7,8 +7,8 @@ import {
   CreateDateColumn,
   Index,
 } from 'typeorm';
-import { ProductVariant } from '../../product_variants/entities/product_variant.entity';
 import { User } from '../../users/entities/user.entity';
+import { Product } from 'src/modules/products/entities/product.entity';
 
 export enum InteractionType {
   VIEW = 'VIEW',
@@ -23,18 +23,20 @@ export enum InteractionType {
   SEARCH = 'SEARCH',
   FILTER = 'FILTER',
   COMPARE = 'COMPARE',
+  RATING = 'RATING',
+  PURCHASE = 'PURCHASE',
 }
 
 @Entity('interactions')
-@Index(['idProductVariant', 'idUser', 'type']) // Composite index for performance
-@Index(['idUser', 'createdAt']) // Index for user activity queries
-@Index(['type', 'createdAt']) // Index for analytics queries
+@Index(['idProduct', 'idUser', 'type'])
+@Index(['idUser', 'createdAt'])
+@Index(['type', 'createdAt'])
 export class Interaction {
   @PrimaryGeneratedColumn()
   id: number;
 
   @Column({ type: 'bigint' })
-  idProductVariant: number;
+  idProduct: number;
 
   @Column({ type: 'bigint' })
   idUser: number;
@@ -46,11 +48,8 @@ export class Interaction {
   })
   type: InteractionType;
 
-  @Column({ type: 'json', nullable: true })
-  metadata: any; // Additional data like search query, filter criteria, etc.
-
-  @Column({ type: 'varchar', length: 45, nullable: true })
-  ipAddress: string;
+  @Column({ type: 'int', nullable: true })
+  rating?: number;
 
   @Column({ type: 'text', nullable: true })
   userAgent: string;
@@ -62,11 +61,11 @@ export class Interaction {
   createdAt: Date;
 
   // Relationships
-  @ManyToOne(() => ProductVariant, (productVariant) => productVariant.id, {
+  @ManyToOne(() => Product, (product) => product.id, {
     onDelete: 'CASCADE',
   })
-  @JoinColumn({ name: 'idProductVariant' })
-  productVariant: ProductVariant;
+  @JoinColumn({ name: 'idProduct' })
+  product: Product;
 
   @ManyToOne(() => User, (user) => user.id, {
     onDelete: 'CASCADE',
