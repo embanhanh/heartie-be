@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { AddressesService } from './addresses.service';
 import { CreateAddressDto } from './dto/create-address.dto';
@@ -15,8 +25,8 @@ export class AddressesController {
   }
 
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query('userId') userId?: string) {
+    return this.service.findAll(userId ? Number(userId) : undefined);
   }
 
   @Get(':id')

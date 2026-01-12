@@ -48,6 +48,12 @@ export class Product {
   @Column({ type: 'int', default: 0 })
   stock: number;
 
+  @Column({ type: 'int', default: 0 })
+  viewCount: number;
+
+  @Column({ type: 'int', default: 0 })
+  soldCount: number;
+
   @Column({ type: 'varchar', length: 20, default: ProductStatus.ACTIVE })
   status: ProductStatus;
 
@@ -81,8 +87,18 @@ export class Product {
     type: 'vector' as unknown as ColumnType,
     nullable: true,
     transformer: VectorTransformer,
+    select: false,
   })
   embedding?: number[] | null;
+
+  @Column({
+    type: 'vector' as unknown as ColumnType,
+    nullable: true,
+    transformer: VectorTransformer,
+    name: 'visualEmbedding',
+    select: false,
+  })
+  visualEmbedding?: number[] | null;
 
   @Column({ type: 'float', default: 0 })
   rating: number;

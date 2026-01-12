@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { AdminGuard } from '../auth/guards/admin.guard';
@@ -15,12 +15,17 @@ import {
 } from './dto/admin-copilot-history.dto';
 import { Request } from 'express';
 
+import { AdminCopilotProactiveService } from './services/admin-copilot-proactive.service';
+
 @ApiTags('admin-copilot')
 @ApiBearerAuth()
 @UseGuards(AuthGuard('jwt'), AdminGuard)
 @Controller('admin/copilot')
 export class AdminCopilotController {
-  constructor(private readonly service: AdminCopilotService) {}
+  constructor(
+    private readonly service: AdminCopilotService,
+    private readonly proactiveService: AdminCopilotProactiveService,
+  ) {}
 
   @Post('chat')
   @ApiOperation({ summary: 'Trò chuyện với trợ lý AI dành cho admin Fashia' })
@@ -47,6 +52,14 @@ export class AdminCopilotController {
     return this.service.getHistory(user.id, query);
   }
 
+  @Delete('conversations/:conversationId/messages')
+  @ApiOperation({ summary: 'Xóa toàn bộ lịch sử tin nhắn của hội thoại' })
+  @ApiResponse({ status: 200, description: 'Lịch sử tin nhắn đã được xóa thành công' })
+  deleteHistory(@Param('conversationId') conversationId: number, @Req() req: Request) {
+    const user = req.user as { id: number };
+    return this.service.clearHistory(user.id, conversationId);
+  }
+
   @Get('revenue-overview')
   @ApiOperation({ summary: 'Tổng quan doanh thu và đơn hàng theo khoảng thời gian' })
   getRevenueOverview(@Query() query: AdminCopilotRevenueOverviewQueryDto, @Req() req: Request) {
@@ -66,5 +79,12 @@ export class AdminCopilotController {
   getStockAlerts(@Query() query: AdminCopilotStockAlertsQueryDto, @Req() req: Request) {
     const user = req.user as { id: number };
     return this.service.getStockAlerts(user.id, query);
+  }
+
+  @Get('morning-briefing')
+  @ApiOperation({ summary: 'Lấy báo cáo tóm tắt chủ động (Morning Briefing)' })
+  getMorningBriefing(@Req() req: Request) {
+    const user = req.user as { id: number };
+    return this.proactiveService.getMorningBriefing(user.id);
   }
 }

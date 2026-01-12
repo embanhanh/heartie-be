@@ -433,6 +433,66 @@ export class GeminiService {
     }
   }
 
+  /**
+   * Phân tích hình ảnh sản phẩm để trích xuất các từ khóa tìm kiếm liên quan đến thời trang.
+   */
+  async analyzeImageForSearch(file: { buffer: Buffer; mimetype: string }): Promise<string[]> {
+    const modelName = this.configService.get<string>('GEMINI_AI_MODEL') ?? 'gemini-2.5-flash';
+    const model = this.getModel(modelName, []); // Không cần tools cho việc phân tích ảnh này
+
+    const systemPrompt =
+      'Bạn là một chuyên gia thời trang. Hãy phân tích hình ảnh này và liệt kê các từ khóa (keywords) ' +
+      'mô tả sản phẩm trong ảnh để dùng cho việc tìm kiếm. ' +
+      'Các từ khóa nên bao gồm: loại trang phục, màu sắc, họa tiết, chất liệu, phong cách (nếu rõ). ' +
+      'Chỉ trả về danh sách các từ khóa, phân cách bằng dấu phẩy. ' +
+      'Ví dụ: "áo sơ mi trắng, cotton, tay dài, công sở". ' +
+      'Ngôn ngữ: Tiếng Việt.';
+
+    try {
+      const result = await model.generateContent({
+        systemInstruction: {
+          role: 'system',
+          parts: [{ text: systemPrompt }],
+        },
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                inlineData: {
+                  data: file.buffer.toString('base64'),
+                  mimeType: file.mimetype,
+                },
+              },
+              { text: 'Hãy liệt kê các từ khóa mô tả sản phẩm này.' },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.4,
+          topP: 0.8,
+          maxOutputTokens: 256,
+        },
+      });
+
+      const text = result.response.text();
+      if (!text) {
+        this.logger.warn('Gemini analyzeImageForSearch returned no text');
+        return [];
+      }
+
+      // Split by comma and clean up
+      return text
+        .split(/[,|;]/)
+        .map((k) => k.trim())
+        .filter((k) => k.length > 0);
+    } catch (error) {
+      const normalized = this.normalizeGeminiError(error);
+      this.logger.error('Gemini analyzeImageForSearch error:', normalized.logMessage);
+      throw new BadRequestException('Không thể phân tích hình ảnh này.');
+    }
+  }
+
   async generateStructuredContent(prompt: string, options?: GeminiChatOptions): Promise<string> {
     const trimmedPrompt = prompt?.trim();
     if (!trimmedPrompt) {
@@ -602,7 +662,10 @@ export class GeminiService {
       const text = result.response.text()?.trim();
 
       if (!text) {
-        throw new BadRequestException('Gemini did not return any content after function call');
+        this.logger.warn(
+          'Gemini did not return any content after function call. Returning default acknowledgement.',
+        );
+        return { text: 'Đã xử lý yêu cầu của bạn thành công.' };
       }
 
       return { text };

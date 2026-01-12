@@ -13,6 +13,7 @@ import {
 } from 'typeorm';
 import { Branch } from '../../branches/entities/branch.entity';
 import { NotificationToken } from '../../notifications/entities/notification-token.entity';
+import { Notification } from '../../notifications/entities/notification.entity';
 import { ConversationParticipant } from '../../conversation_participants/entities/conversation_participant.entity';
 import { UserCustomerGroup } from '../../user_customer_groups/entities/user-customer-group.entity';
 import { Category } from '../../categories/entities/category.entity';
@@ -97,6 +98,9 @@ export class User {
 
   @OneToMany(() => NotificationToken, (token) => token.user)
   notificationTokens: NotificationToken[];
+
+  @OneToMany(() => Notification, (notification) => notification.user)
+  notifications: Notification[];
 
   @ManyToOne(() => Branch, (branch) => branch.users, { onDelete: 'SET NULL' })
   @JoinColumn({ name: 'branchId' })

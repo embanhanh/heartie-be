@@ -16,6 +16,7 @@ export enum AdsAiStatus {
 export enum AdsAiPostType {
   LINK = 'link',
   PHOTO = 'photo',
+  CAROUSEL = 'carousel',
 }
 
 @Entity('ads_ai_campaigns')
@@ -44,7 +45,7 @@ export class AdsAiCampaign {
   @Column({ type: 'varchar', length: 255, nullable: true })
   callToAction: string | null;
 
-  @Column({ type: 'varchar', length: 10, default: AdsAiPostType.LINK })
+  @Column({ type: 'varchar', length: 20, default: AdsAiPostType.LINK })
   postType: AdsAiPostType;
 
   @Column({ type: 'varchar', length: 500, nullable: true })
@@ -67,6 +68,34 @@ export class AdsAiCampaign {
 
   @Column({ type: 'varchar', length: 500, nullable: true })
   image: string | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  images: string[] | null;
+
+  // Marketing Metrics
+  @Column({ type: 'int', default: 0 })
+  reach: number;
+
+  @Column({ type: 'int', default: 0 })
+  impressions: number;
+
+  @Column({ type: 'int', default: 0 })
+  engagement: number;
+
+  @Column({ type: 'int', default: 0 })
+  clicks: number;
+
+  @Column({ type: 'int', default: 0 })
+  conversions: number;
+
+  @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
+  spend: number;
+
+  @Column({ type: 'int', nullable: true })
+  rating: number | null;
+
+  @Column({ type: 'text', nullable: true })
+  notes: string | null;
 
   @Column({ type: 'varchar', length: 20, default: AdsAiStatus.DRAFT })
   status: AdsAiStatus;

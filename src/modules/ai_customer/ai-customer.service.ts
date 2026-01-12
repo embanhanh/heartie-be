@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { ProductsService, StylistCandidateProduct } from '../products/products.service';
+import { RatingsService } from '../ratings/ratings.service';
 import { PROACTIVE_STYLIST_SYSTEM_PROMPT } from './constants/prompts';
 import type {
   AiCustomerManifestResponse,
@@ -79,6 +80,7 @@ export class AiCustomerService {
     private readonly productsService: ProductsService,
     private readonly configService: ConfigService,
     private readonly cartInsightsService: CartInsightsService,
+    private readonly ratingsService: RatingsService,
   ) {}
 
   /**
@@ -249,23 +251,39 @@ export class AiCustomerService {
     productId: number;
     locale?: string;
   }): Promise<{ summary: string | null }> {
-    // collect reviews from productsService if available
-    try {
-      // Try to collect reviews if the productsService supports it.
-      let sample = '';
-      const svc = this.productsService as unknown as {
-        getReviewsForProduct?: (productId: number) => Promise<Array<{ text?: string }>>;
-      };
+    const start = Date.now();
+    this.logger.debug(`generateReviewsSummary: starting for product ${payload.productId}`);
 
-      if (typeof svc.getReviewsForProduct === 'function') {
-        const reviews = await svc.getReviewsForProduct(payload.productId);
-        if (Array.isArray(reviews) && reviews.length) {
+    try {
+      // Try to collect reviews using RatingsService
+      let sample = '';
+      try {
+        const reviewsResult = await this.ratingsService.findAll({
+          productId: payload.productId,
+          limit: 50, // Get enough for a summary
+          page: 1,
+          sorts: [],
+          filters: [],
+        });
+
+        const reviews = reviewsResult.data || [];
+
+        if (reviews.length > 0) {
           sample = reviews
-            .slice(0, 40)
-            .map((r) => (typeof r === 'object' && typeof r.text === 'string' ? r.text.trim() : ''))
+            .map((r) => (r.comment ? r.comment.trim() : ''))
             .filter((s) => s.length > 0)
             .join('\n');
+
+          this.logger.debug(
+            `generateReviewsSummary: fetched ${reviews.length} reviews from RatingsService (total ${reviewsResult.meta?.total}), sample (${sample.length} chars)`,
+          );
+        } else {
+          this.logger.debug(
+            `generateReviewsSummary: No reviews found for product ${payload.productId}`,
+          );
         }
+      } catch (err) {
+        this.logger.warn(`generateReviewsSummary: Failed to fetch ratings: ${err}`);
       }
 
       if (!sample) {
@@ -275,20 +293,39 @@ export class AiCustomerService {
         return { summary: null };
       }
 
+      // Safety truncation to avoid huge payloads if individual reviews are very long
+      if (sample.length > 30000) {
+        sample = sample.slice(0, 30000);
+        this.logger.debug(`generateReviewsSummary: truncated sample to 30000 chars`);
+      }
+
       const prompt = `Tóm tắt ngắn gọn các review sau: ${sample}\nHãy nhấn mạnh điểm mạnh/điểm yếu lặp lại và tóm tắt cảm nhận chung (2-3 câu). Chỉ trả về plain text.`;
 
       const text = await this.generateGeminiContent({
         modelName: this.resolveModelName('GEMINI_REVIEWS_MODEL'),
         prompt,
         temperature: 0.25,
-        maxOutputTokens: 300,
+        maxOutputTokens: 500, // Increased from 300
         retryAttempts: 2,
       });
 
+      const duration = Date.now() - start;
+      this.logger.log(
+        `generateReviewsSummary: success for ${payload.productId} in ${duration}ms. Summary length: ${text.length}`,
+      );
+
       return { summary: text.trim() };
     } catch (error) {
+      const duration = Date.now() - start;
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`generateReviewsSummary failed for ${payload.productId}: ${msg}`);
+      const stack = error instanceof Error ? error.stack : undefined;
+
+      this.logger.error(
+        `generateReviewsSummary failed for ${payload.productId} after ${duration}ms: ${msg}`,
+      );
+      if (stack) {
+        this.logger.error(stack);
+      }
       return { summary: null };
     }
   }

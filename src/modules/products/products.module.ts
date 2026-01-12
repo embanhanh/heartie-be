@@ -13,6 +13,9 @@ import { MulterModule } from '@nestjs/platform-express';
 import { createModuleMulterOptions } from 'src/common/utils/upload.util';
 import { SemanticSearchModule } from '../semantic_search/semantic-search.module';
 import { StatsModule } from '../stats/stats.module';
+import { GeminiModule } from '../gemini/gemini.module';
+import { VisionModule } from '../vision/vision.module';
+import { ImageSearchModule } from '../image_search/image-search.module';
 
 @Module({
   imports: [
@@ -28,6 +31,9 @@ import { StatsModule } from '../stats/stats.module';
     MulterModule.register(createModuleMulterOptions({ moduleName: 'products' })),
     SemanticSearchModule,
     StatsModule,
+    GeminiModule,
+    VisionModule,
+    ImageSearchModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService],

@@ -20,7 +20,8 @@ import { AdsAiService } from '../ads_ai/ads_ai.service';
 import { CreateAdsAiDto } from '../ads_ai/dto/create-ads-ai.dto';
 import { GenerateAdsAiDto } from '../ads_ai/dto/generate-ads-ai.dto';
 import { ScheduleAdsAiDto } from '../ads_ai/dto/schedule-ads-ai.dto';
-import { AdsAiCampaign } from '../ads_ai/entities/ads-ai-campaign.entity';
+import { AdsAiCampaign, AdsAiStatus } from '../ads_ai/entities/ads-ai-campaign.entity';
+import { AdsAiQueryDto } from '../ads_ai/dto/ads-ai-query.dto';
 import { GeneratedAdContent } from '../ads_ai/interfaces/generated-ad-content.interface';
 import { ConversationParticipant } from '../conversation_participants/entities/conversation_participant.entity';
 import { Conversation } from '../conversations/entities/conversation.entity';
@@ -32,6 +33,7 @@ import { MessageRole } from '../messages/enums/message.enums';
 import { OrderItem } from '../order_items/entities/order-item.entity';
 import { TrendGranularity } from '../trend_forecasting/dto/trend-forecast-query.dto';
 import { TrendForecastingService } from '../trend_forecasting/trend-forecasting.service';
+import { StatsService } from '../stats/stats.service';
 import { User } from '../users/entities/user.entity';
 import {
   ADMIN_COPILOT_DEFAULT_RANGE,
@@ -108,6 +110,7 @@ export class AdminCopilotService {
     private readonly participantRepository: Repository<ConversationParticipant>,
     @InjectRepository(Message)
     private readonly messageRepository: Repository<Message>,
+    private readonly statsService: StatsService,
   ) {}
 
   async chat(
@@ -133,9 +136,22 @@ export class AdminCopilotService {
     let geminiMessage = trimmedMessage;
 
     // HANDLE META
-    if (requestMeta) {
-      this.logger.debug(`Admin copilot request meta: ${JSON.stringify(requestMeta)}`);
-      geminiMessage += `\n[Metadata Context]: ${JSON.stringify(requestMeta)}`;
+    if (requestMeta && Object.keys(requestMeta).length > 0) {
+      const metaStr = JSON.stringify(requestMeta);
+      this.logger.debug(
+        `Admin copilot request meta: ${metaStr.length > 500 ? `${metaStr.slice(0, 500)}... (total ${metaStr.length})` : metaStr}`,
+      );
+
+      // Protect against extremely large metadata that could clog context
+      if (metaStr.length > 10000) {
+        this.logger.warn(
+          `Lớn hơn 10k bytes metadata phát hiện (size=${metaStr.length}). Chỉ gửi phím chính.`,
+        );
+        const keys = Object.keys(requestMeta).join(', ');
+        geminiMessage += `\n[Metadata Keys]: ${keys} (Data too large to include full JSON)`;
+      } else {
+        geminiMessage += `\n[Metadata Context]: ${metaStr}`;
+      }
     }
 
     const requestContext: AdminCopilotRequestContextOptions = {
@@ -198,6 +214,7 @@ export class AdminCopilotService {
         temperature: 0.1,
         tools,
         model: this.getAdminModelName(),
+        maxOutputTokens: 4096,
       });
     } catch (error) {
       // Chuẩn hoá lỗi Gemini "không trả về nội dung" thành lỗi nghiệp vụ dễ hiểu cho admin
@@ -264,6 +281,7 @@ export class AdminCopilotService {
           temperature: 0.1,
           tools,
           model: this.getAdminModelName(),
+          maxOutputTokens: 4096,
         },
       );
       reply = second.text ?? '';
@@ -352,6 +370,35 @@ export class AdminCopilotService {
     return this.computeRevenueOverview(params, context);
   }
 
+  async clearHistory(adminUserId: number, conversationId: number): Promise<void> {
+    this.logger.debug(
+      `Admin ${adminUserId} requesting to clear history for conversation ${conversationId}`,
+    );
+
+    const context = await this.ensureAdminConversation(adminUserId, {
+      conversationId: conversationId,
+    });
+
+    await this.messageRepository.delete({ conversationId: context.conversation.id });
+
+    context.conversation.lastMessageAt = null;
+    context.conversation.lastMessageId = null;
+
+    // Update metadata
+    const metadata = context.conversation.metadata || {};
+    context.conversation.metadata = {
+      ...metadata,
+      lastMessageId: null,
+      lastInteractionUserId: adminUserId,
+    };
+
+    await this.conversationRepository.save(context.conversation);
+
+    this.logger.log(
+      `Cleared message history for conversation ${conversationId} (admin ${adminUserId})`,
+    );
+  }
+
   async getHistory(
     adminUserId: number,
     query: AdminCopilotHistoryQueryDto,
@@ -428,7 +475,7 @@ export class AdminCopilotService {
     return this.computeStockAlerts(params, context);
   }
 
-  private async resolveAdminContext(adminUserId: number): Promise<AdminCopilotAdminContext> {
+  public async resolveAdminContext(adminUserId: number): Promise<AdminCopilotAdminContext> {
     const user = await this.userRepository.findOne({
       where: { id: adminUserId },
       relations: { branch: true },
@@ -569,17 +616,13 @@ export class AdminCopilotService {
       if (message.role === MessageRole.ASSISTANT) {
         return {
           role: GeminiChatRole.MODEL,
-          content: message.metadata
-            ? `${message.content ?? ''}\n[Metadata Context]: ${JSON.stringify(message.metadata)}`
-            : (message.content ?? ''),
+          content: message.content ?? '',
         } satisfies GeminiChatMessage;
       }
 
       return {
         role: GeminiChatRole.USER,
-        content: message.metadata
-          ? `${message.content ?? ''}\n[Metadata Context]: ${JSON.stringify(message.metadata)}`
-          : (message.content ?? ''),
+        content: message.content ?? '',
       } satisfies GeminiChatMessage;
     });
   }
@@ -786,6 +829,10 @@ export class AdminCopilotService {
           context,
           lang,
         );
+      case 'get_ads_performance':
+        return this.handleAdsPerformance((args ?? {}) as Record<string, unknown>, context);
+      case 'get_ad_details':
+        return this.handleAdDetails((args ?? {}) as Record<string, unknown>, context);
       default: {
         this.logger.warn(`Unknown admin copilot tool: ${name}`);
         const errorMessage =
@@ -818,6 +865,22 @@ export class AdminCopilotService {
     const granularity = this.resolveGranularity(params.granularity, config.granularity);
     const forecastPeriods = parsePositiveInt(params.forecastPeriods, 1, 1, 12) ?? 1;
 
+    // 1. Resolve exact date range for StatsService (matching Dashboard logic)
+    const now = new Date();
+    const periodEnd = new Date(now);
+    periodEnd.setHours(23, 59, 59, 999);
+
+    const periodStart = subtractDays(now, config.days - 1);
+    periodStart.setHours(0, 0, 0, 0);
+
+    // 2. Fetch standard aggregates from StatsService (The source of truth for Dashboard)
+    const statsOverview = await this.statsService.getOverview({
+      from: periodStart,
+      to: periodEnd,
+      branchId: context.branchId ?? undefined,
+    });
+
+    // 3. Fetch Trend Forecasting results (for narrative and expected forecast point)
     const forecast = await this.trendForecastingService.getSalesForecast({
       granularity,
       lookbackMonths: config.lookbackMonths,
@@ -825,40 +888,22 @@ export class AdminCopilotService {
       branchId: context.branchId ?? undefined,
     });
 
-    const rangeStart = subtractDays(new Date(), config.days);
-    const filteredSeries = forecast.timeSeries.filter((point) => {
-      const periodDate = new Date(point.period);
-      return Number.isFinite(periodDate.getTime()) && periodDate >= rangeStart;
-    });
-
-    const totals = filteredSeries.reduce(
-      (acc, point) => {
-        acc.revenue += point.revenue;
-        acc.orders += point.orderCount;
-        acc.units += point.unitsSold;
-        return acc;
-      },
-      { revenue: 0, orders: 0, units: 0 },
-    );
-
-    const averageOrderValue = totals.orders > 0 ? totals.revenue / totals.orders : 0;
-
     this.logger.debug(
-      `Revenue overview computed (range=${range}, granularity=${granularity}, orders=${totals.orders}, revenue=${totals.revenue.toFixed(0)}, scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+      `Revenue overview computed via StatsService (range=${range}, days=${config.days}, revenue=${statsOverview.revenue.value}, scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
     );
 
     return {
       range,
       granularity,
-      periodStart: filteredSeries[0]?.period ?? forecast.timeSeries[0]?.period ?? null,
-      periodEnd:
-        filteredSeries[filteredSeries.length - 1]?.period ??
-        forecast.timeSeries.at(-1)?.period ??
-        null,
-      totalRevenue: totals.revenue,
-      totalOrders: totals.orders,
-      totalUnits: totals.units,
-      averageOrderValue,
+      periodStart: periodStart.toISOString(),
+      periodEnd: periodEnd.toISOString(),
+      totalRevenue: statsOverview.revenue.value,
+      totalOrders: statsOverview.orders.value,
+      totalUnits: 0, // StatsOverview (getOverview) doesn't provide unitsSold total directly, but we can usually omit if 0
+      averageOrderValue:
+        statsOverview.orders.value > 0
+          ? statsOverview.revenue.value / statsOverview.orders.value
+          : 0,
       forecast: forecast.forecast[0] ?? null,
       summary: forecast.summary,
     };
@@ -1225,6 +1270,34 @@ export class AdminCopilotService {
         throw new Error('Thiếu advertisementId để lên lịch.');
       }
 
+      const confirmReschedule = Boolean(rawArgs.confirmReschedule);
+
+      // Check current status
+      const existingAd = await this.adsAiService.findOne(advertisementId);
+      if (!existingAd) {
+        throw new Error(`Không tìm thấy chiến dịch #${advertisementId}`);
+      }
+
+      if (
+        (existingAd.status === AdsAiStatus.SCHEDULED ||
+          existingAd.status === AdsAiStatus.PUBLISHED) &&
+        !confirmReschedule
+      ) {
+        return {
+          functionResponse: {
+            name: 'schedule_post_campaign',
+            response: {
+              content: {
+                confirmationRequired: true,
+                message: `Chiến dịch #${advertisementId} đang ở trạng thái ${existingAd.status}. Bạn có chắc chắn muốn đặt lại lịch không?`,
+                currentStatus: existingAd.status,
+                scheduledAt: existingAd.scheduledAt,
+              },
+            },
+          },
+        };
+      }
+
       const scheduledAtInput =
         normalizeScheduleIso(rawArgs.scheduledAt) ?? normalizeScheduleIso(rawArgs.schedule);
 
@@ -1284,6 +1357,100 @@ export class AdminCopilotService {
         },
       };
     }
+  }
+
+  private async handleAdsPerformance(
+    rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+  ): Promise<FunctionResponsePart> {
+    this.logger.debug(
+      `Handling ads performance tool with payload ${JSON.stringify(rawArgs)} (scope=${context.isGlobalAdmin ? 'global' : `branch ${context.branchId}`})`,
+    );
+    const limit = parsePositiveInt(rawArgs.limit, 5, 1, 20) ?? 5;
+    const search = normalizeString(rawArgs.search);
+    const statusStr = normalizeString(rawArgs.status);
+
+    const query = new AdsAiQueryDto();
+    query.limit = limit;
+    query.search = search;
+    if (statusStr && Object.values(AdsAiStatus).includes(statusStr as AdsAiStatus)) {
+      query.status = statusStr as AdsAiStatus;
+    }
+
+    const result = await this.adsAiService.findAll(query);
+
+    const campaigns = result.data.map((campaign) => ({
+      id: campaign.id,
+      name: campaign.name,
+      status: campaign.status,
+      postType: campaign.postType,
+      publishedAt: campaign.publishedAt,
+      metrics: {
+        reach: campaign.reach,
+        impressions: campaign.impressions,
+        engagement: campaign.engagement,
+        clicks: campaign.clicks,
+        conversions: campaign.conversions,
+        spend: campaign.spend,
+        roi: campaign.spend > 0 ? (campaign.conversions * 50000) / campaign.spend : 0,
+      },
+    }));
+
+    return {
+      functionResponse: {
+        name: 'get_ads_performance',
+        response: {
+          content: { campaigns },
+        },
+      },
+    };
+  }
+
+  private async handleAdDetails(
+    rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+  ): Promise<FunctionResponsePart> {
+    this.logger.debug(
+      `Handling ad details tool for ID ${String(rawArgs.id)} (admin=${context.adminUserId})`,
+    );
+    const id = parsePositiveInt(rawArgs.id, undefined, 1);
+    if (!id) {
+      return {
+        functionResponse: {
+          name: 'get_ad_details',
+          response: { content: { error: 'Thiếu ID bài viết.' } },
+        },
+      };
+    }
+
+    const campaign = await this.adsAiService.findOne(id);
+    if (!campaign) {
+      return {
+        functionResponse: {
+          name: 'get_ad_details',
+          response: { content: { error: `Không tìm thấy bài viết với ID ${id}` } },
+        },
+      };
+    }
+
+    return {
+      functionResponse: {
+        name: 'get_ad_details',
+        response: {
+          content: {
+            details: this.buildAdsAiCampaignResponse(campaign),
+            metrics: {
+              reach: campaign.reach,
+              impressions: campaign.impressions,
+              engagement: campaign.engagement,
+              clicks: campaign.clicks,
+              conversions: campaign.conversions,
+              spend: campaign.spend,
+            },
+          },
+        },
+      },
+    };
   }
 
   private extractFinalizeCampaignInput(source: Record<string, unknown>): Record<string, unknown> {
@@ -1406,6 +1573,16 @@ export class AdminCopilotService {
     }
     if (prompt) {
       dtoInput.prompt = prompt;
+    }
+
+    const images = normalizeStringArray(raw['images']);
+    if (images && images.length > 0) {
+      dtoInput.images = images;
+    } else {
+      const imagesFromMeta = this.resolveImagesFromMeta(options.requestMeta);
+      if (imagesFromMeta && imagesFromMeta.length > 0) {
+        dtoInput.images = imagesFromMeta;
+      }
     }
 
     const dto = plainToInstance(CreateAdsAiDto, dtoInput, {
@@ -1963,6 +2140,37 @@ export class AdminCopilotService {
       productId: directId ?? nestedId,
       productName: productName ?? undefined,
     };
+  }
+
+  private resolveImagesFromMeta(meta?: Record<string, unknown>): string[] | undefined {
+    if (!meta || typeof meta !== 'object') {
+      return undefined;
+    }
+
+    // Check for direct array of strings
+    if (Array.isArray(meta['images'])) {
+      return normalizeStringArray(meta['images']);
+    }
+
+    // Check for array of objects (e.g. { url: '...' })
+    if (Array.isArray(meta['images'])) {
+      const raw = meta['images'] as unknown[];
+      const extracted = raw
+        .map((item) => {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object') {
+            return (item as Record<string, unknown>).url as string;
+          }
+          return null;
+        })
+        .filter(Boolean);
+      return normalizeStringArray(extracted);
+    }
+
+    // Check for 'images' inside 'image' or other common patterns if needed
+    // But usually 'images' key at top level is expected for multiple selections.
+
+    return undefined;
   }
 
   private resolveImageFromMeta(meta?: Record<string, unknown>): string | undefined {

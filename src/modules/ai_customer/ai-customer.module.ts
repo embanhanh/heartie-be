@@ -7,9 +7,10 @@ import { AiCustomerController } from './ai-customer.controller';
 import { AiCustomerService } from './ai-customer.service';
 import { CartInsightsService } from './services/cart-insights.service';
 import { CartProductContextFactory } from './services/cart-product-context.factory';
+import { RatingsModule } from '../ratings/ratings.module';
 
 @Module({
-  imports: [ProductsModule, PricingModule, TypeOrmModule.forFeature([Promotion])],
+  imports: [ProductsModule, PricingModule, RatingsModule, TypeOrmModule.forFeature([Promotion])],
   controllers: [AiCustomerController],
   providers: [AiCustomerService, CartInsightsService, CartProductContextFactory],
   exports: [AiCustomerService],

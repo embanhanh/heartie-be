@@ -34,6 +34,7 @@ import { CollectionsModule } from './modules/collections/collections.module';
 import { CollectionProductsModule } from './modules/collection_products/collection_products.module';
 import { GeminiModule } from './modules/gemini/gemini.module';
 import { InteractionsModule } from './modules/interactions/interactions.module';
+import { ImageSearchModule } from './modules/image_search/image-search.module';
 import { MessagesModule } from './modules/messages/messages.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrderItemsModule } from './modules/order_items/order_items.module';
@@ -55,6 +56,7 @@ import { UploadModule } from './modules/upload/upload.module';
 import { UserCustomerGroupsModule } from './modules/user_customer_groups/user_customer_groups.module';
 import { UsersModule } from './modules/users/users.module';
 import { VariantAttributeValuesModule } from './modules/variant_attribute_values/variant_attribute_values.module';
+import { VisionModule } from './modules/vision/vision.module';
 import { VoucherUserDetailsModule } from './modules/voucher_user_details/voucher_user_details.module';
 import { VouchersModule } from './modules/vouchers/vouchers.module';
 import { MomoModule } from './modules/momo/momo.module';
@@ -152,6 +154,8 @@ const BullModuleTyped = BullModule as unknown as {
     AdminCopilotModule,
     AiCustomerModule,
     NotificationsModule,
+    VisionModule,
+    ImageSearchModule,
     UploadModule,
     MomoModule,
   ],

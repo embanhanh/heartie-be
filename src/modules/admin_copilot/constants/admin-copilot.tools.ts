@@ -176,9 +176,10 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
           // - Khi gọi tool:
           //   + Nếu metadata có productId/product/productName thì hãy map sang các field productId, productName tương ứng.
           //   + Nếu metadata có imageUrl hoặc image.url thì HÃY ĐIỀN vào field "image" để Ads AI biết asset sẽ dùng.
-          'Lưu bài viết đã chốt vào Ads AI để quản lý và theo dõi, sử dụng toàn bộ nội dung đã đồng ý. ' +
-          'Dùng khi admin yêu cầu “tạo mẫu/lưu mẫu” dựa trên nội dung đã trao đổi (ví dụ: chốt caption, thêm hình ảnh vừa gửi). ' +
-          'Nếu metadata của tin nhắn có productId/productName hoặc imageUrl/image.url thì hãy map sang các field productId, productName và image tương ứng.',
+          'Lưu bài viết đã chốt vào Ads AI để quản lý và theo dõi. ' +
+          'NẾU người dùng yêu cầu "lưu và lên lịch" hoặc cung cấp thời gian đăng (ví dụ: "lưu bài này và đăng lúc 9h tối"), ' +
+          'HÃY ĐIỀN thời gian vào field "scheduledAt" trong campaign để hệ thống vừa lưu vừa lên lịch luôn. ' +
+          'Nếu metadata của tin nhắn có productId/productName, imageUrl/image.url hoặc images (danh sách ảnh) thì hãy map sang các field tương ứng (productId, productName, image, images).',
         parameters: {
           type: SchemaType.OBJECT,
           properties: {
@@ -212,11 +213,12 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
                 },
                 callToAction: {
                   type: SchemaType.STRING,
-                  description: 'CTA sẽ sử dụng trong bài viết.',
+                  description:
+                    'Nhãn nút CTA (ngắn gọn, VD: Mua ngay). TUYỆT ĐỐI KHÔNG điền "Lưu ý" hay câu văn dài.',
                 },
                 ctaUrl: {
                   type: SchemaType.STRING,
-                  description: 'Đường dẫn gắn với CTA.',
+                  description: 'Đường dẫn liên kết cho nút CTA. Nếu không có link thì để trống.',
                 },
                 primaryText: {
                   type: SchemaType.STRING,
@@ -246,12 +248,18 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
                 postType: {
                   type: SchemaType.STRING,
                   format: 'enum',
-                  enum: ['link', 'photo'],
-                  description: 'Định dạng bài đăng, ví dụ link hoặc photo.',
+                  enum: ['link', 'photo', 'carousel'],
+                  description:
+                    'Loại bài đăng: "link" (kèm ảnh nền), "photo" (ảnh đơn), hoặc "carousel" (nhiều ảnh).',
                 },
                 image: {
                   type: SchemaType.STRING,
                   description: 'Đường dẫn asset đã có sẵn, nếu cần.',
+                },
+                images: {
+                  type: SchemaType.ARRAY,
+                  items: { type: SchemaType.STRING },
+                  description: 'Danh sách ảnh cho bài Carousel.',
                 },
               },
               required: ['name', 'primaryText'],
@@ -261,11 +269,58 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
         },
       },
       {
-        name: 'schedule_post_campaign',
-        description: 'Lên lịch đăng chiến dịch đã lưu trong Ads AI theo thời điểm đã chốt.',
+        name: 'get_ads_performance',
+        description:
+          'Lấy báo cáo hiệu suất của các chiến dịch quảng cáo gần đây (Reach, Clicks, Conversions, Spend, ROI...).',
         parameters: {
           type: SchemaType.OBJECT,
           properties: {
+            limit: {
+              type: SchemaType.NUMBER,
+              description: 'Số lượng chiến dịch cần lấy báo cáo, mặc định 5.',
+            },
+            status: {
+              type: SchemaType.STRING,
+              description: 'Lọc bài viết theo trạng thái (ví dụ: PUBLISHED, DRAFT).',
+            },
+            search: {
+              type: SchemaType.STRING,
+              description: 'Từ khóa tìm kiếm theo tên bài viết hoặc sản phẩm.',
+            },
+          },
+        },
+      },
+      {
+        name: 'get_ad_details',
+        description: 'Lấy thông tin chi tiết đầy đủ của một bài viết/chiến dịch quảng cáo theo ID.',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            id: {
+              type: SchemaType.NUMBER,
+              description: 'ID của bài viết cần xem chi tiết.',
+            },
+          },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'schedule_post_campaign',
+        description:
+          // Vietnamese:
+          // - Tool này chỉ dùng để lên lịch cho các bài ĐÃ CÓ trong hệ thống (đã được lưu trước đó).
+          // - KHÔNG dùng tool này ngay sau khi gọi finalize_post_campaign nếu có thể gộp scheduledAt vào finalize_post_campaign.
+          // - CHÚ Ý: Nếu bài viết đã được lên lịch hoặc đã đăng, tool sẽ yêu cầu xác nhận.
+          //   Chatbot cần hỏi người dùng "Bài viết này đã được lên lịch/đăng rồi, bạn có chắc chắn muốn đặt lại lịch không?" trước khi gọi tool với confirmReschedule=true.
+          'Lên lịch đăng cho một chiến dịch đã tồn tại trong Ads AI. Chỉ dùng khi bài viết đã được lưu trước đó.',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            confirmReschedule: {
+              type: SchemaType.BOOLEAN,
+              description:
+                'Set = true nếu người dùng đã xác nhận muốn đè lịch cũ (khi bài đang ở trạng thái SCHEDULED/PUBLISHED).',
+            },
             advertisementId: {
               type: SchemaType.NUMBER,
               description: 'ID chiến dịch Ads AI cần lên lịch.',
