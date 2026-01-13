@@ -22,6 +22,7 @@ import {
 } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { Request } from 'express';
+import { UserRole } from '../users/entities/user.entity';
 
 @ApiTags('Messages')
 @ApiBearerAuth()
@@ -54,7 +55,7 @@ export class MessagesController {
   @ApiResponse({ status: 404, description: 'Không tìm thấy hội thoại' })
   async create(@Body() dto: CreateMessageDto, @Req() req: Request) {
     const user = req.user as { id: number };
-    return this.messagesService.create(dto, user.id);
+    return this.messagesService.create(dto, { id: user.id, role: UserRole.CUSTOMER });
   }
 
   @Get()

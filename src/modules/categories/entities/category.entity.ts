@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   Entity,
   JoinColumn,
+  ManyToMany,
   ManyToOne,
   OneToMany,
   PrimaryGeneratedColumn,
@@ -12,6 +13,7 @@ import {
 } from 'typeorm';
 import slugify from 'slugify';
 import { Product } from '../../products/entities/product.entity';
+import { User } from 'src/modules/users/entities/user.entity';
 
 @Entity('categories')
 export class Category {
@@ -37,6 +39,9 @@ export class Category {
   @OneToMany(() => Category, (category) => category.parent)
   children: Category[];
 
+  @ManyToMany(() => User, (user) => user.preferredCategories)
+  users: User[];
+
   @OneToMany(() => Product, (product) => product.category)
   products: Product[];
 
@@ -59,8 +64,10 @@ export class Category {
       strict: true,
     });
 
-    if (this.parentId) {
-      this.slug = `${baseSlug}-${this.parentId}`;
+    // Note: For BeforeInsert, this.id is not yet available
+    // The id-based slug for child categories needs to be set after first save
+    if (this.parentId && this.id) {
+      this.slug = `${baseSlug}-${this.id}`;
       return;
     }
 

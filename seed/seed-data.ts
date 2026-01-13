@@ -10,6 +10,7 @@ import { seedCustomerGroups } from './modules/customer-groups.seed';
 import { seedCollections } from './modules/collections.seed';
 import { seedDemoData } from './modules/demo-data.seed';
 import { seedAdsAiMetrics } from './modules/ads-ai-metrics.seed';
+import { seedTikiProducts } from './modules/tiki-products.seed';
 import type { DataSource } from 'typeorm';
 
 const seedRegistry = {
@@ -21,6 +22,7 @@ const seedRegistry = {
   users: seedUsers,
   collections: seedCollections,
   products: seedProducts,
+  tikiProducts: seedTikiProducts,
   customerGroups: seedCustomerGroups,
   demoData: seedDemoData,
   adsAiMetrics: seedAdsAiMetrics,

@@ -3,6 +3,7 @@
 /node_modules
 /build
 /uploads
+/seed/data
 
 # Logs
 logs

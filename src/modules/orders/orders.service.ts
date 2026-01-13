@@ -34,6 +34,7 @@ import {
 import { BaseService } from '../../common/services/base.service';
 import { SortParam } from '../../common/dto/pagination.dto';
 import { OrdersQueryDto } from './dto/orders-query.dto';
+import { MomoService } from '../momo/momo.service';
 
 interface AutoGiftLine {
   variant: ProductVariant;
@@ -43,6 +44,11 @@ interface AutoGiftLine {
 interface RequestUserContext {
   id: number;
   role: UserRole;
+}
+
+export interface CreateOrderResult {
+  order: Order;
+  payUrl: string | null;
 }
 
 @Injectable()
@@ -89,11 +95,12 @@ export class OrdersService extends BaseService<Order> {
     private readonly addressesService: AddressesService,
     private readonly pricingService: PricingService,
     private readonly notificationsService: NotificationsService,
+    private readonly momoService: MomoService,
   ) {
     super(repo, 'order');
   }
 
-  async create(dto: CreateOrderDto, userId?: number) {
+  async create(dto: CreateOrderDto, userId?: number): Promise<CreateOrderResult> {
     const resolvedAddressId = await this.resolveAddressId({
       providedAddressId: dto.addressId,
       addressPayload: dto.address,
@@ -119,6 +126,13 @@ export class OrdersService extends BaseService<Order> {
     const autoGiftLines = await this.resolveAutoGiftLines(pricing);
     const giftTotals = this.calculateGiftTotals(autoGiftLines);
 
+    // Determine initial status based on payment method
+    const isMomoPayment: boolean = Boolean(dto.paymentMethod === PaymentMethod.MOMO);
+    let initialStatus: OrderStatus = OrderStatus.PENDING;
+    if (isMomoPayment) {
+      initialStatus = OrderStatus.PENDING_PAYMENT;
+    }
+
     const entity = this.repo.create({
       userId: userId ?? null,
       branchId: dto.branchId ?? null,
@@ -130,7 +144,7 @@ export class OrdersService extends BaseService<Order> {
       paidAt: dto.paidAt,
       deliveredAt: dto.deliveredAt,
       cancelledAt: dto.cancelledAt,
-      status: dto.status ?? OrderStatus.PENDING,
+      status: initialStatus,
       orderNumber: this.generateOrderNumber(),
       subTotal: this.roundMoney(pricing.totals.subTotal + giftTotals.subTotal),
       discountTotal: this.roundMoney(pricing.totals.discountTotal + giftTotals.discountTotal),
@@ -153,6 +167,17 @@ export class OrdersService extends BaseService<Order> {
       totalAmount: savedOrder.totalAmount,
       userId: savedOrder.userId,
     });
+
+    let payUrl: string | null = null;
+
+    if (isMomoPayment) {
+      const momoResult = await this.momoService.createPayment(
+        savedOrder.id,
+        savedOrder.orderNumber,
+        savedOrder.totalAmount,
+      );
+      payUrl = momoResult.payUrl;
+    }
 
     // return this.findOne(savedOrder.id);
     const fullOrder = await this.repo.findOne({
@@ -177,10 +202,10 @@ export class OrdersService extends BaseService<Order> {
         `Created Order ID: ${savedOrder.id}, Address Email: ${fullOrder.address?.email}`,
       );
       await this.notificationsService.notifyUserOrderCreated(fullOrder);
-      return fullOrder;
+      return { order: fullOrder, payUrl };
     }
 
-    return this.findOne(savedOrder.id);
+    return { order: savedOrder, payUrl };
   }
 
   // Get order status by order number and user ID
@@ -232,12 +257,30 @@ export class OrdersService extends BaseService<Order> {
   // Request to cancel an order
   async requestCancellation(
     orderNumber: string,
-    userId: number,
+    requester?: RequestUserContext,
   ): Promise<{ orderNumber: string; status: OrderStatus; message: string }> {
-    const order = await this.repo.findOne({ where: { orderNumber, user: { id: userId } } });
+    const order = await this.repo.findOne({ where: { orderNumber, user: { id: requester?.id } } });
 
     if (!order) {
-      throw new NotFoundException(`Order with number ${orderNumber} not found for user ${userId}`);
+      throw new NotFoundException(
+        `Order with number ${orderNumber} not found for user ${requester?.id}`,
+      );
+    }
+
+    if (requester?.role === UserRole.CUSTOMER) {
+      if (order.userId !== requester.id) {
+        throw new ForbiddenException('Customers can only manage their own orders.');
+      }
+      if (order.status !== OrderStatus.PENDING) {
+        if (order.status === OrderStatus.CANCELLED) {
+          return {
+            orderNumber: order.orderNumber ?? '',
+            status: order.status,
+            message: 'Order is already cancelled',
+          };
+        }
+        throw new BadRequestException('Customers can only cancel pending orders');
+      }
     }
 
     if (order.status === OrderStatus.CANCELLED) {
@@ -247,6 +290,7 @@ export class OrdersService extends BaseService<Order> {
         message: 'Order is already cancelled',
       };
     }
+
     order.status = OrderStatus.CANCELLED;
     await this.repo.save(order);
 
@@ -312,6 +356,9 @@ export class OrdersService extends BaseService<Order> {
   }
 
   async findOne(id: number, requester?: RequestUserContext) {
+    if (!id) {
+      throw new BadRequestException('Invalid order ID');
+    }
     const order = await this.repo.findOne({
       where: { id },
       relations: this.orderRelations,
@@ -337,6 +384,19 @@ export class OrdersService extends BaseService<Order> {
     }
 
     this.ensureCustomerOwnership(existing, requester);
+
+    if (requester?.role === UserRole.CUSTOMER) {
+      if (dto.status && dto.status !== existing.status) {
+        throw new ForbiddenException('Customers cannot change order status');
+      }
+      if (
+        existing.status === OrderStatus.CANCELLED ||
+        existing.status === OrderStatus.DELIVERED ||
+        existing.status === OrderStatus.SHIPPED
+      ) {
+        throw new BadRequestException('Cannot update order in current status');
+      }
+    }
 
     const { items, promotionCode, address, ...rest } = dto;
     type MutableOrderFields = Partial<Omit<CreateOrderDto, 'items' | 'promotionCode' | 'address'>>;

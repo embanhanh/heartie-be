@@ -558,6 +558,7 @@ export class NotificationsService {
   private buildStatusMessage(status: OrderStatus): string {
     const mapping: Record<OrderStatus, string> = {
       [OrderStatus.PENDING]: 'Đơn hàng của bạn đang chờ xác nhận.',
+      [OrderStatus.PENDING_PAYMENT]: 'Đơn hàng của bạn đang chờ thanh toán.',
       [OrderStatus.CONFIRMED]: 'Đơn hàng của bạn đã được xác nhận.',
       [OrderStatus.PROCESSING]: 'Đơn hàng của bạn đang được xử lý.',
       [OrderStatus.SHIPPED]: 'Đơn hàng của bạn đã được giao cho đơn vị vận chuyển.',

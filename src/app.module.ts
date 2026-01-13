@@ -51,8 +51,6 @@ import { RatingsModule } from './modules/ratings/ratings.module';
 import { ReviewAnalysisModule } from './modules/review_analysis/review-analysis.module';
 import { SemanticSearchModule } from './modules/semantic_search/semantic-search.module';
 import { StatsModule } from './modules/stats/stats.module';
-import { StoreInventoriesModule } from './modules/store_inventories/store_inventories.module';
-import { StoresModule } from './modules/stores/stores.module';
 import { TrendForecastingModule } from './modules/trend_forecasting/trend-forecasting.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { UserCustomerGroupsModule } from './modules/user_customer_groups/user_customer_groups.module';
@@ -62,6 +60,7 @@ import { VisionModule } from './modules/vision/vision.module';
 import { VoucherUserDetailsModule } from './modules/voucher_user_details/voucher_user_details.module';
 import { VouchersModule } from './modules/vouchers/vouchers.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
+import { MomoModule } from './modules/momo/momo.module';
 
 const BullModuleTyped = BullModule as unknown as {
   forRootAsync: (config: SharedBullAsyncConfiguration) => DynamicModule;
@@ -137,8 +136,6 @@ const BullModuleTyped = BullModule as unknown as {
     CustomerGroupsModule,
     UserCustomerGroupsModule,
     RatingsModule,
-    StoreInventoriesModule,
-    StoresModule,
     VoucherUserDetailsModule,
     VouchersModule,
     AdsAiModule,
@@ -162,6 +159,7 @@ const BullModuleTyped = BullModule as unknown as {
     ImageSearchModule,
     UploadModule,
     FavoritesModule,
+    MomoModule,
   ],
   controllers: [AppController],
   providers: [AppService],

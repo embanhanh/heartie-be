@@ -21,12 +21,18 @@ import { FunctionCall, FunctionResponsePart } from '@google/generative-ai';
 import { OrdersService } from '../orders/orders.service';
 import { ProductsService } from '../products/products.service';
 import { OrderStatus } from '../orders/entities/order.entity';
+import { UserRole } from '../users/entities/user.entity';
 // import { ProductQueryDto } from '../products/dto/product-query.dto';
 
 interface OrderListItem {
   orderNumber: string;
   status: OrderStatus;
   createdAt: Date;
+}
+
+export interface RequestUserContext {
+  id: number;
+  role: UserRole;
 }
 
 @Injectable()
@@ -62,8 +68,11 @@ export class MessagesService {
    * Gửi tin nhắn của USER và lấy phản hồi từ Gemini (có thể kèm function call).
    * Toàn bộ trong 1 transaction để đảm bảo tính toàn vẹn.
    */
-  async create(dto: CreateMessageDto, currentUserId: number, opts?: { correlationId?: string }) {
-    if (!currentUserId) throw new ForbiddenException('Missing currentUserId');
+  async create(
+    dto: CreateMessageDto,
+    requestUserContext: RequestUserContext,
+    opts?: { correlationId?: string },
+  ) {
     const logPrefix = `[convo:${dto.conversationId}]${opts?.correlationId ? `[cid:${opts.correlationId}]` : ''}`;
 
     return this.dataSource.transaction(async (trx) => {
@@ -88,7 +97,7 @@ export class MessagesService {
 
       // 1.1) Ownership/participation check (IDOR guard) — không cần load participants
       const isParticipant = await partRepo.exist({
-        where: { conversationId: conversation.id, userId: currentUserId },
+        where: { conversationId: conversation.id, userId: requestUserContext.id },
       });
       if (!isParticipant) {
         throw new ForbiddenException('You are not allowed to send message in this conversation');
@@ -106,7 +115,7 @@ export class MessagesService {
 
       // 1.3) Lấy cấu hình participant (model, name...)
       const participant = await partRepo.findOne({
-        where: { conversationId: conversation.id, userId: currentUserId },
+        where: { conversationId: conversation.id, userId: requestUserContext.id },
       });
 
       // 2) Lấy lịch sử tối thiểu (chọn cột cần thiết)
@@ -148,7 +157,7 @@ export class MessagesService {
           this.logger.log(`${logPrefix} Executing tool: ${call.name}`);
 
           // 5b) Thực thi tool (KHÔNG lưu vào DB, chỉ trong memory)
-          const toolResult = await this.executeTool(call, currentUserId, logPrefix);
+          const toolResult = await this.executeTool(call, requestUserContext, logPrefix);
 
           // 5c) Tạo history tạm cho Gemini call thứ 2 (KHÔNG lưu DB)
           const tempHistory: GeminiChatMessage[] = [
@@ -305,7 +314,7 @@ export class MessagesService {
 
   private async executeTool(
     functionCall: FunctionCall,
-    currentUserId: number, // vẫn truyền để các tool khác check quyền
+    requestUserContext: RequestUserContext,
     logPrefix: string,
   ): Promise<FunctionResponsePart> {
     const { name, args } = functionCall;
@@ -319,7 +328,7 @@ export class MessagesService {
         case 'track_order': {
           const { orderNumber } = (args ?? {}) as { orderNumber?: string };
           if (!orderNumber) throw new BadRequestException('orderNumber is required');
-          result = await this.ordersService.getOrderStatus(orderNumber, currentUserId);
+          result = await this.ordersService.getOrderStatus(orderNumber, requestUserContext.id);
           break;
         }
 
@@ -332,7 +341,10 @@ export class MessagesService {
           };
           if (!input?.orderNumber) throw new BadRequestException('orderNumber is required');
           // tuỳ nghiệp vụ: xác thực items/reason...
-          result = await this.ordersService.requestCancellation(input.orderNumber, currentUserId);
+          result = await this.ordersService.requestCancellation(
+            input.orderNumber,
+            requestUserContext,
+          );
           break;
         }
 
@@ -345,14 +357,14 @@ export class MessagesService {
           };
 
           // Luôn dùng currentUserId - không cần user_id từ Gemini
-          this.logger.log(`${logPrefix} get_list_orders for user_id=${currentUserId}`);
+          this.logger.log(`${logPrefix} get_list_orders for user_id=${requestUserContext.id}`);
 
           // Lấy limit từ args, mặc định 10
           const limit = Number.isFinite(input.limit) && input.limit! > 0 ? input.limit! : 10;
 
           // Gọi service để lấy danh sách đơn hàng
           let result: OrderListItem[] = await this.ordersService.listRecentOrders(
-            currentUserId,
+            requestUserContext.id,
             limit,
           );
 
@@ -361,7 +373,9 @@ export class MessagesService {
             result = result.filter((order) => input.status!.includes(order.status));
           }
 
-          this.logger.log(`${logPrefix} Found ${result.length} orders for user ${currentUserId}`);
+          this.logger.log(
+            `${logPrefix} Found ${result.length} orders for user ${requestUserContext.id}`,
+          );
           break;
         }
 
@@ -400,7 +414,10 @@ export class MessagesService {
           this.logger.log(`${logPrefix} get_order_detail for order: ${input.orderNumber}`);
 
           // Gọi service để lấy chi tiết đơn hàng
-          result = await this.ordersService.getOrderDetails(input.orderNumber, currentUserId);
+          result = await this.ordersService.getOrderDetails(
+            input.orderNumber,
+            requestUserContext.id,
+          );
 
           this.logger.log(`${logPrefix} Retrieved order detail for ${input.orderNumber}`);
           break;
