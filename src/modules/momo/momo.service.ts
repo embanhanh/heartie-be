@@ -1,4 +1,5 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import axios from 'axios';
@@ -39,15 +40,27 @@ export class MomoService {
   constructor(
     @InjectRepository(Order)
     private readonly orderRepo: Repository<Order>,
+    private readonly configService: ConfigService,
   ) {
-    // TODO: Move to environment variables for production
     this.config = {
-      accessKey: 'F8BBA842ECF85',
-      secretKey: 'K951B6PE1waDMi640xX08PD3vg6EkVlz',
-      partnerCode: 'MOMO',
-      redirectUrl: 'http://localhost:3000/vi/cart/order-success',
-      ipnUrl: 'https://darcie-brashiest-erroneously.ngrok-free.dev/momo/ipn',
-      apiEndpoint: 'https://test-payment.momo.vn/v2/gateway/api/create',
+      accessKey: this.configService.get<string>('MOMO_ACCESS_KEY', 'F8BBA842ECF85'),
+      secretKey: this.configService.get<string>(
+        'MOMO_SECRET_KEY',
+        'K951B6PE1waDMi640xX08PD3vg6EkVlz',
+      ),
+      partnerCode: this.configService.get<string>('MOMO_PARTNER_CODE', 'MOMO'),
+      redirectUrl: this.configService.get<string>(
+        'MOMO_REDIRECT_URL',
+        'http://localhost:3000/vi/cart/order-success',
+      ),
+      ipnUrl: this.configService.get<string>(
+        'MOMO_IPN_URL',
+        'https://darcie-brashiest-erroneously.ngrok-free.dev/momo/ipn',
+      ),
+      apiEndpoint: this.configService.get<string>(
+        'MOMO_API_ENDPOINT',
+        'https://test-payment.momo.vn/v2/gateway/api/create',
+      ),
     };
   }
 
