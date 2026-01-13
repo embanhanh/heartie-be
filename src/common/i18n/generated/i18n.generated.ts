@@ -71,6 +71,8 @@ export type I18nTranslations = {
             "invalidPayload": string;
             "missingField": string;
             "invalidFormat": string;
+            "toxicContent": string;
+            "spamContent": string;
         };
         "adminCopilot": {
             "messageEmpty": string;

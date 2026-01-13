@@ -679,8 +679,8 @@ export class GeminiService {
   async analyzeProductReview(
     params: AnalyzeProductReviewParams,
   ): Promise<AnalyzeProductReviewResult> {
-    const modelName = this.configService.get<string>('GEMINI_REVIEW_MODEL') ?? 'gemini-1.5-pro';
-    const model = this.getModel(modelName);
+    const modelName = this.configService.get<string>('GEMINI_REVIEW_MODEL') ?? 'gemini-2.5-flash';
+    const model = this.getModel(modelName, []); // No tools for JSON response
 
     const systemPrompt =
       'Bạn là chuyên gia phân tích đánh giá (review) cho thương hiệu thời trang Fashia. ' +

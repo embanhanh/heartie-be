@@ -36,4 +36,22 @@ export class CreateRatingDto {
   @Length(0, 1000, { message: 'Comment must not exceed 1000 characters' })
   @IsOptional()
   comment?: string;
+
+  @ApiProperty({
+    description: 'Danh sách URL hình ảnh',
+    required: false,
+    type: [String],
+  })
+  @IsOptional()
+  @IsString({ each: true })
+  images?: string[];
+
+  @ApiProperty({
+    description: 'Danh sách URL video',
+    required: false,
+    type: [String],
+  })
+  @IsOptional()
+  @IsString({ each: true })
+  videos?: string[];
 }

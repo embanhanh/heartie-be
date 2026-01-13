@@ -8,6 +8,7 @@ import {
   Req,
   Query,
   ParseIntPipe,
+  Delete,
 } from '@nestjs/common';
 import { RatingsService } from './ratings.service';
 import { CreateRatingDto } from './dto/create-rating.dto';
@@ -43,8 +44,9 @@ export class RatingsController {
   //   return this.service.update(+id, dto);
   // }
 
-  // @Delete(':id')
-  // remove(@Param('id') id: number) {
-  //   return this.service.remove(+id);
-  // }
+  @Delete(':id')
+  @UseGuards(AuthGuard('jwt'))
+  remove(@Param('id') id: number) {
+    return this.service.remove(+id);
+  }
 }

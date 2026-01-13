@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
+import { RatingsModule } from '../ratings/ratings.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
 import { ReviewAnalysisService } from './review-analysis.service';
@@ -7,7 +8,7 @@ import { Rating } from '../ratings/entities/rating.entity';
 import { REVIEW_ANALYSIS_QUEUE } from './review-analysis.constants';
 import { ReviewAnalysisProcessor } from './review-analysis.processor';
 import { ReviewInsightsController } from './review-insights.controller';
-import { GeminiModule } from '../gemini/gemini.module';
+
 import { AuthModule } from '../auth/auth.module';
 
 @Module({
@@ -16,8 +17,9 @@ import { AuthModule } from '../auth/auth.module';
     BullModule.registerQueue({
       name: REVIEW_ANALYSIS_QUEUE,
     }),
-    GeminiModule,
+
     AuthModule,
+    forwardRef(() => RatingsModule),
   ],
   providers: [ReviewAnalysisService, ReviewAnalysisProcessor],
   controllers: [ReviewInsightsController],

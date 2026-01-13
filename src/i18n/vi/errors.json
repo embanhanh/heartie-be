@@ -10,7 +10,9 @@
   "validation": {
     "invalidPayload": "Dữ liệu gửi lên không hợp lệ.",
     "missingField": "Thiếu trường bắt buộc.",
-    "invalidFormat": "Định dạng giá trị không hợp lệ."
+    "invalidFormat": "Định dạng giá trị không hợp lệ.",
+    "toxicContent": "Nội dung đánh giá chứa ngôn từ không phù hợp. Vui lòng chỉnh sửa lại.",
+    "spamContent": "Nội dung đánh giá có vẻ như là spam. Vui lòng kiểm tra lại."
   },
   "adminCopilot": {
     "messageEmpty": "Tin nhắn không được để trống.",

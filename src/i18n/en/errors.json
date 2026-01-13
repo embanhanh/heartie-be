@@ -10,7 +10,9 @@
   "validation": {
     "invalidPayload": "The payload is invalid.",
     "missingField": "A required field is missing.",
-    "invalidFormat": "The value format is invalid."
+    "invalidFormat": "The value format is invalid.",
+    "toxicContent": "Review content contains inappropriate language.",
+    "spamContent": "Review content appears to be spam."
   },
   "adminCopilot": {
     "messageEmpty": "Message cannot be empty.",
