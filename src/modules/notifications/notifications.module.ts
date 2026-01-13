@@ -5,9 +5,10 @@ import { NotificationToken } from './entities/notification-token.entity';
 import { Notification } from './entities/notification.entity';
 import { ConfigModule } from '@nestjs/config';
 import { NotificationsController } from './notifications.controller';
+import { EmailModule } from '../email/email.module';
 
 @Module({
-  imports: [ConfigModule, TypeOrmModule.forFeature([NotificationToken, Notification])],
+  imports: [ConfigModule, TypeOrmModule.forFeature([NotificationToken, Notification]), EmailModule],
   controllers: [NotificationsController],
   providers: [NotificationsService],
   exports: [NotificationsService],

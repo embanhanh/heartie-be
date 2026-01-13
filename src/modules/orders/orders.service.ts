@@ -55,6 +55,10 @@ export class OrdersService extends BaseService<Order> {
     items: {
       variant: {
         product: true,
+        attributeValues: {
+          attribute: true,
+          attributeValue: true,
+        },
       },
     },
   };
@@ -149,6 +153,32 @@ export class OrdersService extends BaseService<Order> {
       totalAmount: savedOrder.totalAmount,
       userId: savedOrder.userId,
     });
+
+    // return this.findOne(savedOrder.id);
+    const fullOrder = await this.repo.findOne({
+      where: { id: savedOrder.id },
+      relations: {
+        user: true,
+        address: true,
+        items: {
+          variant: {
+            product: true,
+            attributeValues: {
+              attribute: true,
+              attributeValue: true,
+            },
+          },
+        },
+      },
+    });
+
+    if (fullOrder) {
+      this.logger.log(
+        `Created Order ID: ${savedOrder.id}, Address Email: ${fullOrder.address?.email}`,
+      );
+      await this.notificationsService.notifyUserOrderCreated(fullOrder);
+      return fullOrder;
+    }
 
     return this.findOne(savedOrder.id);
   }
@@ -368,34 +398,44 @@ export class OrdersService extends BaseService<Order> {
       await this.orderItemRepo.delete({ orderId: saved.id });
       await this.saveOrderItems(saved.id, pricing, autoGiftLines);
 
+      const updatedOrder = await this.findOne(saved.id, requester);
+
       const userId = saved.userId;
       if (statusChanged && typeof userId === 'number') {
-        await this.notifyUserOrderStatusChanged({
+        await this.notifyUserOrderStatusChanged(
+          {
+            userId,
+            orderId: saved.id,
+            orderNumber: saved.orderNumber ?? '',
+            status: saved.status,
+            totalAmount: saved.totalAmount,
+          },
+          updatedOrder,
+        );
+      }
+
+      return updatedOrder;
+    }
+
+    const saved = await this.repo.save(merged);
+
+    const updatedOrder = await this.findOne(saved.id, requester);
+
+    const userId = saved.userId;
+    if (statusChanged && typeof userId === 'number') {
+      await this.notifyUserOrderStatusChanged(
+        {
           userId,
           orderId: saved.id,
           orderNumber: saved.orderNumber ?? '',
           status: saved.status,
           totalAmount: saved.totalAmount,
-        });
-      }
-
-      return this.findOne(saved.id, requester);
+        },
+        updatedOrder,
+      );
     }
 
-    const saved = await this.repo.save(merged);
-
-    const userId = saved.userId;
-    if (statusChanged && typeof userId === 'number') {
-      await this.notifyUserOrderStatusChanged({
-        userId,
-        orderId: saved.id,
-        orderNumber: saved.orderNumber ?? '',
-        status: saved.status,
-        totalAmount: saved.totalAmount,
-      });
-    }
-
-    return this.findOne(saved.id, requester);
+    return updatedOrder;
   }
 
   async remove(id: number) {
@@ -723,9 +763,9 @@ export class OrdersService extends BaseService<Order> {
     }
   }
 
-  private async notifyUserOrderStatusChanged(payload: OrderStatusChangedPayload) {
+  private async notifyUserOrderStatusChanged(payload: OrderStatusChangedPayload, order?: Order) {
     try {
-      await this.notificationsService.notifyUserOrderStatusChanged(payload);
+      await this.notificationsService.notifyUserOrderStatusChanged(payload, order);
     } catch (error: unknown) {
       this.logNotificationError(error, 'notify user order status updated');
     }

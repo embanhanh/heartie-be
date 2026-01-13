@@ -14,6 +14,7 @@ import { NotificationToken } from '../../notifications/entities/notification-tok
 import { Notification } from '../../notifications/entities/notification.entity';
 import { ConversationParticipant } from '../../conversation_participants/entities/conversation_participant.entity';
 import { UserCustomerGroup } from '../../user_customer_groups/entities/user-customer-group.entity';
+import { Favorite } from '../../favorites/entities/favorite.entity';
 
 export enum UserRole {
   CUSTOMER = 'CUSTOMER',
@@ -84,6 +85,9 @@ export class User {
     (userCustomerGroup: UserCustomerGroup) => userCustomerGroup.user,
   )
   userCustomerGroups: UserCustomerGroup[];
+
+  @OneToMany(() => Favorite, (favorite) => favorite.user)
+  favorites: Favorite[];
 
   @CreateDateColumn({ type: 'timestamp with time zone' })
   createdAt: Date;

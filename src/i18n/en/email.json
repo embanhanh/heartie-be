@@ -1,0 +1,25 @@
+{
+  "order_confirmation": "Order Confirmation",
+  "order_status_update": "Order Status Update",
+  "hello": "Hello",
+  "thank_you_order": "Thank you for your order! Your order has been received.",
+  "order_id": "Order ID",
+  "order_date": "Order Date",
+  "total_amount": "Total Amount",
+  "order_details": "Order Details",
+  "view_order": "View Order Details",
+  "product": "Product",
+  "quantity": "Qty",
+  "price": "Price",
+  "status": {
+    "PENDING": "Your order is pending confirmation.",
+    "CONFIRMED": "Your order has been confirmed.",
+    "PROCESSING": "Your order is being processed.",
+    "SHIPPED": "Your order has been shipped.",
+    "DELIVERED": "Your order has been delivered.",
+    "CANCELLED": "Your order has been cancelled.",
+    "RETURNED": "Your order has been returned.",
+    "UNKNOWN": "Your order status has been updated."
+  },
+  "view_in_browser": "View in Browser"
+}
