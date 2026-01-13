@@ -1,0 +1,25 @@
+{
+  "order_confirmation": "Xác nhận đơn hàng",
+  "order_status_update": "Cập nhật trạng thái đơn hàng",
+  "hello": "Xin chào",
+  "thank_you_order": "Cảm ơn bạn đã đặt hàng! Đơn hàng của bạn đã được tiếp nhận.",
+  "order_id": "Mã đơn hàng",
+  "order_date": "Ngày đặt",
+  "total_amount": "Tổng tiền",
+  "order_details": "Chi tiết đơn hàng",
+  "view_order": "Xem chi tiết đơn hàng",
+  "product": "Sản phẩm",
+  "quantity": "SL",
+  "price": "Thành tiền",
+  "status": {
+    "PENDING": "Đơn hàng của bạn đang chờ xác nhận.",
+    "CONFIRMED": "Đơn hàng của bạn đã được xác nhận.",
+    "PROCESSING": "Đơn hàng của bạn đang được xử lý.",
+    "SHIPPED": "Đơn hàng của bạn đã được giao cho đơn vị vận chuyển.",
+    "DELIVERED": "Đơn hàng của bạn đã được giao thành công.",
+    "CANCELLED": "Đơn hàng của bạn đã bị hủy.",
+    "RETURNED": "Đơn hàng của bạn đã được hoàn trả.",
+    "UNKNOWN": "Trạng thái đơn hàng của bạn đã thay đổi."
+  },
+  "view_in_browser": "Xem trên trình duyệt"
+}

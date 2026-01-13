@@ -16,7 +16,8 @@ import { Notification } from './entities/notification.entity';
 import { RegisterNotificationTokenDto } from './dto/register-notification-token.dto';
 import { UserRole } from '../users/entities/user.entity';
 import { FirebaseConfig } from '../../config/firebase.config';
-import { OrderStatus } from '../orders/entities/order.entity';
+import { OrderStatus, Order } from '../orders/entities/order.entity';
+import { EmailService } from '../email/email.service';
 
 export interface OrderCreatedAdminPayload {
   orderId: number;
@@ -63,9 +64,42 @@ export class NotificationsService {
     @InjectRepository(Notification)
     private readonly notificationRepo: Repository<Notification>,
     private readonly configService: ConfigService,
+    private readonly emailService: EmailService,
   ) {
     this.firebaseConfig = this.configService.get<FirebaseConfig>('firebase') ?? {};
     this.initializeFirebaseMessaging();
+  }
+
+  async notifyUserOrderCreated(order: Order): Promise<void> {
+    // Send Email
+    await this.emailService.sendOrderCreated(order);
+
+    // Send Push Notification
+    if (order.userId) {
+      const title = `Đặt hàng thành công`;
+      const body = `Cảm ơn bạn đã đặt hàng! Đơn hàng ${order.orderNumber} của bạn đã được tiếp nhận.`;
+
+      await this.createNotification(order.userId, title, body, {
+        type: 'order_created_user',
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        totalAmount: order.totalAmount,
+        link: `/orders/${order.id}`,
+        icon: DEFAULT_WEB_ICON,
+      });
+
+      const tokens = await this.getUserTokens(order.userId);
+      await this.dispatchNotification({
+        tokens,
+        notification: { title, body },
+        data: {
+          type: 'order_created_user',
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          link: `/orders/${order.id}`,
+        },
+      });
+    }
   }
 
   async registerToken(
@@ -245,7 +279,13 @@ export class NotificationsService {
 
   async notifyUserOrderStatusChanged(
     payload: OrderStatusChangedPayload,
+    order?: Order,
   ): Promise<NotificationDispatchResult> {
+    // Send Email if order object is provided
+    if (order) {
+      await this.emailService.sendOrderStatusChanged(order);
+    }
+
     // Persist notification
     await this.createNotification(
       payload.userId,

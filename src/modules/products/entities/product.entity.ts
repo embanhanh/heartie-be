@@ -16,6 +16,7 @@ import { ProductAttribute } from '../../product_attributes/entities/product-attr
 import { Rating } from 'src/modules/ratings/entities/rating.entity';
 import { VectorTransformer } from 'src/common/transformers/vector.transformer';
 import { CollectionProduct } from '../../collection_products/entities/collection-product.entity';
+import { Favorite } from '../../favorites/entities/favorite.entity';
 
 export enum ProductStatus {
   ACTIVE = 'active',
@@ -82,6 +83,9 @@ export class Product {
 
   @OneToMany(() => CollectionProduct, (collectionProduct) => collectionProduct.product)
   collectionProducts: CollectionProduct[];
+
+  @OneToMany(() => Favorite, (favorite) => favorite.product)
+  favorites: Favorite[];
 
   @Column({
     type: 'vector' as unknown as ColumnType,

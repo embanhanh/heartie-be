@@ -58,6 +58,31 @@ export type I18nTranslations = {
             "deleted": string;
         };
     };
+    "email": {
+        "order_confirmation": string;
+        "order_status_update": string;
+        "hello": string;
+        "thank_you_order": string;
+        "order_id": string;
+        "order_date": string;
+        "total_amount": string;
+        "order_details": string;
+        "view_order": string;
+        "product": string;
+        "quantity": string;
+        "price": string;
+        "status": {
+            "PENDING": string;
+            "CONFIRMED": string;
+            "PROCESSING": string;
+            "SHIPPED": string;
+            "DELIVERED": string;
+            "CANCELLED": string;
+            "RETURNED": string;
+            "UNKNOWN": string;
+        };
+        "view_in_browser": string;
+    };
     "errors": {
         "common": {
             "badRequest": string;

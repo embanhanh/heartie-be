@@ -61,6 +61,7 @@ import { VariantAttributeValuesModule } from './modules/variant_attribute_values
 import { VisionModule } from './modules/vision/vision.module';
 import { VoucherUserDetailsModule } from './modules/voucher_user_details/voucher_user_details.module';
 import { VouchersModule } from './modules/vouchers/vouchers.module';
+import { FavoritesModule } from './modules/favorites/favorites.module';
 
 const BullModuleTyped = BullModule as unknown as {
   forRootAsync: (config: SharedBullAsyncConfiguration) => DynamicModule;
@@ -160,6 +161,7 @@ const BullModuleTyped = BullModule as unknown as {
     VisionModule,
     ImageSearchModule,
     UploadModule,
+    FavoritesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
