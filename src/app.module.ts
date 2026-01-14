@@ -98,6 +98,15 @@ const BullModuleTyped = BullModule as unknown as {
         database: configService.get<string>('DB_DATABASE'),
         entities: [__dirname + '/../**/*.entity{.ts,.js}'],
         synchronize: true, // Chỉ dùng trong development, tự động tạo table.
+        ssl: configService.get<string>('DB_SSL') === 'true',
+        extra:
+          configService.get<string>('DB_SSL') === 'true'
+            ? {
+                ssl: {
+                  rejectUnauthorized: false,
+                },
+              }
+            : undefined,
       }),
       dataSourceFactory: async (options?: DataSourceOptions) => {
         if (!options) {
