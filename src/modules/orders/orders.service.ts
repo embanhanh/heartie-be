@@ -35,6 +35,7 @@ import { BaseService } from '../../common/services/base.service';
 import { SortParam } from '../../common/dto/pagination.dto';
 import { OrdersQueryDto } from './dto/orders-query.dto';
 import { MomoService } from '../momo/momo.service';
+import { UserCustomerGroupsService } from '../user_customer_groups/user_customer_groups.service';
 
 interface AutoGiftLine {
   variant: ProductVariant;
@@ -96,6 +97,7 @@ export class OrdersService extends BaseService<Order> {
     private readonly pricingService: PricingService,
     private readonly notificationsService: NotificationsService,
     private readonly momoService: MomoService,
+    private readonly userCustomerGroupsService: UserCustomerGroupsService,
   ) {
     super(repo, 'order');
   }
@@ -474,6 +476,12 @@ export class OrdersService extends BaseService<Order> {
         );
       }
 
+      if (statusChanged && saved.status === OrderStatus.DELIVERED && typeof userId === 'number') {
+        this.checkAndUpgradeCustomerRank(userId).catch((err) =>
+          this.logger.error(`Failed to upgrade customer rank for user ${userId}`, err),
+        );
+      }
+
       return updatedOrder;
     }
 
@@ -492,6 +500,12 @@ export class OrdersService extends BaseService<Order> {
           totalAmount: saved.totalAmount,
         },
         updatedOrder,
+      );
+    }
+
+    if (statusChanged && saved.status === OrderStatus.DELIVERED && typeof userId === 'number') {
+      this.checkAndUpgradeCustomerRank(userId).catch((err) =>
+        this.logger.error(`Failed to upgrade customer rank for user ${userId}`, err),
       );
     }
 
@@ -740,6 +754,56 @@ export class OrdersService extends BaseService<Order> {
 
   private roundMoney(value: number): number {
     return Math.round((value + Number.EPSILON) * 100) / 100;
+  }
+
+  private async checkAndUpgradeCustomerRank(userId: number) {
+    if (!userId) return;
+
+    // Calculate total completed orders
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const result = await this.repo
+      .createQueryBuilder('order')
+      .where('order.userId = :userId', { userId })
+      .andWhere('order.status = :status', { status: OrderStatus.DELIVERED }) // Using DELIVERED as criterion
+      .select('COUNT(order.id)', 'count')
+      .addSelect('SUM(order.totalAmount)', 'total')
+      .getRawOne();
+
+    const stats = result as { count?: string; total?: string };
+
+    const orderCount = parseInt(stats.count || '0', 10);
+    const totalSpent = parseFloat(stats.total || '0');
+
+    let targetRank = 'Khách hàng mới';
+
+    // Check criteria (Higher rank overrides lower logic, so check highest first)
+    if (totalSpent > 50000000) {
+      targetRank = 'Khách hàng VIP';
+    } else if (totalSpent > 10000000 || orderCount >= 10) {
+      targetRank = 'Khách hàng thân thiết';
+    } else if (totalSpent > 1000000 || orderCount >= 2) {
+      targetRank = 'Khách hàng tiềm năng';
+    }
+
+    // Rank hierarchy
+    const ranks = [
+      'Khách hàng mới',
+      'Khách hàng tiềm năng',
+      'Khách hàng thân thiết',
+      'Khách hàng VIP',
+    ];
+    const targetIndex = ranks.indexOf(targetRank);
+
+    const currentGroup = await this.userCustomerGroupsService.getCurrentRank(userId);
+    const currentIndex = currentGroup ? ranks.indexOf(currentGroup.name) : -1;
+
+    // Only update if target rank is higher than current rank
+    if (targetIndex > currentIndex) {
+      this.logger.log(
+        `Upgrading user ${userId} to rank ${targetRank} (Orders: ${orderCount}, Spent: ${totalSpent})`,
+      );
+      await this.userCustomerGroupsService.assignRank(userId, targetRank);
+    }
   }
 
   private async validateRelations(payload: {

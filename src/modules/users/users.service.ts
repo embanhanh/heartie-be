@@ -18,12 +18,15 @@ import { PaginatedResult, SortParam } from '../../common/dto/pagination.dto';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
 import { UploadService } from '../upload/upload.service';
 
+import { UserCustomerGroupsService } from '../user_customer_groups/user_customer_groups.service';
+
 @Injectable()
 export class UsersService extends BaseService<User> {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly uploadService: UploadService,
+    private readonly userCustomerGroupsService: UserCustomerGroupsService,
   ) {
     super(userRepository, 'user');
   }
@@ -113,6 +116,16 @@ export class UsersService extends BaseService<User> {
     });
 
     const savedUser = await this.userRepository.save(newUser);
+
+    // Assign default rank 'Khách hàng mới'
+    if (savedUser.role === UserRole.CUSTOMER) {
+      await this.userCustomerGroupsService
+        .assignRank(savedUser.id, 'Khách hàng mới')
+        .catch((err) => {
+          console.warn(`Failed to assign default rank to user ${savedUser.id}:`, err);
+        });
+    }
+
     const safeUser = this.sanitizeUser(savedUser);
     if (!safeUser) {
       throw new Error('Không thể khởi tạo người dùng mới');
