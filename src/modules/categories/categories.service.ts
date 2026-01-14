@@ -1,26 +1,30 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
-import { promises as fs } from 'fs';
-import { join } from 'path';
 import { Category } from './entities/category.entity';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
-import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
+import { UploadService } from '../upload/upload.service';
 
 @Injectable()
 export class CategoriesService {
   constructor(
     @InjectRepository(Category)
     private repo: Repository<Category>,
+    private readonly uploadService: UploadService,
   ) {}
 
   async create(dto: CreateCategoryDto, file?: UploadedFile) {
     await this.ensureValidParent(dto.parentId);
 
-    const imagePath =
-      resolveModuleUploadPath('categories', file) ?? this.normalizeImageInput(dto.image) ?? null;
+    let imagePath: string | null = null;
+    if (file) {
+      const uploadResult = await this.uploadService.uploadSingle(file, 'categories');
+      imagePath = uploadResult.url;
+    } else {
+      imagePath = this.normalizeImageInput(dto.image) ?? null;
+    }
 
     const category = this.repo.create({
       name: dto.name,
@@ -76,11 +80,10 @@ export class CategoriesService {
     const normalizedImageInput = this.normalizeImageInput(dto.image);
 
     if (file) {
-      await this.deleteImageIfExists(category.image);
-      category.image = resolveModuleUploadPath('categories', file) ?? null;
+      const uploadResult = await this.uploadService.uploadSingle(file, 'categories');
+      category.image = uploadResult.url;
     } else if (normalizedImageInput !== undefined) {
       if (normalizedImageInput === null) {
-        await this.deleteImageIfExists(category.image);
         category.image = null;
       } else {
         category.image = normalizedImageInput;
@@ -99,8 +102,6 @@ export class CategoriesService {
       throw new NotFoundException(`Category not found: ${id}`);
     }
 
-    await this.deleteImageIfExists(category.image);
-
     await this.repo.remove(category);
 
     return { id };
@@ -115,26 +116,6 @@ export class CategoriesService {
 
     if (!exists) {
       throw new BadRequestException(`Parent category not found: ${parentId}`);
-    }
-  }
-
-  private async deleteImageIfExists(image?: string | null) {
-    if (!image) {
-      return;
-    }
-
-    const normalized = image.replace(/^upload\//, 'uploads/');
-
-    if (!normalized.startsWith('uploads/')) {
-      return;
-    }
-
-    const absolutePath = join(process.cwd(), normalized);
-
-    try {
-      await fs.unlink(absolutePath);
-    } catch {
-      // ignore if file does not exist
     }
   }
 
@@ -153,8 +134,6 @@ export class CategoriesService {
       return null;
     }
 
-    const normalized = trimmed.replace(/^upload\//, 'uploads/');
-
-    return normalized;
+    return trimmed;
   }
 }

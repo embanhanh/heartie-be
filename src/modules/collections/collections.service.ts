@@ -10,13 +10,14 @@ import { CollectionsQueryDto } from './dto/collections-query.dto';
 import { PaginatedResult, SortParam } from '../../common/dto/pagination.dto';
 import { normalizeString } from '../../common/utils/data-normalization.util';
 import { UploadedFile } from '../../common/types/uploaded-file.type';
-import { resolveModuleUploadPath } from '../../common/utils/upload.util';
+import { UploadService } from '../upload/upload.service';
 
 @Injectable()
 export class CollectionsService extends BaseService<Collection> {
   constructor(
     @InjectRepository(Collection)
     private readonly collectionRepository: Repository<Collection>,
+    private readonly uploadService: UploadService,
   ) {
     super(collectionRepository, 'collection');
   }
@@ -31,11 +32,19 @@ export class CollectionsService extends BaseService<Collection> {
   async create(dto: CreateCollectionDto, imageFile?: UploadedFile): Promise<Collection> {
     const slug = await this.generateSlugOrFail(dto.name);
 
+    let imagePath: string | null = null;
+    if (imageFile) {
+      const result = await this.uploadService.uploadSingle(imageFile, 'collections');
+      imagePath = result.url;
+    } else {
+      imagePath = dto.imageUrl ?? null;
+    }
+
     const entity = this.collectionRepository.create({
       name: dto.name.trim(),
       slug,
       description: this.normalizeNullableString(dto.description),
-      image: this.resolveImagePath(imageFile, dto.imageUrl),
+      image: imagePath,
       status: dto.status ?? CollectionStatus.ACTIVE,
     });
 
@@ -107,7 +116,15 @@ export class CollectionsService extends BaseService<Collection> {
       slug = await this.generateSlugOrFail(nextName, id);
     }
 
-    const requestedImageUrl = dto.imageUrl !== undefined ? dto.imageUrl : (existing.image ?? null);
+    let imagePath: string | null = null;
+    if (imageFile) {
+      const result = await this.uploadService.uploadSingle(imageFile, 'collections');
+      imagePath = result.url;
+    } else if (dto.imageUrl !== undefined) {
+      imagePath = dto.imageUrl ?? null;
+    } else {
+      imagePath = existing.image ?? null;
+    }
 
     const merged = this.collectionRepository.merge(existing, {
       ...dto,
@@ -117,7 +134,7 @@ export class CollectionsService extends BaseService<Collection> {
         dto.description !== undefined
           ? this.normalizeNullableString(dto.description)
           : existing.description,
-      image: this.resolveImagePath(imageFile, requestedImageUrl),
+      image: imagePath,
       status: dto.status ?? existing.status,
     });
 
@@ -176,10 +193,5 @@ export class CollectionsService extends BaseService<Collection> {
   private async isSlugFree(slug: string, ignoreId?: number): Promise<boolean> {
     const existing = await this.collectionRepository.findOne({ where: { slug } });
     return !existing || existing.id === ignoreId;
-  }
-
-  private resolveImagePath(file?: UploadedFile, fallback?: string | null): string | null {
-    const normalizedFallback = this.normalizeNullableString(fallback ?? undefined);
-    return resolveModuleUploadPath('collections', file, normalizedFallback ?? null) ?? null;
   }
 }

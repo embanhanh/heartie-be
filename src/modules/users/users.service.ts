@@ -15,14 +15,15 @@ import { BaseService } from '../../common/services/base.service';
 import * as bcrypt from 'bcrypt';
 import { FilterUserDto } from './dto/filter-users.dto';
 import { PaginatedResult, SortParam } from '../../common/dto/pagination.dto';
-import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
+import { UploadService } from '../upload/upload.service';
 
 @Injectable()
 export class UsersService extends BaseService<User> {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly uploadService: UploadService,
   ) {
     super(userRepository, 'user');
   }
@@ -63,10 +64,6 @@ export class UsersService extends BaseService<User> {
     return trimmed.length ? trimmed : null;
   }
 
-  private resolveAvatarPath(file?: UploadedFile, fallback?: string | null): string | null {
-    return resolveModuleUploadPath('users', file, fallback ?? null) ?? null;
-  }
-
   private normalizeAvatarFallback(value?: string | null): string | null {
     if (!value) {
       return null;
@@ -99,10 +96,11 @@ export class UsersService extends BaseService<User> {
       }
     }
 
-    const avatarUrl = this.resolveAvatarPath(
-      avatarFile,
-      this.normalizeAvatarFallback(createUserDto.avatarUrl ?? null),
-    );
+    let avatarUrl = this.normalizeAvatarFallback(createUserDto.avatarUrl ?? null);
+    if (avatarFile) {
+      const uploadResult = await this.uploadService.uploadSingle(avatarFile, 'users/avatars');
+      avatarUrl = uploadResult.url;
+    }
 
     const newUser = this.userRepository.create({
       ...createUserDto,
@@ -177,12 +175,15 @@ export class UsersService extends BaseService<User> {
         ? this.normalizeGender(updateUserDto.gender)
         : (user.gender ?? null);
 
-    const requestedAvatar =
-      updateUserDto.avatarUrl !== undefined ? updateUserDto.avatarUrl : (user.avatarUrl ?? null);
-    const avatarUrl = this.resolveAvatarPath(
-      avatarFile,
-      this.normalizeAvatarFallback(requestedAvatar),
-    );
+    let avatarUrl =
+      updateUserDto.avatarUrl !== undefined
+        ? this.normalizeAvatarFallback(updateUserDto.avatarUrl)
+        : (user.avatarUrl ?? null);
+
+    if (avatarFile) {
+      const uploadResult = await this.uploadService.uploadSingle(avatarFile, 'users/avatars');
+      avatarUrl = uploadResult.url;
+    }
 
     const payload: Partial<User> = {
       ...updateUserDto,

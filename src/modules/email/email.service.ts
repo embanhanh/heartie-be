@@ -129,8 +129,6 @@ export class EmailService {
         })
         .join('') || '';
 
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-
     return `
       <!DOCTYPE html>
       <html>
@@ -156,7 +154,7 @@ export class EmailService {
       <body>
         <div class="container">
           <div class="header">
-            <img src="${frontendUrl}/images/fashia_logo.png" alt="Fashia Shop" style="height: 32px; width: auto;">
+            <img src="https://res.cloudinary.com/dngapkmes/image/upload/v1768361646/fashia_logo_ecxtyj.png" alt="Fashia Shop" style="height: 32px; width: auto;">
           </div>
           <div class="content">
             <h1 style="color: ${this.colors.primary}; margin-top: 0; font-size: 24px; font-weight: 700; text-align: center; margin-bottom: 20px;">${title}</h1>

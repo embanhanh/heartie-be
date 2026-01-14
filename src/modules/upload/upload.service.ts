@@ -1,91 +1,72 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { promises as fs } from 'fs';
-import { basename, extname, join } from 'path';
 import { randomUUID } from 'crypto';
-import { Express } from 'express';
-import { UPLOAD_ROOT } from '../../common/utils/upload.util';
 import { UploadFileResponseDto } from './dto/upload.dto';
+import { v2 as cloudinary } from 'cloudinary';
+import * as streamifier from 'streamifier';
+import { UploadedFile } from '../../common/types/uploaded-file.type';
 
 @Injectable()
 export class UploadService {
   private readonly logger = new Logger(UploadService.name);
 
-  async uploadSingle(file: Express.Multer.File, folder?: string): Promise<UploadFileResponseDto> {
+  async uploadSingle(file: UploadedFile, folder?: string): Promise<UploadFileResponseDto> {
     const [result] = await this.uploadMany([file], folder);
     return result;
   }
 
-  async uploadMany(
-    files: Express.Multer.File[],
-    folder?: string,
-  ): Promise<UploadFileResponseDto[]> {
+  async uploadMany(files: UploadedFile[], folder?: string): Promise<UploadFileResponseDto[]> {
     if (!files?.length) {
       throw new BadRequestException('Không tìm thấy file tải lên');
     }
 
     const sanitizedFolder = this.sanitizeFolder(folder);
-    const targetDir = await this.ensureTargetDirectory(sanitizedFolder);
-
-    const tasks = files.map((file) => this.persistFile(file, targetDir, sanitizedFolder));
+    const tasks = files.map((file) => this.uploadToCloudinary(file, sanitizedFolder));
     return Promise.all(tasks);
   }
 
-  private async persistFile(
-    file: Express.Multer.File,
-    targetDir: string,
-    sanitizedFolder: string | null,
+  private uploadToCloudinary(
+    file: UploadedFile,
+    folder: string | null,
   ): Promise<UploadFileResponseDto> {
-    const filename = this.buildFilename(file.originalname);
-    const absolutePath = join(targetDir, filename);
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: folder || 'heartie', // default folder
+          filename_override: this.buildFilename(file.originalname),
+          public_id: this.buildPublicId(file.originalname),
+          resource_type: 'auto',
+        },
+        (error, result) => {
+          if (error) {
+            this.logger.error(`Upload error: ${error.message}`, error);
+            return reject(new BadRequestException('Upload thất bại'));
+          }
 
-    if (file.buffer) {
-      await fs.writeFile(absolutePath, file.buffer);
-    } else if (file.path) {
-      await this.moveExistingFile(file.path, absolutePath);
-    } else {
-      throw new BadRequestException('File tải lên không hợp lệ');
-    }
+          if (!result) {
+            return reject(new BadRequestException('Cloudinary did not return a result'));
+          }
 
-    const relativePath = this.buildRelativePath(filename, sanitizedFolder);
+          resolve({
+            filename: result.public_id,
+            originalName: file.originalname,
+            size: result.bytes,
+            mimeType:
+              result.resource_type === 'image'
+                ? `image/${result.format}`
+                : 'application/octet-stream',
+            path: result.secure_url,
+            url: result.secure_url,
+            folder: folder || '',
+          });
+        },
+      );
 
-    this.logger.debug(
-      `Stored file ${file.originalname} (${file.mimetype}) as ${relativePath} (${file.size} bytes)`,
-    );
+      if (!file.buffer) {
+        return reject(new BadRequestException('File buffer is missing'));
+      }
 
-    return {
-      filename,
-      originalName: file.originalname ?? filename,
-      size: file.size,
-      mimeType: file.mimetype,
-      path: relativePath,
-      url: `/${relativePath}`,
-      folder: sanitizedFolder ?? '',
-    } satisfies UploadFileResponseDto;
-  }
-
-  private async moveExistingFile(source: string, destination: string): Promise<void> {
-    try {
-      await fs.rename(source, destination);
-      return;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`rename(${source} -> ${destination}) failed, fallback to copy: ${message}`);
-    }
-
-    await fs.copyFile(source, destination);
-    await fs.unlink(source).catch(() => undefined);
-  }
-
-  private buildRelativePath(filename: string, sanitizedFolder: string | null): string {
-    const folderPath = sanitizedFolder ? `${UPLOAD_ROOT}/${sanitizedFolder}` : UPLOAD_ROOT;
-    return `${folderPath}/${filename}`.replace(/\\/g, '/');
-  }
-
-  private async ensureTargetDirectory(folder?: string | null): Promise<string> {
-    const relativeFolder = folder ? `${UPLOAD_ROOT}/${folder}` : UPLOAD_ROOT;
-    const absoluteDir = join(process.cwd(), relativeFolder);
-    await fs.mkdir(absoluteDir, { recursive: true });
-    return absoluteDir;
+      streamifier.createReadStream(file.buffer).pipe(uploadStream);
+    });
   }
 
   private sanitizeFolder(folder?: string): string | null {
@@ -104,15 +85,21 @@ export class UploadService {
       return null;
     }
 
+    // Cloudinary folders don't need leading/trailing slashes, just forward slashes
     return segments.join('/').toLowerCase();
   }
 
   private buildFilename(originalName?: string): string {
-    const safeName = originalName && originalName.trim().length ? originalName : 'upload.bin';
-    const extension = extname(safeName) || '.bin';
-    const base = basename(safeName, extension)
-      .replace(/[^a-zA-Z0-9-_]/g, '-')
-      .slice(0, 48);
-    return `${Date.now()}-${randomUUID().slice(0, 8)}-${base || 'file'}${extension}`;
+    const safeName = originalName && originalName.trim().length ? originalName : 'file';
+    // Replace spaces with underscores and remove non-alphanumeric chars (keep dots/underscores/hyphens)
+    return safeName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9-_.]/g, '');
+  }
+
+  private buildPublicId(originalName?: string): string {
+    // Create a unique public ID: uuid-slugifiedName without extension
+    const safeName = originalName && originalName.trim().length ? originalName : 'file';
+    const nameWithoutExt = safeName.substring(0, safeName.lastIndexOf('.')) || safeName;
+    const slug = nameWithoutExt.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9-_]/g, '');
+    return `${randomUUID().slice(0, 8)}-${slug}`;
   }
 }

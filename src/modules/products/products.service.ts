@@ -25,7 +25,6 @@ import { ProductFormPayloadDto } from './dto/product-form.dto';
 import { ProductQueryDto } from './dto/product-query.dto';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
 import { BoundingBoxDto } from './dto/image-search.dto';
-import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
 import { SemanticSearchService } from '../semantic_search/semantic-search.service';
 import { RankedProductRow } from '../semantic_search/semantic-search.service';
 import { StatsTrackingService } from '../stats/services/stats-tracking.service';
@@ -36,6 +35,7 @@ import {
   ImageSearchService,
   MatchResult,
 } from '../image_search/image-search.service';
+import { UploadService } from '../upload/upload.service';
 
 type VariantSummary = {
   id: number;
@@ -89,6 +89,7 @@ export class ProductsService extends BaseService<Product> {
     private readonly geminiService: GeminiService,
     private readonly visionService: VisionService,
     private readonly imageSearchService: ImageSearchService,
+    private readonly uploadService: UploadService,
   ) {
     super(productRepo, 'product');
   }
@@ -188,9 +189,13 @@ export class ProductsService extends BaseService<Product> {
       productEntity.description = productPayload.description ?? undefined;
       const fallbackProductImage = this.sanitizeExistingAsset(productPayload.image);
 
-      productEntity.image = productImage
-        ? this.resolveStoredPath(productImage)
-        : fallbackProductImage;
+      if (productImage) {
+        const uploadResult = await this.uploadService.uploadSingle(productImage, 'products');
+        productEntity.image = uploadResult.url;
+      } else {
+        productEntity.image = fallbackProductImage;
+      }
+
       productEntity.status = productPayload.status ?? ProductStatus.ACTIVE;
       productEntity.originalPrice = resolvedOriginalPrice;
       productEntity.stock = 0;
@@ -277,6 +282,7 @@ export class ProductsService extends BaseService<Product> {
         }
       }
 
+      // Variant loop refactoring
       let totalStock = 0;
 
       for (const [index, variantPayload] of (variants ?? []).entries()) {
@@ -289,9 +295,15 @@ export class ProductsService extends BaseService<Product> {
         variantEntity.status = variantPayload.status ?? ProductVariantStatus.ACTIVE;
         const fallbackVariantImage = this.sanitizeExistingAsset(variantPayload.image ?? undefined);
 
-        variantEntity.image = variantImage
-          ? this.resolveStoredPath(variantImage)
-          : fallbackVariantImage;
+        if (variantImage) {
+          const uploadResult = await this.uploadService.uploadSingle(
+            variantImage,
+            'products/variants',
+          );
+          variantEntity.image = uploadResult.url;
+        } else {
+          variantEntity.image = fallbackVariantImage;
+        }
 
         const savedVariant = await variantRepo.save(variantEntity);
         this.logger.debug(`Saved variant id=${savedVariant.id} for product id=${savedProduct.id}`);
@@ -1076,7 +1088,8 @@ export class ProductsService extends BaseService<Product> {
       }
 
       if (productImage) {
-        productEntity.image = this.resolveStoredPath(productImage);
+        const uploadResult = await this.uploadService.uploadSingle(productImage, 'products');
+        productEntity.image = uploadResult.url;
       } else if (Object.prototype.hasOwnProperty.call(productPayload, 'image')) {
         productEntity.image = this.sanitizeExistingAsset(productPayload.image ?? undefined);
       }
@@ -1259,9 +1272,15 @@ export class ProductsService extends BaseService<Product> {
         variantEntity.price = variantPayload.price;
         variantEntity.weight = variantPayload.weight ?? undefined;
         variantEntity.status = variantPayload.status ?? ProductVariantStatus.ACTIVE;
-        variantEntity.image = variantImage
-          ? this.resolveStoredPath(variantImage)
-          : this.sanitizeExistingAsset(variantPayload.image ?? undefined);
+        if (variantImage) {
+          const uploadResult = await this.uploadService.uploadSingle(
+            variantImage,
+            'products/variants',
+          );
+          variantEntity.image = uploadResult.url;
+        } else {
+          variantEntity.image = this.sanitizeExistingAsset(variantPayload.image ?? undefined);
+        }
 
         const savedVariant = await variantRepo.save(variantEntity);
         this.logger.debug(
@@ -1564,21 +1583,6 @@ export class ProductsService extends BaseService<Product> {
     }
 
     return { productImage, variantImages };
-  }
-
-  private resolveStoredPath(file: UploadedFile): string {
-    this.logger.debug(`resolveStoredPath called for file: ${file.originalname}`);
-    const storedPath = resolveModuleUploadPath('products', file);
-
-    if (!storedPath) {
-      this.logger.warn(
-        `Could not determine stored path for ${file.originalname}; falling back to original name`,
-      );
-      return file.originalname;
-    }
-
-    this.logger.debug(`Resolved stored path for ${file.originalname}: ${storedPath}`);
-    return storedPath;
   }
 
   private sanitizeExistingAsset(value?: string | null): string | undefined {

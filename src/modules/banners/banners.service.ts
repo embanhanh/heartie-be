@@ -8,7 +8,7 @@ import { BaseService } from 'src/common/services/base.service';
 import { BannerQueryDto } from './dto/banner-query.dto';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
 import { SortParam } from 'src/common/dto/pagination.dto';
-import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
+import { UploadService } from '../upload/upload.service';
 
 @Injectable()
 export class BannersService extends BaseService<Banner> {
@@ -17,16 +17,20 @@ export class BannersService extends BaseService<Banner> {
   constructor(
     @InjectRepository(Banner)
     private repo: Repository<Banner>,
+    private readonly uploadService: UploadService,
   ) {
     super(repo, 'banner');
   }
 
   async createFromForm(dto: CreateBannerDto, file?: UploadedFile) {
-    const imagePath = resolveModuleUploadPath(
-      BannersService.MODULE_NAME,
-      file,
-      this.sanitizeExistingImage(dto.image),
-    );
+    let imagePath: string | undefined | null;
+
+    if (file) {
+      const uploadResult = await this.uploadService.uploadSingle(file, BannersService.MODULE_NAME);
+      imagePath = uploadResult.url;
+    } else {
+      imagePath = this.sanitizeExistingImage(dto.image);
+    }
 
     if (!imagePath) {
       throw new BadRequestException('Banner image is required');
@@ -55,10 +59,16 @@ export class BannersService extends BaseService<Banner> {
       throw new NotFoundException(`Banner not found: ${id}`);
     }
 
-    const fallbackImage =
-      dto.image !== undefined ? (this.sanitizeExistingImage(dto.image) ?? null) : banner.image;
+    let imagePath: string | undefined | null;
 
-    const imagePath = resolveModuleUploadPath(BannersService.MODULE_NAME, file, fallbackImage);
+    if (file) {
+      const uploadResult = await this.uploadService.uploadSingle(file, BannersService.MODULE_NAME);
+      imagePath = uploadResult.url;
+    } else if (dto.image !== undefined) {
+      imagePath = this.sanitizeExistingImage(dto.image) ?? null;
+    } else {
+      imagePath = banner.image;
+    }
 
     banner.title = dto.title ?? banner.title;
     banner.description = dto.description ?? banner.description;
@@ -143,6 +153,6 @@ export class BannersService extends BaseService<Banner> {
       return undefined;
     }
 
-    return trimmed.replace(/^upload\//, 'uploads/');
+    return trimmed;
   }
 }

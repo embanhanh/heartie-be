@@ -7,8 +7,15 @@ import { Product } from '../products/entities/product.entity';
 import { StatsModule } from '../stats/stats.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 
+import { UploadModule } from '../upload/upload.module';
+
 @Module({
-  imports: [TypeOrmModule.forFeature([AdsAiCampaign, Product]), StatsModule, NotificationsModule],
+  imports: [
+    TypeOrmModule.forFeature([AdsAiCampaign, Product]),
+    StatsModule,
+    NotificationsModule,
+    UploadModule,
+  ],
   controllers: [AdsAiController],
   providers: [AdsAiService],
   exports: [AdsAiService],

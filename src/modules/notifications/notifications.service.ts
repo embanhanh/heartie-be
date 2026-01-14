@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { IsNull, Repository } from 'typeorm';
-import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import {
   getMessaging,
@@ -106,8 +105,6 @@ export class NotificationsService {
     userId: number,
     dto: RegisterNotificationTokenDto,
   ): Promise<NotificationToken> {
-    const now = new Date();
-
     await this.notificationTokenRepo.delete({ token: IsNull() });
 
     const token = dto.token.trim();
@@ -115,69 +112,88 @@ export class NotificationsService {
     const platform = dto.platform ?? 'web';
     const metadata = dto.metadata ?? null;
 
-    let entity = await this.notificationTokenRepo.findOne({
+    // 1. Find existing record by token
+    const existingByToken = await this.notificationTokenRepo.findOne({
       where: { token },
     });
 
-    if (!entity && deviceId) {
-      entity = await this.notificationTokenRepo.findOne({
+    // 2. Find existing record by (userId, deviceId) - if deviceId is present
+    let existingByDevice: NotificationToken | null = null;
+    if (deviceId) {
+      existingByDevice = await this.notificationTokenRepo.findOne({
         where: { userId, deviceId },
       });
     }
 
-    if (entity) {
-      entity.userId = userId;
-      entity.platform = platform;
-      entity.deviceId = deviceId;
-      entity.metadata = metadata;
-      entity.token = token;
-      entity.lastUsedAt = now;
-      entity.isActive = true;
-    } else {
-      if (deviceId) {
-        const upsertPayload = {
-          userId,
-          token,
-          deviceId,
-          platform,
-          metadata,
-          lastUsedAt: now,
-          isActive: true,
-        } as QueryDeepPartialEntity<NotificationToken>;
+    // Logic to resolve conflicts:
+    // We want the final state to be: A record exists with { userId, deviceId, token, ... }
+    // We must ensure unique constraints on 'token' and '(userId, deviceId)' are respected.
 
-        await this.notificationTokenRepo.upsert(upsertPayload, {
-          conflictPaths: ['userId', 'deviceId'],
-        });
-
-        entity = await this.notificationTokenRepo.findOne({
-          where: { userId, deviceId },
-        });
+    if (existingByToken && existingByDevice) {
+      if (existingByToken.id === existingByDevice.id) {
+        // Case A: The existing token record IS the same as the user/device record.
+        // Just update metadata.
+        existingByToken.platform = platform;
+        existingByToken.metadata = metadata;
+        existingByToken.lastUsedAt = new Date();
+        existingByToken.isActive = true;
+        // userId and deviceId are already correct
+        return this.notificationTokenRepo.save(existingByToken);
       } else {
-        entity = this.notificationTokenRepo.create({
-          userId,
-          token,
-          platform,
-          deviceId,
-          metadata,
-          lastUsedAt: now,
-          isActive: true,
-        });
-      }
-    }
+        // Case B: Token exists on Row 1, User/Device exists on Row 2.
+        // We want User/Device (Row 2) to claim this Token.
+        // Row 1 is now invalid (token moved). Delete Row 1.
+        await this.notificationTokenRepo.delete(existingByToken.id);
 
-    if (!entity) {
-      entity = this.notificationTokenRepo.create({
+        // Update Row 2 with the token.
+        existingByDevice.token = token;
+        existingByDevice.platform = platform;
+        existingByDevice.metadata = metadata;
+        existingByDevice.lastUsedAt = new Date();
+        existingByDevice.isActive = true;
+        return this.notificationTokenRepo.save(existingByDevice);
+      }
+    } else if (existingByToken && !existingByDevice) {
+      // Case C: Token exists (Row 1), but no record for this User/Device.
+      // We assume Row 1 is the record we want to "move" to this User/Device context (or it's already correct userId but different deviceId? No, different deviceId would be caught above if we searched by just userId?)
+      // Actually, if deviceId is null, existingByDevice is null.
+      // Or if deviceId is new for this user.
+
+      // If existingByToken.userId !== userId, we are moving token to new user.
+      // If existingByToken.deviceId !== deviceId, we are moving token to new device (likely existingByToken.deviceId was null or different).
+
+      // CAUTION: If we update Row 1 to use (userId, deviceId), we must be sure no other row has (userId, deviceId).
+      // We already checked existingByDevice (by userId, deviceId). It is null. So safe to update.
+
+      existingByToken.userId = userId;
+      existingByToken.deviceId = deviceId;
+      existingByToken.platform = platform;
+      existingByToken.metadata = metadata;
+      existingByToken.lastUsedAt = new Date();
+      existingByToken.isActive = true;
+      return this.notificationTokenRepo.save(existingByToken);
+    } else if (!existingByToken && existingByDevice) {
+      // Case D: Token is new (not in DB). User/Device record exists (Row 2).
+      // Update Row 2 with new token.
+      existingByDevice.token = token;
+      existingByDevice.platform = platform;
+      existingByDevice.metadata = metadata;
+      existingByDevice.lastUsedAt = new Date();
+      existingByDevice.isActive = true;
+      return this.notificationTokenRepo.save(existingByDevice);
+    } else {
+      // Case E: Neither exists. New record.
+      const newEntity = this.notificationTokenRepo.create({
         userId,
         token,
-        platform,
         deviceId,
+        platform,
         metadata,
-        lastUsedAt: now,
+        lastUsedAt: new Date(),
         isActive: true,
       });
+      return this.notificationTokenRepo.save(newEntity);
     }
-
-    return this.notificationTokenRepo.save(entity);
   }
 
   async removeToken(token: string, userId?: number): Promise<boolean> {

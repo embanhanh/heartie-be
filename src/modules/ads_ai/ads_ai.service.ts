@@ -4,15 +4,9 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import axios, { AxiosError, AxiosInstance } from 'axios';
-import FormData from 'form-data';
-import { createReadStream, existsSync, promises as fsPromises } from 'fs';
-import { join } from 'path';
-import { BaseService } from 'src/common/services/base.service';
-import { UploadedFile } from 'src/common/types/uploaded-file.type';
-import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
 import { IsNull, LessThanOrEqual, Not, Repository } from 'typeorm';
-import { ProductVariantStatus } from '../product_variants/entities/product_variant.entity';
 import { Product } from '../products/entities/product.entity';
+import { ProductVariantStatus } from '../product_variants/entities/product_variant.entity';
 import { AdsAiQueryDto } from './dto/ads-ai-query.dto';
 import { CreateAdsAiDto } from './dto/create-ads-ai.dto';
 import { GenerateAdsAiDto } from './dto/generate-ads-ai.dto';
@@ -23,8 +17,9 @@ import { AdsAiCampaign, AdsAiPostType, AdsAiStatus } from './entities/ads-ai-cam
 import { GeneratedAdContent } from './interfaces/generated-ad-content.interface';
 import { StatsTrackingService } from '../stats/services/stats-tracking.service';
 import { NotificationsService } from '../notifications/notifications.service';
-
-const MODULE_NAME = 'ads-ai';
+import { BaseService } from 'src/common/services/base.service';
+import { UploadedFile } from 'src/common/types/uploaded-file.type';
+import { UploadService } from '../upload/upload.service';
 
 type GeneratedContentFields = Omit<GeneratedAdContent, 'prompt'>;
 
@@ -43,6 +38,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     private readonly configService: ConfigService,
     private readonly statsTrackingService: StatsTrackingService,
     private readonly notificationsService: NotificationsService,
+    private readonly uploadService: UploadService,
   ) {
     super(repo, 'ad');
     this.httpClient = axios.create({ timeout: 10000 });
@@ -100,16 +96,19 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     if (extraFiles?.length)
       this.logger.debug(`[createFromForm] Extra Files: ${extraFiles.length} files`);
 
-    const imagePath = resolveModuleUploadPath(
-      MODULE_NAME,
-      file,
-      this.normalizeImageInput(dto.image),
-    );
+    let imagePath: string | null = null;
+    if (file) {
+      const uploadResult = await this.uploadService.uploadSingle(file, 'ads-ai');
+      imagePath = uploadResult.url;
+    } else {
+      imagePath = this.normalizeImageInput(dto.image) ?? null;
+    }
 
-    const extraImagePaths =
-      extraFiles
-        ?.map((f) => resolveModuleUploadPath(MODULE_NAME, f))
-        .filter((p): p is string => !!p) ?? [];
+    const extraImagePaths: string[] = [];
+    if (extraFiles?.length) {
+      const uploadResults = await this.uploadService.uploadMany(extraFiles, 'ads-ai');
+      extraImagePaths.push(...uploadResults.map((r) => r.url));
+    }
 
     const inputImages = this.normalizeImagesInput(dto.images) ?? [];
     const combinedImages = [...new Set([...inputImages, ...extraImagePaths])];
@@ -229,9 +228,8 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     if (dto.notes !== undefined) ad.notes = dto.notes;
 
     if (extraFiles && extraFiles.length > 0) {
-      const newPaths = extraFiles
-        .map((f) => resolveModuleUploadPath(MODULE_NAME, f))
-        .filter((p): p is string => !!p);
+      const uploadResults = await this.uploadService.uploadMany(extraFiles, 'ads-ai');
+      const newPaths = uploadResults.map((r) => r.url);
       ad.images = [...(ad.images ?? []), ...newPaths];
     }
 
@@ -242,11 +240,10 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     const normalizedImage = this.normalizeImageInput(dto.image);
 
     if (file) {
-      await this.deleteImageIfExists(ad.image);
-      ad.image = resolveModuleUploadPath(MODULE_NAME, file) ?? null;
+      const uploadResult = await this.uploadService.uploadSingle(file, 'ads-ai');
+      ad.image = uploadResult.url;
     } else if (normalizedImage !== undefined) {
       if (normalizedImage === null) {
-        await this.deleteImageIfExists(ad.image);
         ad.image = null;
       } else {
         ad.image = normalizedImage;
@@ -368,9 +365,9 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
   }
 
   async remove(id: number) {
-    const ad = await this.getCampaignOrFail(id);
     await this.repo.delete(id);
-    await this.deleteImageIfExists(ad.image);
+    // Cloudinary deletion is not yet implemented, but file references are removed from DB.
+    // await this.deleteImageIfExists(ad.image);
     return { id };
   }
 
@@ -565,26 +562,19 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       throw new BadRequestException('Chiến dịch dạng ảnh cần có ảnh đính kèm.');
     }
 
-    const normalizedPath = ad.image.replace(/^upload\//, 'uploads/');
-    const absolutePath = join(process.cwd(), normalizedPath);
-
-    if (!existsSync(absolutePath)) {
-      throw new BadRequestException('Không tìm thấy file ảnh để đăng lên Facebook.');
-    }
-
-    const form = new FormData();
-    form.append('source', createReadStream(absolutePath));
-    form.append('access_token', accessToken);
-    form.append('published', 'true');
+    const params = new URLSearchParams();
+    params.append('url', ad.image);
+    params.append('access_token', accessToken);
+    params.append('published', 'true');
 
     if (message) {
-      form.append('caption', message);
+      params.append('caption', message);
     }
 
     const response = await this.httpClient.post<{ post_id?: string; id?: string }>(
       `${baseUrl}/${pageId}/photos`,
-      form,
-      { headers: form.getHeaders(), timeout: 60000 },
+      params,
+      { timeout: 60000 },
     );
 
     return response.data?.post_id ?? response.data?.id ?? null;
@@ -639,33 +629,25 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
   }
 
   private async uploadPhotoToFacebook(
-    imagePath: string,
+    imageUrl: string,
     pageId: string,
     accessToken: string,
     baseUrl: string,
   ): Promise<string | null> {
-    const normalizedPath = imagePath.replace(/^upload\//, 'uploads/');
-    const absolutePath = join(process.cwd(), normalizedPath);
-
-    if (!existsSync(absolutePath)) {
-      this.logger.warn(`Không tìm thấy file ảnh: ${absolutePath}`);
-      return null;
-    }
-
-    const form = new FormData();
-    form.append('source', createReadStream(absolutePath));
-    form.append('access_token', accessToken);
-    form.append('published', 'false'); // Quan trọng: đăng dạng unpushed để lấy ID
+    const params = new URLSearchParams();
+    params.append('url', imageUrl);
+    params.append('access_token', accessToken);
+    params.append('published', 'false'); // Quan trọng: đăng dạng unpublished để lấy ID
 
     try {
       const response = await this.httpClient.post<{ id: string }>(
         `${baseUrl}/${pageId}/photos`,
-        form,
-        { headers: form.getHeaders(), timeout: 60000 },
+        params,
+        { timeout: 60000 },
       );
       return response.data?.id ?? null;
     } catch (error) {
-      this.logger.error(`Lỗi upload ảnh lên Facebook: ${imagePath}`, error);
+      this.logger.error(`Lỗi upload ảnh lên Facebook: ${imageUrl}`, error);
       return null;
     }
   }
@@ -802,23 +784,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
         if (!img) return false;
         const lower = img.toLowerCase();
         return lower !== 'null' && lower !== 'undefined';
-      })
-      .map((img) => img.replace(/^upload\//, 'uploads/'));
-  }
-
-  private async deleteImageIfExists(image?: string | null) {
-    if (!image) {
-      return;
-    }
-
-    const normalized = image.replace(/^upload\//, 'uploads/');
-    const absolutePath = join(process.cwd(), normalized);
-
-    try {
-      await fsPromises.unlink(absolutePath);
-    } catch {
-      // ignore
-    }
+      });
   }
 
   private async resolveProduct(
