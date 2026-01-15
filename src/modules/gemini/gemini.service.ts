@@ -10,6 +10,8 @@ import {
   FunctionResponsePart,
   Schema,
   SchemaType,
+  HarmCategory,
+  HarmBlockThreshold,
 } from '@google/generative-ai';
 import {
   AnalyzeProductReviewParams,
@@ -45,7 +47,7 @@ const GEMINI_TOOLS: Tool[] = [
                 },
               },
             },
-            limit: { type: SchemaType.NUMBER, description: 'mặc định 6' },
+            limit: { type: SchemaType.NUMBER, description: 'mặc định 5' },
             cursor: { type: SchemaType.STRING, description: 'phân trang' },
           },
         },
@@ -86,17 +88,10 @@ const GEMINI_TOOLS: Tool[] = [
               items: {
                 type: SchemaType.OBJECT,
                 properties: {
-                  product_id: { type: SchemaType.NUMBER },
-                  variant: {
-                    type: SchemaType.OBJECT,
-                    properties: {
-                      color: { type: SchemaType.STRING },
-                      size: { type: SchemaType.STRING },
-                    },
-                  },
+                  variant_id: { type: SchemaType.NUMBER },
                   quantity: { type: SchemaType.NUMBER },
                 },
-                required: ['product_id', 'quantity'],
+                required: ['variant_id', 'quantity'],
               },
             },
           },
@@ -227,7 +222,7 @@ const GEMINI_TOOLS: Tool[] = [
             },
             limit: {
               type: SchemaType.NUMBER,
-              description: 'Số lượng đơn hàng tối đa trả về, mặc định 10',
+              description: 'Số lượng đơn hàng tối đa trả về, mặc định 5',
             },
             offset: {
               type: SchemaType.NUMBER,
@@ -246,6 +241,130 @@ const GEMINI_TOOLS: Tool[] = [
             orderNumber: { type: SchemaType.STRING, description: 'Mã đơn hàng' },
           },
           required: ['orderNumber'],
+        },
+      },
+      // 8.12. get_my_cart
+      {
+        name: 'get_my_cart',
+        description:
+          'Lấy giỏ hàng của người dùng hiện tại với đầy đủ thông tin sản phẩm, biến thể, giá và hình ảnh.',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            request_source: {
+              type: SchemaType.STRING,
+              description: 'Mặc định là "user_request"',
+              nullable: true,
+            },
+          },
+        },
+      },
+      // 8.12b get_my_addresses
+      {
+        name: 'get_my_addresses',
+        description: 'Lấy danh sách địa chỉ giao hàng của người dùng hiện tại.',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            request_source: {
+              type: SchemaType.STRING,
+              description: 'Mặc định là "user_request"',
+              nullable: true,
+            },
+          },
+        },
+      },
+      // 8.12c get_payment_methods
+      {
+        name: 'get_payment_methods',
+        description: 'Lấy danh sách các phương thức thanh toán khả dụng.',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            request_source: {
+              type: SchemaType.STRING,
+              description: 'Mặc định là "user_request"',
+              nullable: true,
+            },
+          },
+        },
+      },
+      // 8.12d get_available_vouchers
+      {
+        name: 'get_available_vouchers',
+        description: 'Lấy danh sách voucher/mã giảm giá có sẵn cho người dùng hiện tại.',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            request_source: {
+              type: SchemaType.STRING,
+              description: 'Mặc định là "user_request"',
+              nullable: true,
+            },
+          },
+        },
+      },
+      // 8.12e validate_voucher
+      {
+        name: 'validate_voucher',
+        description: 'Kiểm tra xem mã voucher có hợp lệ không và tính số tiền được giảm.',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            code: {
+              type: SchemaType.STRING,
+              description: 'Mã voucher cần kiểm tra',
+            },
+            orderTotal: {
+              type: SchemaType.NUMBER,
+              description: 'Tổng giá trị đơn hàng (để kiểm tra điều kiện áp dụng)',
+            },
+          },
+          required: ['code', 'orderTotal'],
+        },
+      },
+      // 8.13. create_order
+      {
+        name: 'create_order',
+        description:
+          'Tạo đơn hàng từ các sản phẩm trong giỏ hàng. Yêu cầu địa chỉ giao hàng và phương thức thanh toán.',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            addressId: {
+              type: SchemaType.NUMBER,
+              description: 'ID địa chỉ giao hàng của người dùng',
+            },
+            paymentMethod: {
+              type: SchemaType.STRING,
+              format: 'enum',
+              enum: ['COD', 'BANK', 'STORE'],
+              description:
+                'Phương thức thanh toán: COD (tiền mặt khi nhận hàng), BANK (chuyển khoản ngân hàng), STORE (thanh toán tại cửa hàng)',
+            },
+            voucherId: {
+              type: SchemaType.NUMBER,
+              description: 'ID voucher/mã giảm giá (tùy chọn)',
+            },
+            items: {
+              type: SchemaType.ARRAY,
+              description:
+                'Danh sách các sản phẩm cần đặt hàng. Nếu không truyền, sẽ đặt tất cả sản phẩm trong giỏ.',
+              items: {
+                type: SchemaType.OBJECT,
+                properties: {
+                  variantId: { type: SchemaType.NUMBER, description: 'ID biến thể sản phẩm' },
+                  quantity: { type: SchemaType.NUMBER, description: 'Số lượng' },
+                },
+                required: ['variantId', 'quantity'],
+              },
+            },
+            note: {
+              type: SchemaType.STRING,
+              description: 'Ghi chú cho đơn hàng',
+            },
+          },
+          required: ['addressId', 'paymentMethod'],
         },
       },
     ],
@@ -274,6 +393,15 @@ export interface GeminiChatOptions {
   responseSchema?: Schema;
 }
 
+interface ToolCallParsed {
+  name?: string;
+  args?: unknown;
+  functionResponse?: {
+    name: string;
+    response: unknown;
+  };
+}
+
 @Injectable()
 export class GeminiService {
   private readonly logger = new Logger(GeminiService.name);
@@ -282,8 +410,8 @@ export class GeminiService {
   private readonly geminiEmbeddingModels = new Map<string, GenerativeModel>();
   private readonly DEFAULT_SYSTEM_PROMPT = `Bạn là Fia — trợ lý mua sắm thời trang chính thức của thương hiệu Fashia, hoạt động trên website thương mại điện tử của Fashia.
 
-# 1) Sứ mệnh & mục tiêu
-- Giúp khách chọn sản phẩm nhanh và đúng nhu cầu: trang phục, phụ kiện, kích cỡ, phối đồ, quà tặng.
+# 1) Mục tiêu cốt lõi
+- Hỗ trợ khách hàng tìm kiếm & lựa chọn sản phẩm thời trang phù hợp.
 - Tối ưu chuyển đổi: gợi ý sản phẩm phù hợp, upsell/cross-sell tinh tế, giảm bỏ giỏ.
 - Hậu mãi: tra cứu đơn hàng, đổi/trả, bảo hành, hướng dẫn sử dụng & bảo quản.
 - Luôn trung thực, rõ ràng về tồn kho, giá, khuyến mãi, thời gian giao hàng.
@@ -313,7 +441,8 @@ export class GeminiService {
 - Với sản phẩm: hiển thị tên, giá, màu, size còn hàng, điểm nổi bật (1–2 dòng), và CTA ngắn: "Thêm vào giỏ".
 - Với quy trình/FAQ: liệt kê bước 1–2–3 rõ ràng.
 - Với thông tin không chắc: nói "mình cần kiểm tra" và gọi hàm phù hợp.
-- QUAN TRỌNG: Không sử dụng ký tự markdown như *, **, ___, ~~ trong câu trả lời. Chỉ dùng dấu gạch ngang (-) cho danh sách.
+- QUAN TRỌNG: Với các hàm 'get_my_cart', 'get_my_addresses', 'get_payment_methods', 'get_available_vouchers', 'get_list_orders': KHÔNG liệt kê chi tiết dữ liệu trong tin nhắn text vì Frontend đã có UI Card hiển thị. Chỉ phản hồi ngắn gọn (ví dụ: "Đây là giỏ hàng của bạn:", "Vui lòng chọn địa chỉ bên dưới:").
+- QUAN TRỌNG: Không sử dụng ký tự markdown như *, , ___, ~~ trong câu trả lời. Chỉ dùng dấu gạch ngang (-) cho danh sách.
 
 # 6) Quy tắc hành vi (do/don't)
 - KHÔNG bịa đặt tồn kho, giá, mã giảm giá, chính sách. Luôn gọi hàm để xác thực.
@@ -345,32 +474,48 @@ export class GeminiService {
 - Không hiển thị dữ liệu cá nhân nhạy cảm. Không lưu bất kỳ dữ liệu nào ngoài phạm vi cho phép của hệ thống.
 - Tuân thủ chính sách đổi/trả và bảo mật tại các đường dẫn hệ thống cung cấp.
 
-# 11) Ví dụ ngắn (phi hướng dẫn)
-(Chỉ là ví dụ minh hoạ, không cứng nhắc. Lưu ý: sử dụng dấu gạch ngang (-) khi liệt kê)
-- Người dùng: "Mình cần áo sơ mi trắng đi làm, dưới 700k, size M."
-  → Gọi search_products với bộ lọc tương ứng; trả 3–6 kết quả; gợi ý thêm quần tây/khuy măng sét phù hợp.
-- Người dùng: "Size mình là gì? Cao 165 nặng 55."
-  → Gọi recommend_size cho sản phẩm đang xem; nếu chưa có sản phẩm, hỏi gu fit (regular/slim).
-- Người dùng: "Đơn #FA12345 của mình đến đâu rồi?"
-  → Gọi track_order và tóm tắt trạng thái + ETA.
-- Người dùng: "Cho tôi xem danh sách đơn hàng"
-  → Gọi get_list_orders và liệt kê với format:
-    "Chào bạn, đây là danh sách các đơn hàng của bạn:
-    - ORD-20251022-7529 (Đặt ngày 22/10/2025)
-    - ORD-20251010-0001 (Đặt ngày 22/10/2025)
-    - ORD-20251022-7318 (Đặt ngày 22/10/2025)
-    Bạn muốn kiểm tra chi tiết đơn hàng nào không?"
-
 # 12) Tiêu chí chất lượng (để tự kiểm)
 - Liên quan: đề xuất đúng nhu cầu, lý do rõ ràng ≤ 1 câu/sản phẩm.
 - Chính xác: không bịa đặt; luôn xác thực qua hàm.
 - Ngắn gọn: ≤ 8 dòng cho câu trả lời tiêu chuẩn (không tính danh sách sản phẩm).
 - Hành động: luôn có CTA tiếp theo (“Bạn muốn thêm sản phẩm A size M vào giỏ chứ?”).
 
-# 13) Mặc định vận hành
+# CHECKOUT FLOW (STRICT)
+Luôn tuân thủ thứ tự gọi hàm và phản hồi ngắn gọn để kích hoạt UI Card:
+
+1.  Trigger: Khách muốn đặt hàng, mua ngay, hoặc chọn biến thể cụ thể (ví dụ: "đặt hàng các biến thể: 123...").
+    -> Action: Gọi get_my_addresses.
+    -> Response: "Vui lòng chọn địa chỉ nhận hàng bên dưới."
+
+2.  Trigger: Khách đã chọn Address.
+    -> Action: Gọi get_payment_methods.
+    -> Response: "Vui lòng chọn phương thức thanh toán."
+
+3.  Trigger: Khách đã chọn Payment.
+    -> Action: Gọi get_available_vouchers.
+    -> Response (có voucher): "Bạn có muốn áp mã giảm giá không?"
+    -> Response (không có voucher - mảng rỗng): "Hiện không có mã giảm giá khả dụng. Bạn có muốn tiến hành đặt hàng không?"
+
+4.  Trigger: Khách chọn Voucher, bỏ qua voucher, hoặc không có voucher và xác nhận đặt hàng.
+    -> Action: Gọi create_order(addressId, paymentMethod, voucherId). Nếu không có voucher thì KHÔNG truyền voucherId.
+    -> Response: Xác nhận đơn thành công.
+
+*Lưu ý: KHÔNG đọc lại dữ liệu từ hàm (địa chỉ, voucher...). Frontend sẽ tự hiển thị.*
+
+# 14) Mặc định vận hành
 - Nếu ngôn ngữ người dùng là {{user_language}} khác tiếng Việt, trả lời bằng {{user_language}}.
 - Nếu không chắc ý định: hỏi 1 câu làm rõ duy nhất rồi đề xuất bước tiếp theo.
 - Luôn giữ thương hiệu: nhắc “Fashia” một cách tinh tế khi phù hợp.
+
+Trước khi trả lời, hãy tự suy luận:
+1. Người dùng đang cần thông tin gì?
+2. Có hàm nào cung cấp thông tin đó không?
+3. Nếu có, hãy gọi hàm đó ngay lập tức thay vì tự trả lời.
+4. Nếu người dùng hỏi về đơn hàng mà không đưa mã đơn, hãy hỏi mã đơn hàng trước, đừng gọi hàm track_order với tham số rỗng.
+5. [QUAN TRỌNG] Logic Checkout:
+   - Nếu người dùng vừa chọn/xác nhận địa chỉ -> BẮT BUỘC gọi hàm "get_payment_methods".
+   - Nếu người dùng vừa chọn/xác nhận phương thức thanh toán -> BẮT BUỘC gọi hàm "get_available_vouchers".
+   - Nếu người dùng xác nhận đặt hàng -> BẮT BUỘC gọi hàm "create_order".
 `;
 
   constructor(private readonly configService: ConfigService) {}
@@ -381,17 +526,74 @@ export class GeminiService {
     options?: GeminiChatOptions,
   ): Promise<{ text: string | null; functionCall: FunctionCall | null }> {
     const modelName =
-      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-2.5-flash';
+      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-1.5-pro';
     const requestedTools = options?.tools;
     const model = this.getModel(modelName, requestedTools);
 
     const { generationConfig, systemInstruction } = this.getGenerationOptions(options);
 
+    // ... history logic ...
+    // (omitted for brevity, keeping existing logic)
+
     // Convert history to Gemini format
-    const sanitizedHistory: Content[] = history.map((message) => ({
-      role: message.role === GeminiChatRole.SYSTEM ? 'model' : message.role,
-      parts: [{ text: message.content }],
-    }));
+    const sanitizedHistory: Content[] = [];
+    for (const message of history) {
+      if (!message.content) continue;
+
+      const role = message.role === GeminiChatRole.SYSTEM ? 'model' : message.role;
+
+      // Flatten tool calls/responses to text to avoid "unclosed function call" validation errors
+      // and keep context.
+
+      // Try to detect if this is a function call (JSON)
+      if (role === 'model') {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          const parsed: ToolCallParsed = JSON.parse(message.content);
+
+          if (parsed && parsed.name && parsed.args) {
+            sanitizedHistory.push({
+              role: 'model',
+              parts: [
+                {
+                  text: `[System: Model called tool '${parsed.name}' with args: ${JSON.stringify(parsed.args)}]`,
+                },
+              ],
+            });
+            continue;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // Try to detect function response (user role)
+      if (role === GeminiChatRole.USER) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          const parsed: ToolCallParsed = JSON.parse(message.content);
+
+          if (parsed && parsed.functionResponse) {
+            const respName = parsed.functionResponse.name;
+
+            const respContent = JSON.stringify(parsed.functionResponse.response);
+            sanitizedHistory.push({
+              role: 'user',
+              parts: [{ text: `[System: Tool '${respName}' returned: ${respContent}]` }],
+            });
+            continue;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // Regular text
+      sanitizedHistory.push({
+        role,
+        parts: [{ text: message.content }],
+      });
+    }
 
     // Gemini requires first message to be from 'user', so skip any leading 'model' messages
     let startIndex = 0;
@@ -400,37 +602,129 @@ export class GeminiService {
     }
     const validHistory = sanitizedHistory.slice(startIndex);
 
-    try {
-      const chat = model.startChat({
-        history: validHistory,
-        generationConfig,
-        systemInstruction,
-      });
+    const maxAttempts = Math.max(1, options?.retryAttempts ?? 3);
+    let attempt = 0;
 
-      const result = await chat.sendMessage(prompt);
-      const response = result.response;
-      const call = response.functionCalls()?.[0];
+    while (attempt < maxAttempts) {
+      attempt++;
 
-      if (call) {
-        this.logger.log(`Gemini requested function call: ${call.name}`);
-        return { text: null, functionCall: call };
-      } else {
-        const text = response.text()?.trim();
-        if (!text) {
-          throw new BadRequestException('Gemini did not return any content');
+      try {
+        this.logger.debug(`GenerateContent Input Attempt ${attempt}: Prompt="${prompt}"`);
+        this.logger.debug(
+          `GenerateContent History: ${JSON.stringify(validHistory.map((m) => ({ r: m.role, p: m.parts[0].text ? m.parts[0].text.substring(0, 50) + '...' : 'func' })))}`,
+        );
+
+        const chat = model.startChat({
+          history: validHistory,
+          generationConfig,
+          systemInstruction,
+        });
+
+        const result = await chat.sendMessage(prompt);
+        const response = result.response;
+
+        const call = response.functionCalls()?.[0];
+
+        if (call) {
+          this.logger.log(`Gemini requested function call: ${call.name}`);
+          return { text: null, functionCall: call };
+        } else {
+          const rawCandidate = response.candidates?.[0];
+          const parts = rawCandidate?.content?.parts;
+
+          const text = response.text()?.trim();
+
+          if (text) {
+            if (attempt > 1) {
+              this.logger.log(`Gemini generateContent succeeded after ${attempt} attempt(s).`);
+            }
+            return { text, functionCall: null };
+          }
+
+          // Check if there's a function call in parts that wasn't detected by helper
+          const functionCallPart = parts?.find(
+            (p: { functionCall?: FunctionCall }) => p.functionCall,
+          ) as { functionCall?: FunctionCall } | undefined;
+          if (functionCallPart?.functionCall) {
+            this.logger.log(
+              `Gemini function call found in parts: ${functionCallPart.functionCall.name}`,
+            );
+            return { text: null, functionCall: functionCallPart.functionCall };
+          }
+
+          // No content returned
+          this.logger.warn(
+            `Gemini returned no content (attempt ${attempt}/${maxAttempts}). finishReason=${rawCandidate?.finishReason}`,
+          );
+
+          // Fallback: if this is the last attempt and still no content, return fallback text
+          // to avoid "model output must contain..." error crash.
+          if (attempt === maxAttempts) {
+            this.logger.warn('Gemini retries exhausted with empty content. Returning fallback.');
+            return {
+              text: 'Xin lỗi, tôi chưa hiểu rõ ý bạn. Bạn có thể nói chi tiết hơn được không?',
+              functionCall: null,
+            };
+          }
+          this.logger.warn(`Full Candidate: ${JSON.stringify(rawCandidate)}`);
+
+          // If we haven't exhausted retries, wait and continue
+          if (attempt < maxAttempts) {
+            const delayMs = this.getRetryDelay(attempt);
+            this.logger.log(`Retrying generateContent in ${delayMs}ms...`);
+            await this.delay(delayMs);
+            continue;
+          }
         }
-        return { text, functionCall: null };
+      } catch (error) {
+        const normalized = this.normalizeGeminiError(error);
+        const isEmptyOutputError =
+          normalized.logMessage.includes(
+            'model output must contain either output text or tool calls',
+          ) ||
+          normalized.clientMessage.includes(
+            'model output must contain either output text or tool calls',
+          );
+
+        // Check if error is retryable
+        if ((this.isRetryableGeminiError(error) || isEmptyOutputError) && attempt < maxAttempts) {
+          this.logger.warn(
+            `Gemini generateContent attempt ${attempt} failed (${normalized.logMessage}); retrying...`,
+          );
+          await this.delay(this.getRetryDelay(attempt));
+          continue;
+        }
+
+        // If error is "empty response" and we're out of retries, return fallback
+        if (isEmptyOutputError) {
+          this.logger.warn(
+            'Gemini retries exhausted with empty content error. Returning fallback.',
+          );
+          return {
+            text: 'Xin lỗi, tôi chưa hiểu rõ ý bạn. Bạn có thể nói chi tiết hơn được không?',
+            functionCall: null,
+          };
+        }
+
+        // If strictly not retryable or max attempts reached
+        this.logger.error('Gemini generateContent error:', normalized.logMessage);
+        this.logger.error('Error stack:', normalized.stack);
+        this.logger.error(
+          'Full error details:',
+          JSON.stringify(error, Object.getOwnPropertyNames(error), 2),
+        );
+        throw new BadRequestException(normalized.clientMessage);
       }
-    } catch (error) {
-      const normalized = this.normalizeGeminiError(error);
-      this.logger.error('Gemini generateContent error:', normalized.logMessage);
-      this.logger.error('Error stack:', normalized.stack);
-      this.logger.error(
-        'Full error details:',
-        JSON.stringify(error, Object.getOwnPropertyNames(error), 2),
-      );
-      throw new BadRequestException(normalized.clientMessage);
     }
+
+    // Fallback after all retries failed for empty content
+    this.logger.error(
+      `Gemini generateContent failed after ${maxAttempts} attempts with empty responses.`,
+    );
+    return {
+      text: 'Xin lỗi, mình đang gặp một chút trục trặc. Bạn vui lòng thử lại nhé! 🙏',
+      functionCall: null,
+    };
   }
 
   /**
@@ -500,7 +794,7 @@ export class GeminiService {
     }
 
     const modelName =
-      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-2.5-flash';
+      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-1.5-flash';
     const requestedTools = options?.tools ?? [];
     const model = this.getModel(modelName, requestedTools);
 
@@ -628,36 +922,118 @@ export class GeminiService {
     options?: GeminiChatOptions,
   ): Promise<{ text: string }> {
     const modelName =
-      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-2.5-flash';
+      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-1.5-pro';
     const requestedTools = options?.tools;
     const model = this.getModel(modelName, requestedTools);
     const { generationConfig, systemInstruction } = this.getGenerationOptions(options);
 
-    // Chuyển đổi history
-    const sanitizedHistory: Content[] = history.map((message) => ({
-      role: message.role === GeminiChatRole.SYSTEM ? 'model' : message.role,
-      parts: [{ text: message.content }],
-    }));
+    // Build proper history for Gemini
+    // The history should include:
+    // 1. All previous user/model messages (text)
+    // 2. The model's function call (as the last model message)
+    // We do NOT include the function response in history - it's sent via sendMessage
+    // Build proper history for Gemini
+    // 1. Flatten OLD history (safe text descriptions)
+    // 2. Ensure LAST item is the real FunctionCall (required for state)
+    const properHistory: Content[] = [];
+
+    for (let i = 0; i < history.length; i++) {
+      const message = history[i];
+      const isLast = i === history.length - 1;
+      const role = message.role === GeminiChatRole.SYSTEM ? 'model' : message.role;
+
+      if (!message.content) continue;
+
+      // Last message MUST be the function call we are responding to
+      if (isLast && role === 'model') {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          const parsed: any = JSON.parse(message.content);
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+          if (parsed && typeof parsed.name === 'string' && parsed.args !== undefined) {
+            properHistory.push({
+              role: 'model',
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+              parts: [{ functionCall: { name: parsed.name, args: parsed.args } }],
+            });
+            continue;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // For all other messages, flatten to text
+      // Model function call
+      if (role === 'model') {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          const parsed: ToolCallParsed = JSON.parse(message.content);
+
+          if (parsed && parsed.name && parsed.args) {
+            properHistory.push({
+              role: 'model',
+              parts: [
+                {
+                  text: `[System: Model called tool '${parsed.name}' with args: ${JSON.stringify(parsed.args)}]`,
+                },
+              ],
+            });
+            continue;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // User function response
+      if (role === GeminiChatRole.USER) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          const parsed: any = JSON.parse(message.content);
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+          if (parsed && parsed.functionResponse) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+            const respName = parsed.functionResponse.name;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            const respContent = JSON.stringify(parsed.functionResponse.response);
+            properHistory.push({
+              role: 'user',
+              parts: [{ text: `[System: Tool '${respName}' returned: ${respContent}]` }],
+            });
+            continue;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // Regular text
+      properHistory.push({
+        role,
+        parts: [{ text: message.content }],
+      });
+    }
 
     // Gemini requires first message to be from 'user'
     let startIndex = 0;
-    while (startIndex < sanitizedHistory.length && sanitizedHistory[startIndex].role !== 'user') {
+    while (startIndex < properHistory.length && properHistory[startIndex].role !== 'user') {
       startIndex++;
     }
-    const validHistory = sanitizedHistory.slice(startIndex);
+    const validHistory = properHistory.slice(startIndex);
+
+    this.logger.debug(
+      `Gemini generateContentWithFunctionResponse: history length=${validHistory.length}`,
+    );
 
     try {
-      // Chúng ta cần build lại toàn bộ lịch sử cho lệnh gọi này
-      // History bao gồm: [chat cũ, tin nhắn user, functionCall, functionResponse]
-      // ChatService sẽ chịu trách nhiệm đẩy đủ 4 phần này vào history.
-
       const chat = model.startChat({
         history: validHistory,
         generationConfig,
         systemInstruction,
       });
 
-      // Chỉ cần gửi FunctionResponsePart, vì history đã chứa 3 phần trước đó
+      // Send the function response to get Gemini's final text response
       const result = await chat.sendMessage([functionResponse]);
       const text = result.response.text()?.trim();
 
@@ -671,7 +1047,23 @@ export class GeminiService {
       return { text };
     } catch (error) {
       const normalized = this.normalizeGeminiError(error);
-      this.logger.error(normalized.logMessage, normalized.stack);
+      const isEmptyOutputError =
+        normalized.logMessage.includes(
+          'model output must contain either output text or tool calls',
+        ) ||
+        normalized.clientMessage.includes(
+          'model output must contain either output text or tool calls',
+        );
+
+      if (isEmptyOutputError) {
+        this.logger.warn(
+          'Gemini generateContentWithFunctionResponse returned empty content error. Returning fallback.',
+        );
+        return { text: 'Đã xử lý xong yêu cầu của bạn.' };
+      }
+
+      this.logger.error('Gemini generateContentWithFunctionResponse error:', normalized.logMessage);
+      this.logger.error('Error stack:', normalized.stack);
       throw new BadRequestException(normalized.clientMessage);
     }
   }
@@ -761,7 +1153,28 @@ export class GeminiService {
       this.geminiClient = new GoogleGenerativeAI(apiKey);
     }
 
-    const model = this.geminiClient.getGenerativeModel({ model: modelName, tools: effectiveTools });
+    const model = this.geminiClient.getGenerativeModel({
+      model: modelName,
+      tools: effectiveTools,
+      safetySettings: [
+        {
+          category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+      ],
+    });
     this.geminiModels.set(cacheKey, model);
     return model;
   }
@@ -982,9 +1395,12 @@ export class GeminiService {
   }
 
   private getRetryDelay(attempt: number): number {
-    const base = 250;
-    const maxDelay = 2000;
-    return Math.min(maxDelay, base * Math.max(1, attempt));
+    // Exponential backoff with jitter
+    const base = 1000; // 1 second base
+    const maxDelay = 30000; // 30 seconds max
+    const exponentialDelay = base * Math.pow(2, attempt - 1);
+    const jitter = Math.random() * 500; // Add up to 500ms jitter
+    return Math.min(maxDelay, exponentialDelay + jitter);
   }
 
   private async delay(ms: number): Promise<void> {

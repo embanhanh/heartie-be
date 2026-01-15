@@ -106,4 +106,7 @@ export class Product {
 
   @Column({ type: 'float', default: 0 })
   rating: number;
+
+  @Column({ type: 'bigint', nullable: true, unique: true })
+  tikiId?: number | null;
 }

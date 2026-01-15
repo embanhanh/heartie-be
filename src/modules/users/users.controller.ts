@@ -157,4 +157,12 @@ export class UsersController {
     await this.usersService.removeRefreshToken(id);
     return { message: 'Refresh token đã được xóa' };
   }
+
+  @ApiOperation({ summary: 'Lấy danh sách gợi ý sản phẩm' })
+  @Get('me/recommendations')
+  async getRecommendations(@Req() req: Request) {
+    const user = req.user as { id: number } | undefined;
+    const recommendations = await this.usersService.getRecommendations(user!.id);
+    return recommendations;
+  }
 }
