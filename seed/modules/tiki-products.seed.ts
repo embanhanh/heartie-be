@@ -13,12 +13,6 @@ import { VariantAttributeValue } from '../../src/modules/variant_attribute_value
 import { Brand } from '../../src/modules/brands/entities/brand.entity';
 import { Category } from '../../src/modules/categories/entities/category.entity';
 
-interface TikiBrand {
-  id: number;
-  name: string;
-  slug: string;
-}
-
 interface TikiConfigurableProduct {
   option1?: string;
   option2?: string;
@@ -27,14 +21,21 @@ interface TikiConfigurableProduct {
 }
 
 interface TikiProduct {
+  id: number;
   name: string;
   short_description?: string;
   original_price: number;
   rating_average?: number;
   thumbnail_url: string;
-  brand?: TikiBrand;
-  new_category?: string;
+  brand?: string | { id?: number; name?: string; slug?: string };
   configurable_products?: TikiConfigurableProduct[];
+  breadcrumbs?: TikiCategory[];
+}
+
+interface TikiCategory {
+  category_id: number;
+  name: string;
+  url: string;
 }
 
 const BATCH_SIZE = 100;
@@ -64,7 +65,7 @@ const computeColorHex = (colorName: string): string => {
 };
 
 export async function seedTikiProducts(dataSource: DataSource) {
-  const jsonPath = join(__dirname, '..', 'assets', 'tiki_data_normalized_final.json');
+  const jsonPath = join(__dirname, '..', 'assets', 'products_detail.json');
   const rawData = readFileSync(jsonPath, 'utf-8');
   const tikiProducts = JSON.parse(rawData) as TikiProduct[];
 
@@ -208,17 +209,22 @@ export async function seedTikiProducts(dataSource: DataSource) {
 
       // Look up brand
       let brandId: number | null = null;
-      if (tikiProduct.brand?.name) {
-        const brand = brandMap.get(tikiProduct.brand.name.toLowerCase().trim());
-        if (brand) {
-          brandId = brand.id;
+      if (tikiProduct.brand) {
+        const brandName =
+          typeof tikiProduct.brand === 'string' ? tikiProduct.brand : tikiProduct.brand.name;
+        if (brandName) {
+          const brand = brandMap.get(brandName.toLowerCase().trim());
+          if (brand) {
+            brandId = brand.id;
+          }
         }
       }
 
       // Look up category
       let categoryId: number | null = null;
-      if (tikiProduct.new_category) {
-        const category = categoryMap.get(tikiProduct.new_category.toLowerCase().trim());
+      const categoryName = tikiProduct.breadcrumbs?.[2]?.name;
+      if (categoryName) {
+        const category = categoryMap.get(categoryName.toLowerCase().trim());
         if (category) {
           categoryId = category.id;
         }
@@ -228,6 +234,7 @@ export async function seedTikiProducts(dataSource: DataSource) {
         await dataSource.transaction(async (manager) => {
           // Create Product
           const product = manager.getRepository(Product).create({
+            tikiId: tikiProduct.id,
             name: tikiProduct.name.trim(),
             description: tikiProduct.short_description?.trim() || undefined,
             originalPrice: tikiProduct.original_price,

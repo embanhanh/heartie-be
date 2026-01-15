@@ -4,6 +4,7 @@ import { Repository, DataSource } from 'typeorm';
 import { Conversation } from '../conversations/entities/conversation.entity';
 import { ConversationParticipant } from '../conversation_participants/entities/conversation_participant.entity';
 import { Message } from '../messages/entities/message.entity';
+import { MessageRole } from '../messages/enums/message.enums';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 
 type PaginateOpts = { limit?: number; cursorId?: number | null };
@@ -76,6 +77,7 @@ export class ConversationsService {
       const welcomeMessage = trx.getRepository(Message).create({
         conversationId: saved.id,
         senderParticipantId: null,
+        role: MessageRole.ASSISTANT,
         content: `Xin chào! Mình là Fia - Trợ lý AI của Fashia 👋
 
 Mình có thể giúp bạn:

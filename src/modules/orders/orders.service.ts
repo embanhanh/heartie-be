@@ -175,11 +175,18 @@ export class OrdersService extends BaseService<Order> {
     return { order, payUrl: null };
   }
 
-  // Get order status by order number and user ID
+  // Get order status by order number and user ID (used for payment polling)
   async getOrderStatus(
     orderNumber: string,
     userId: number,
-  ): Promise<{ id: number; orderNumber: string; status: OrderStatus; totalAmount: number }> {
+  ): Promise<{
+    id: number;
+    orderNumber: string;
+    status: OrderStatus;
+    totalAmount: number;
+    isPaid: boolean;
+    paidAt: Date | null;
+  }> {
     const order = await this.repo.findOne({ where: { orderNumber, user: { id: userId } } });
 
     if (!order) {
@@ -190,6 +197,8 @@ export class OrdersService extends BaseService<Order> {
       orderNumber: order.orderNumber,
       status: order.status,
       totalAmount: order.totalAmount,
+      isPaid: order.paidAt !== null,
+      paidAt: order.paidAt ?? null,
     };
   }
 

@@ -128,6 +128,13 @@ export class AddressesService {
     return saved;
   }
 
+  async findAllByUser(userId: number) {
+    return this.repo.find({
+      where: { userId },
+      order: { isDefault: 'DESC', createdAt: 'DESC' },
+    });
+  }
+
   async remove(id: number) {
     const existing = await this.repo.findOne({ where: { id } });
 

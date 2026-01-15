@@ -8,6 +8,10 @@ import { ConversationParticipant } from '../conversation_participants/entities/c
 import { GeminiModule } from '../gemini/gemini.module';
 import { OrdersModule } from '../orders/orders.module';
 import { ProductsModule } from '../products/products.module';
+import { CartItemsModule } from '../cart_items/cart-items.module';
+import { CartsModule } from '../carts/carts.module';
+import { AddressesModule } from '../addresses/addresses.module';
+import { VouchersModule } from '../vouchers/vouchers.module';
 
 @Module({
   imports: [
@@ -15,6 +19,10 @@ import { ProductsModule } from '../products/products.module';
     GeminiModule,
     forwardRef(() => OrdersModule),
     forwardRef(() => ProductsModule),
+    forwardRef(() => CartItemsModule),
+    CartsModule,
+    AddressesModule,
+    VouchersModule,
   ],
   controllers: [MessagesController],
   providers: [MessagesService],

@@ -278,6 +278,7 @@ const brandSeeds: Array<{ name: string; status: BrandStatus }> = [
   { name: 'UNIGREEN', status: BrandStatus.ACTIVE },
   { name: 'ZooZoo', status: BrandStatus.ACTIVE },
   { name: 'NAVICOM', status: BrandStatus.ACTIVE },
+  { name: 'WinBeen', status: BrandStatus.ACTIVE },
 ];
 
 export async function seedBrands(dataSource: DataSource) {

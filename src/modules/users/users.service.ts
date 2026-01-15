@@ -17,12 +17,28 @@ import { FilterUserDto } from './dto/filter-users.dto';
 import { PaginatedResult, SortParam } from '../../common/dto/pagination.dto';
 import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
+import axios from 'axios';
+import { ProductsService } from '../products/products.service';
+
+export interface TikiRecommendationItem {
+  productId: number;
+  score: number;
+  rank: number;
+}
+
+export interface TikiRecommendationResponse {
+  userId: number;
+  recommendations: TikiRecommendationItem[];
+  model?: string;
+  count?: number;
+}
 
 @Injectable()
 export class UsersService extends BaseService<User> {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly productService: ProductsService,
   ) {
     super(userRepository, 'user');
   }
@@ -297,5 +313,46 @@ export class UsersService extends BaseService<User> {
       data,
       meta: result.meta,
     };
+  }
+
+  async getRecommendations(userId: number) {
+    try {
+      const user = await this.userRepository.findOne({ where: { id: userId } });
+      if (!user) {
+        throw new NotFoundException(`User with ID ${userId} not found`);
+      }
+
+      // console.log(user);
+
+      const response = await axios.get<TikiRecommendationResponse>(
+        'http://localhost:5000/api/v1/recommendations',
+        {
+          params: {
+            user_id: user.tikiId,
+          },
+        },
+      );
+
+      const data = response.data;
+      if (!data.recommendations || !Array.isArray(data.recommendations)) {
+        return [];
+      }
+
+      const productIds = data.recommendations.map((rec) => rec.productId);
+      console.log(productIds);
+
+      if (productIds.length === 0) {
+        return [];
+      }
+
+      const products = await this.productService.findByTikiIds(productIds);
+
+      console.log(products);
+
+      return products;
+    } catch (error) {
+      console.error('Error fetching recommendations:', error);
+      return [];
+    }
   }
 }

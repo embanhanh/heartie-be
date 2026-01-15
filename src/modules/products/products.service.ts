@@ -1518,4 +1518,129 @@ export class ProductsService extends BaseService<Product> {
   private computeSuggestionMinScore(tokenCount: number): number {
     return Math.max(0.1, Math.min(0.35, 0.45 - tokenCount * 0.05));
   }
+
+  async findByTikiIds(tikiIds: number[]): Promise<ProductDetail[]> {
+    if (!tikiIds || tikiIds.length === 0) {
+      return [];
+    }
+    console.log('findByTikiIds', tikiIds);
+
+    const products = await this.productRepo.find({
+      where: { tikiId: In(tikiIds) },
+      relations: {
+        brand: true,
+        category: true,
+        productAttributes: { attribute: true },
+        variants: {
+          attributeValues: { attribute: true, attributeValue: true },
+          inventories: { branch: true },
+        },
+        ratings: true,
+      },
+    });
+
+    console.log('products', products);
+
+    // Record product views like findOne
+    for (const product of products) {
+      this.statsTrackingService.recordProductView(product.id).catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to record product view for id=${product.id}: ${reason}`);
+      });
+    }
+
+    return products.map((product) => this.mapToDetail(product));
+  }
+
+  private mapToDetail(product: Product): ProductDetail {
+    const { productAttributes = [], ...rest } = product;
+
+    const attributeValueMap = new Map<number, Map<number, AttributeValueSummary>>();
+    for (const variant of rest.variants ?? []) {
+      for (const variantAttribute of variant.attributeValues ?? []) {
+        const attributeEntity = variantAttribute.attribute as Attribute | undefined;
+        const attributeValueEntity = variantAttribute.attributeValue as AttributeValue | undefined;
+
+        if (!attributeEntity || !attributeValueEntity) {
+          continue;
+        }
+
+        let valueMap = attributeValueMap.get(attributeEntity.id);
+        if (!valueMap) {
+          valueMap = new Map<number, AttributeValueSummary>();
+          attributeValueMap.set(attributeEntity.id, valueMap);
+        }
+
+        if (!valueMap.has(attributeValueEntity.id)) {
+          valueMap.set(attributeValueEntity.id, {
+            id: attributeValueEntity.id,
+            value: attributeValueEntity.value,
+            meta:
+              attributeValueEntity.meta && typeof attributeValueEntity.meta === 'object'
+                ? attributeValueEntity.meta
+                : {},
+          });
+        }
+      }
+    }
+
+    const attributes = productAttributes
+      .filter((item): item is ProductAttribute & { attribute: Attribute } =>
+        Boolean(item.attribute),
+      )
+      .map<ProductAttributeSummary>((item) => {
+        const attribute = item.attribute;
+        const valueMap = attributeValueMap.get(attribute.id);
+        const values = valueMap ? Array.from(valueMap.values()) : [];
+
+        return {
+          id: attribute.id,
+          name: attribute.name,
+          type: attribute.type,
+          isRequired: item.isRequired,
+          values,
+        };
+      });
+
+    const normalizedVariants = (rest.variants ?? []).map((variant) => ({
+      ...variant,
+      price: this.asNumber(variant.price),
+      weight: this.asNullableNumber(variant.weight) ?? undefined,
+      image: variant.image ?? undefined,
+      inventories: (variant.inventories ?? []).map((inventory) => ({
+        ...inventory,
+        stock: this.asNumber(inventory.stock),
+      })),
+    }));
+
+    const images: string[] = [];
+    const imageSet = new Set<string>();
+    const pushImage = (candidate?: string | null) => {
+      if (!candidate) {
+        return;
+      }
+
+      const trimmed = candidate.trim();
+      if (!trimmed || imageSet.has(trimmed)) {
+        return;
+      }
+
+      imageSet.add(trimmed);
+      images.push(trimmed);
+    };
+
+    pushImage(rest.image ?? undefined);
+    for (const variant of normalizedVariants) {
+      pushImage(variant.image ?? undefined);
+    }
+
+    return {
+      ...(rest as Omit<Product, 'productAttributes'>),
+      image: rest.image ?? undefined,
+      originalPrice: this.asNumber(rest.originalPrice),
+      variants: normalizedVariants,
+      attributes,
+      images,
+    };
+  }
 }
