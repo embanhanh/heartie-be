@@ -169,6 +169,11 @@ export class AdsAiController {
     return this.service.publishNow(Number(id), dto);
   }
 
+  @Post(':id/sync-metrics')
+  syncMetrics(@Param('id') id: string) {
+    return this.service.syncMetrics(Number(id));
+  }
+
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.service.remove(Number(id));

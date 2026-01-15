@@ -71,6 +71,12 @@ export class Category {
       return;
     }
 
+    // Temporary slug for child categories before ID is generated to avoid uniqueness constraint violation
+    if (this.parentId && !this.id) {
+      this.slug = `${baseSlug}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      return;
+    }
+
     this.slug = baseSlug;
   }
 }

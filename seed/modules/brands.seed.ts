@@ -71,7 +71,7 @@ const brandSeeds: Array<{ name: string; status: BrandStatus }> = [
   { name: 'Le Coon', status: BrandStatus.ACTIVE },
   { name: 'Julius', status: BrandStatus.ACTIVE },
   { name: 'LYNUSAN', status: BrandStatus.ACTIVE },
-  { name: 'KHATOCO ', status: BrandStatus.ACTIVE },
+  { name: 'KHATOCO', status: BrandStatus.ACTIVE },
   { name: 'PI Home Of Beauty', status: BrandStatus.ACTIVE },
   { name: 'Tri’C', status: BrandStatus.ACTIVE },
   { name: 'ĐỒ DA THÀNH LONG TLG', status: BrandStatus.ACTIVE },
@@ -293,7 +293,7 @@ export async function seedBrands(dataSource: DataSource) {
       continue;
     }
 
-    const brand = repo.create(seed);
+    const brand = repo.create({ ...seed, name });
     await repo.save(brand);
   }
 

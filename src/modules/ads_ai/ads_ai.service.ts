@@ -119,12 +119,17 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     // Nếu có hình ảnh (từ upload hoặc đường dẫn sẵn có) thì ưu tiên postType là PHOTO
     // Nếu có nhiều ảnh -> CAROUSEL
     const basePostType = this.normalizePostTypeInput(dto.postType);
-    let resolvedPostType = imagePath ? AdsAiPostType.PHOTO : basePostType;
+    let resolvedPostType = basePostType;
 
     if (combinedImages.length > 1) {
       resolvedPostType = AdsAiPostType.CAROUSEL;
-    } else if (combinedImages.length === 1 && !imagePath) {
+    } else if (imagePath || combinedImages.length === 1) {
       resolvedPostType = AdsAiPostType.PHOTO;
+    } else {
+      // Nếu không có ảnh nào được cung cấp, quay về định dạng LINK
+      if (basePostType === AdsAiPostType.PHOTO || basePostType === AdsAiPostType.CAROUSEL) {
+        resolvedPostType = AdsAiPostType.LINK;
+      }
     }
 
     const product = await this.resolveProduct(dto.productId, { strict: !!dto.productId });
@@ -436,6 +441,29 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
         this.logger.error(`Failed to sync metrics for ad ${ad.id}: ${message}`);
       }
     }
+  }
+
+  async syncMetrics(id: number) {
+    this.logger.debug(`[syncMetrics] ID: ${id}`);
+    const ad = await this.getCampaignOrFail(id);
+
+    // Only sync if facebookPostId is present
+    if (!ad.facebookPostId) {
+      // If it's a link ad that hasn't been posted yet, we can't sync.
+      // However, the requirement is to update metrics. If not posted, maybe just return current metrics.
+      return ad;
+    }
+
+    const accessToken = this.configService.get<string>('FACEBOOK_PAGE_ACCESS_TOKEN');
+    const baseUrl =
+      this.configService.get<string>('FB_GRAPH_API_URL') ?? 'https://graph.facebook.com/v24.0';
+
+    if (!accessToken) {
+      throw new BadRequestException('Chưa cấu hình Facebook Access Token');
+    }
+
+    await this.syncAdMetrics(ad, accessToken, baseUrl);
+    return ad;
   }
 
   private async syncAdMetrics(ad: AdsAiCampaign, accessToken: string, baseUrl: string) {
