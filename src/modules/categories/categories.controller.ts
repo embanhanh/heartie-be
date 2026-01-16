@@ -93,14 +93,8 @@ export class CategoriesController {
           example: 2,
         },
         image: {
-          oneOf: [
-            { type: 'string', format: 'binary' },
-            {
-              type: 'string',
-              example: 'null',
-              description: 'Use `null` to remove existing image.',
-            },
-          ],
+          type: 'string',
+          format: 'binary',
           nullable: true,
         },
       },

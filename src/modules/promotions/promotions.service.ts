@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, Repository, LessThan } from 'typeorm';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { Promotion, DiscountType, ApplyScope } from './entities/promotion.entity';
 import { CreatePromotionDto } from './dto/create-promotion.dto';
 import { UpdatePromotionDto } from './dto/update-promotion.dto';
@@ -12,6 +13,7 @@ import { PromotionQueryDto } from './dto/promotion-query.dto';
 
 @Injectable()
 export class PromotionsService extends BaseService<Promotion> {
+  private readonly logger = new Logger(PromotionsService.name);
   private readonly defaultRelations = {
     conditions: { product: true },
     branches: { branch: true },
@@ -23,6 +25,21 @@ export class PromotionsService extends BaseService<Promotion> {
     private readonly repo: Repository<Promotion>,
   ) {
     super(repo, 'promotion');
+  }
+
+  @Cron(CronExpression.EVERY_HOUR)
+  async handleExpiration() {
+    const now = new Date();
+    const result = await this.repo.update(
+      {
+        isActive: true,
+        endDate: LessThan(now),
+      },
+      { isActive: false },
+    );
+    if (result.affected && result.affected > 0) {
+      this.logger.log(`Deactivated ${result.affected} expired promotions`);
+    }
   }
 
   async create(dto: CreatePromotionDto) {

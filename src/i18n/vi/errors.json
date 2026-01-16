@@ -1,0 +1,32 @@
+{
+  "common": {
+    "badRequest": "Yêu cầu không hợp lệ.",
+    "unauthorized": "Bạn không có quyền thực hiện hành động này.",
+    "forbidden": "Bạn không được phép truy cập tài nguyên này.",
+    "notFound": "Không tìm thấy tài nguyên yêu cầu.",
+    "conflict": "Không thể xử lý yêu cầu do xung đột dữ liệu.",
+    "internal": "Đã xảy ra lỗi không mong muốn. Vui lòng thử lại sau."
+  },
+  "validation": {
+    "invalidPayload": "Dữ liệu gửi lên không hợp lệ.",
+    "missingField": "Thiếu trường bắt buộc.",
+    "invalidFormat": "Định dạng giá trị không hợp lệ.",
+    "toxicContent": "Nội dung đánh giá chứa ngôn từ không phù hợp. Vui lòng chỉnh sửa lại.",
+    "spamContent": "Nội dung đánh giá có vẻ như là spam. Vui lòng kiểm tra lại."
+  },
+  "adminCopilot": {
+    "messageEmpty": "Tin nhắn không được để trống.",
+    "conversationNotFound": "Không tìm thấy cuộc trò chuyện trợ lý quản trị.",
+    "conversationAccessDenied": "Bạn không được phép truy cập cuộc trò chuyện này.",
+    "conversationUnauthorized": "Bạn cần đăng nhập để sử dụng trợ lý quản trị.",
+    "toolUnsupported": "Tool yêu cầu chưa được hỗ trợ.",
+    "adminNotFound": "Không tìm thấy tài khoản quản trị.",
+    "geminiNoAnswer": "Gemini không trả về phản hồi nào.",
+    "stockAlertBranchMismatch": "Quản trị viên chi nhánh chỉ được phép truy vấn dữ liệu của chi nhánh mình.",
+    "historyLoadFailed": "Không thể tải lịch sử trợ lý quản trị.",
+    "socketUnauthorized": "Bạn phải xác thực để sử dụng chat trợ lý quản trị.",
+    "socketTokenInvalid": "Token truy cập không hợp lệ.",
+    "toolExecutionFailed": "Có lỗi khi thực thi tool trợ lý quản trị.",
+    "postPlanParseFailed": "Không thể phân tích dữ liệu kế hoạch bài đăng do trợ lý trả về."
+  }
+}

@@ -27,13 +27,6 @@ class OrderItemDto {
 }
 
 export class CreateOrderDto {
-  @ApiPropertyOptional({ example: 5, description: 'FK -> users.id' })
-  @IsOptional()
-  @IsInt()
-  @IsPositive()
-  @Type(() => Number)
-  userId?: number;
-
   @ApiPropertyOptional({ example: 2, description: 'FK -> branches.id' })
   @IsOptional()
   @IsInt()
@@ -57,7 +50,12 @@ export class CreateOrderDto {
   @MaxLength(1000)
   note?: string;
 
-  @ApiPropertyOptional({ enum: PaymentMethod, example: PaymentMethod.COD })
+  @ApiPropertyOptional({
+    enum: PaymentMethod,
+    example: PaymentMethod.MOMO,
+    description:
+      'Phương thức thanh toán. Nếu chọn MOMO, response sẽ trả về payUrl để redirect user đến trang thanh toán MoMo',
+  })
   @IsOptional()
   @IsEnum(PaymentMethod)
   paymentMethod?: PaymentMethod;
@@ -91,7 +89,7 @@ export class CreateOrderDto {
   @IsDate()
   cancelledAt?: Date;
 
-  @ApiPropertyOptional({ enum: OrderStatus, example: OrderStatus.PENDING })
+  @ApiPropertyOptional({ enum: OrderStatus, example: OrderStatus.PENDING_PAYMENT })
   @IsOptional()
   @IsEnum(OrderStatus)
   status?: OrderStatus;

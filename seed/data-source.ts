@@ -29,6 +29,15 @@ export const AppDataSource = new DataSource({
   entities: [Brand, Category, join(__dirname, '..', 'src', '**', '*.entity.{ts,js}')],
   synchronize: true,
   logging: false,
+  ssl: process.env.DB_SSL === 'true',
+  extra:
+    process.env.DB_SSL === 'true'
+      ? {
+          ssl: {
+            rejectUnauthorized: false,
+          },
+        }
+      : undefined,
 });
 
 enablePostgresVectorType(AppDataSource);

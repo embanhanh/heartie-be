@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { IsNull, Repository } from 'typeorm';
-import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import {
   getMessaging,
@@ -12,10 +11,12 @@ import {
   WebpushNotification,
 } from 'firebase-admin/messaging';
 import { NotificationToken } from './entities/notification-token.entity';
+import { Notification } from './entities/notification.entity';
 import { RegisterNotificationTokenDto } from './dto/register-notification-token.dto';
 import { UserRole } from '../users/entities/user.entity';
 import { FirebaseConfig } from '../../config/firebase.config';
-import { OrderStatus } from '../orders/entities/order.entity';
+import { OrderStatus, Order } from '../orders/entities/order.entity';
+import { EmailService } from '../email/email.service';
 
 export interface OrderCreatedAdminPayload {
   orderId: number;
@@ -59,18 +60,51 @@ export class NotificationsService {
   constructor(
     @InjectRepository(NotificationToken)
     private readonly notificationTokenRepo: Repository<NotificationToken>,
+    @InjectRepository(Notification)
+    private readonly notificationRepo: Repository<Notification>,
     private readonly configService: ConfigService,
+    private readonly emailService: EmailService,
   ) {
     this.firebaseConfig = this.configService.get<FirebaseConfig>('firebase') ?? {};
     this.initializeFirebaseMessaging();
+  }
+
+  async notifyUserOrderCreated(order: Order): Promise<void> {
+    // Send Email
+    await this.emailService.sendOrderCreated(order);
+
+    // Send Push Notification
+    if (order.userId) {
+      const title = `Đặt hàng thành công`;
+      const body = `Cảm ơn bạn đã đặt hàng! Đơn hàng ${order.orderNumber} của bạn đã được tiếp nhận.`;
+
+      await this.createNotification(order.userId, title, body, {
+        type: 'order_created_user',
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        totalAmount: order.totalAmount,
+        link: `/orders/${order.id}`,
+        icon: DEFAULT_WEB_ICON,
+      });
+
+      const tokens = await this.getUserTokens(order.userId);
+      await this.dispatchNotification({
+        tokens,
+        notification: { title, body },
+        data: {
+          type: 'order_created_user',
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          link: `/orders/${order.id}`,
+        },
+      });
+    }
   }
 
   async registerToken(
     userId: number,
     dto: RegisterNotificationTokenDto,
   ): Promise<NotificationToken> {
-    const now = new Date();
-
     await this.notificationTokenRepo.delete({ token: IsNull() });
 
     const token = dto.token.trim();
@@ -78,69 +112,88 @@ export class NotificationsService {
     const platform = dto.platform ?? 'web';
     const metadata = dto.metadata ?? null;
 
-    let entity = await this.notificationTokenRepo.findOne({
+    // 1. Find existing record by token
+    const existingByToken = await this.notificationTokenRepo.findOne({
       where: { token },
     });
 
-    if (!entity && deviceId) {
-      entity = await this.notificationTokenRepo.findOne({
+    // 2. Find existing record by (userId, deviceId) - if deviceId is present
+    let existingByDevice: NotificationToken | null = null;
+    if (deviceId) {
+      existingByDevice = await this.notificationTokenRepo.findOne({
         where: { userId, deviceId },
       });
     }
 
-    if (entity) {
-      entity.userId = userId;
-      entity.platform = platform;
-      entity.deviceId = deviceId;
-      entity.metadata = metadata;
-      entity.token = token;
-      entity.lastUsedAt = now;
-      entity.isActive = true;
-    } else {
-      if (deviceId) {
-        const upsertPayload = {
-          userId,
-          token,
-          deviceId,
-          platform,
-          metadata,
-          lastUsedAt: now,
-          isActive: true,
-        } as QueryDeepPartialEntity<NotificationToken>;
+    // Logic to resolve conflicts:
+    // We want the final state to be: A record exists with { userId, deviceId, token, ... }
+    // We must ensure unique constraints on 'token' and '(userId, deviceId)' are respected.
 
-        await this.notificationTokenRepo.upsert(upsertPayload, {
-          conflictPaths: ['userId', 'deviceId'],
-        });
-
-        entity = await this.notificationTokenRepo.findOne({
-          where: { userId, deviceId },
-        });
+    if (existingByToken && existingByDevice) {
+      if (existingByToken.id === existingByDevice.id) {
+        // Case A: The existing token record IS the same as the user/device record.
+        // Just update metadata.
+        existingByToken.platform = platform;
+        existingByToken.metadata = metadata;
+        existingByToken.lastUsedAt = new Date();
+        existingByToken.isActive = true;
+        // userId and deviceId are already correct
+        return this.notificationTokenRepo.save(existingByToken);
       } else {
-        entity = this.notificationTokenRepo.create({
-          userId,
-          token,
-          platform,
-          deviceId,
-          metadata,
-          lastUsedAt: now,
-          isActive: true,
-        });
-      }
-    }
+        // Case B: Token exists on Row 1, User/Device exists on Row 2.
+        // We want User/Device (Row 2) to claim this Token.
+        // Row 1 is now invalid (token moved). Delete Row 1.
+        await this.notificationTokenRepo.delete(existingByToken.id);
 
-    if (!entity) {
-      entity = this.notificationTokenRepo.create({
+        // Update Row 2 with the token.
+        existingByDevice.token = token;
+        existingByDevice.platform = platform;
+        existingByDevice.metadata = metadata;
+        existingByDevice.lastUsedAt = new Date();
+        existingByDevice.isActive = true;
+        return this.notificationTokenRepo.save(existingByDevice);
+      }
+    } else if (existingByToken && !existingByDevice) {
+      // Case C: Token exists (Row 1), but no record for this User/Device.
+      // We assume Row 1 is the record we want to "move" to this User/Device context (or it's already correct userId but different deviceId? No, different deviceId would be caught above if we searched by just userId?)
+      // Actually, if deviceId is null, existingByDevice is null.
+      // Or if deviceId is new for this user.
+
+      // If existingByToken.userId !== userId, we are moving token to new user.
+      // If existingByToken.deviceId !== deviceId, we are moving token to new device (likely existingByToken.deviceId was null or different).
+
+      // CAUTION: If we update Row 1 to use (userId, deviceId), we must be sure no other row has (userId, deviceId).
+      // We already checked existingByDevice (by userId, deviceId). It is null. So safe to update.
+
+      existingByToken.userId = userId;
+      existingByToken.deviceId = deviceId;
+      existingByToken.platform = platform;
+      existingByToken.metadata = metadata;
+      existingByToken.lastUsedAt = new Date();
+      existingByToken.isActive = true;
+      return this.notificationTokenRepo.save(existingByToken);
+    } else if (!existingByToken && existingByDevice) {
+      // Case D: Token is new (not in DB). User/Device record exists (Row 2).
+      // Update Row 2 with new token.
+      existingByDevice.token = token;
+      existingByDevice.platform = platform;
+      existingByDevice.metadata = metadata;
+      existingByDevice.lastUsedAt = new Date();
+      existingByDevice.isActive = true;
+      return this.notificationTokenRepo.save(existingByDevice);
+    } else {
+      // Case E: Neither exists. New record.
+      const newEntity = this.notificationTokenRepo.create({
         userId,
         token,
-        platform,
         deviceId,
+        platform,
         metadata,
-        lastUsedAt: now,
+        lastUsedAt: new Date(),
         isActive: true,
       });
+      return this.notificationTokenRepo.save(newEntity);
     }
-
-    return this.notificationTokenRepo.save(entity);
   }
 
   async removeToken(token: string, userId?: number): Promise<boolean> {
@@ -149,6 +202,44 @@ export class NotificationsService {
       ...(userId ? { userId } : {}),
     });
     return (result.affected ?? 0) > 0;
+  }
+
+  async getNotifications(
+    userId: number,
+    page = 1,
+    limit = 20,
+  ): Promise<{ data: Notification[]; total: number }> {
+    const [data, total] = await this.notificationRepo.findAndCount({
+      where: { userId },
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+
+    return { data, total };
+  }
+
+  async markAsRead(userId: number, notificationId: number): Promise<void> {
+    await this.notificationRepo.update({ id: notificationId, userId }, { readAt: new Date() });
+  }
+
+  async markAllAsRead(userId: number): Promise<void> {
+    await this.notificationRepo.update({ userId, readAt: IsNull() }, { readAt: new Date() });
+  }
+
+  private async createNotification(
+    userId: number,
+    title: string,
+    body: string,
+    data?: Record<string, any> | null,
+  ): Promise<Notification> {
+    const notification = this.notificationRepo.create({
+      userId,
+      title,
+      body,
+      data,
+    });
+    return this.notificationRepo.save(notification);
   }
 
   async notifyAdminsOrderCreated(
@@ -163,7 +254,6 @@ export class NotificationsService {
       notification: {
         title: 'Đơn hàng mới',
         body: `Đơn hàng ${payload.orderNumber} trị giá ${formattedAmount}.`,
-        imageUrl: DEFAULT_WEB_ICON,
       },
       data: {
         type: 'order_created',
@@ -177,9 +267,57 @@ export class NotificationsService {
     });
   }
 
+  async notifyAdminsAdPublished(payload: {
+    id: number;
+    name: string;
+    publishedAt: Date;
+    type: string;
+  }): Promise<NotificationDispatchResult> {
+    const tokens = await this.getAdminTokens();
+
+    return this.dispatchNotification({
+      tokens,
+      topic: this.firebaseConfig.adminTopic,
+      notification: {
+        title: 'Quảng cáo đã được đăng',
+        body: `Chiến dịch "${payload.name}" đã được đăng thành công lên Facebook.`,
+      },
+      data: {
+        type: 'ad_published',
+        id: payload.id,
+        name: payload.name,
+        postType: payload.type,
+        link: `/admin`,
+        icon: DEFAULT_WEB_ICON,
+      },
+    });
+  }
+
   async notifyUserOrderStatusChanged(
     payload: OrderStatusChangedPayload,
+    order?: Order,
   ): Promise<NotificationDispatchResult> {
+    // Send Email if order object is provided
+    if (order) {
+      await this.emailService.sendOrderStatusChanged(order);
+    }
+
+    // Persist notification
+    await this.createNotification(
+      payload.userId,
+      `Đơn hàng ${payload.orderNumber}`,
+      this.buildStatusMessage(payload.status),
+      {
+        type: 'order_status',
+        orderId: payload.orderId,
+        orderNumber: payload.orderNumber,
+        status: payload.status,
+        totalAmount: payload.totalAmount,
+        link: `/orders/${payload.orderId}`,
+        icon: DEFAULT_WEB_ICON,
+      },
+    );
+
     const tokens = await this.getUserTokens(payload.userId);
 
     return this.dispatchNotification({
@@ -436,6 +574,7 @@ export class NotificationsService {
   private buildStatusMessage(status: OrderStatus): string {
     const mapping: Record<OrderStatus, string> = {
       [OrderStatus.PENDING]: 'Đơn hàng của bạn đang chờ xác nhận.',
+      [OrderStatus.PENDING_PAYMENT]: 'Đơn hàng của bạn đang chờ thanh toán.',
       [OrderStatus.CONFIRMED]: 'Đơn hàng của bạn đã được xác nhận.',
       [OrderStatus.PROCESSING]: 'Đơn hàng của bạn đang được xử lý.',
       [OrderStatus.SHIPPED]: 'Đơn hàng của bạn đã được giao cho đơn vị vận chuyển.',

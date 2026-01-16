@@ -1,0 +1,11 @@
+{
+  "app": {
+    "name": "Nền tảng Fashia"
+  },
+  "responses": {
+    "success": "Thành công",
+    "created": "Tạo mới thành công.",
+    "updated": "Cập nhật thành công.",
+    "deleted": "Xoá thành công."
+  }
+}

@@ -10,6 +10,6 @@ import { PromotionBranch } from '../promotion_branches/entities/promotion-branch
   imports: [TypeOrmModule.forFeature([Promotion, PromotionCondition, PromotionBranch])],
   controllers: [PromotionsController],
   providers: [PromotionsService],
-  exports: [TypeOrmModule],
+  exports: [TypeOrmModule, PromotionsService],
 })
 export class PromotionsModule {}

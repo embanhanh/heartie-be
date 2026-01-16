@@ -1,3 +1,6 @@
+import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, QueryFailedError, Repository, SelectQueryBuilder } from 'typeorm';
@@ -7,6 +10,7 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { Brand } from '../brands/entities/brand.entity';
 import { PaginatedResult, SortParam } from 'src/common/dto/pagination.dto';
 import { BaseService } from 'src/common/services/base.service';
+import { normalizeString } from 'src/common/utils/data-normalization.util';
 import {
   ProductVariant,
   ProductVariantStatus,
@@ -20,9 +24,18 @@ import { VariantAttributeValue } from '../variant_attribute_values/entities/vari
 import { ProductFormPayloadDto } from './dto/product-form.dto';
 import { ProductQueryDto } from './dto/product-query.dto';
 import { UploadedFile } from 'src/common/types/uploaded-file.type';
-import { resolveModuleUploadPath } from 'src/common/utils/upload.util';
+import { BoundingBoxDto } from './dto/image-search.dto';
 import { SemanticSearchService } from '../semantic_search/semantic-search.service';
 import { RankedProductRow } from '../semantic_search/semantic-search.service';
+import { StatsTrackingService } from '../stats/services/stats-tracking.service';
+import { GeminiService } from '../gemini/gemini.service';
+import { VisionService } from '../vision/vision.service';
+import {
+  ImageSearchResult,
+  ImageSearchService,
+  MatchResult,
+} from '../image_search/image-search.service';
+import { UploadService } from '../upload/upload.service';
 
 type VariantSummary = {
   id: number;
@@ -72,6 +85,11 @@ export class ProductsService extends BaseService<Product> {
     @InjectRepository(Branch)
     private readonly branchRepo: Repository<Branch>,
     private readonly semanticSearchService: SemanticSearchService,
+    private readonly statsTrackingService: StatsTrackingService,
+    private readonly geminiService: GeminiService,
+    private readonly visionService: VisionService,
+    private readonly imageSearchService: ImageSearchService,
+    private readonly uploadService: UploadService,
   ) {
     super(productRepo, 'product');
   }
@@ -136,13 +154,15 @@ export class ProductsService extends BaseService<Product> {
       }
     }
 
-    const branchExists = await this.branchRepo.exist({
-      where: { id: branchId },
-    });
+    if (branchId) {
+      const branchExists = await this.branchRepo.exist({
+        where: { id: branchId },
+      });
 
-    if (!branchExists) {
-      this.logger.warn(`Branch not found: ${branchId}`);
-      throw new BadRequestException(`Branch not found: ${branchId}`);
+      if (!branchExists) {
+        this.logger.warn(`Branch not found: ${branchId}`);
+        throw new BadRequestException(`Branch not found: ${branchId}`);
+      }
     }
 
     this.logger.debug(`Received ${files.length} uploaded file(s)`);
@@ -163,15 +183,19 @@ export class ProductsService extends BaseService<Product> {
       const inventoryRepo = manager.getRepository(ProductVariantInventory);
 
       const productEntity = productRepo.create();
-      productEntity.name = productPayload.name;
+      if (productPayload.name) productEntity.name = productPayload.name;
       productEntity.brandId = normalizedBrandId;
       productEntity.categoryId = normalizedCategoryId;
       productEntity.description = productPayload.description ?? undefined;
       const fallbackProductImage = this.sanitizeExistingAsset(productPayload.image);
 
-      productEntity.image = productImage
-        ? this.resolveStoredPath(productImage)
-        : fallbackProductImage;
+      if (productImage) {
+        const uploadResult = await this.uploadService.uploadSingle(productImage, 'products');
+        productEntity.image = uploadResult.url;
+      } else {
+        productEntity.image = fallbackProductImage;
+      }
+
       productEntity.status = productPayload.status ?? ProductStatus.ACTIVE;
       productEntity.originalPrice = resolvedOriginalPrice;
       productEntity.stock = 0;
@@ -184,7 +208,7 @@ export class ProductsService extends BaseService<Product> {
       const attributeValueByAttrAndValue = new Map<string, AttributeValue>();
       const linkedProductAttributeIds = new Set<number>();
 
-      for (const attributePayload of attributes) {
+      for (const attributePayload of attributes ?? []) {
         let attributeEntity: Attribute | null = null;
 
         if (attributePayload.id) {
@@ -258,9 +282,10 @@ export class ProductsService extends BaseService<Product> {
         }
       }
 
+      // Variant loop refactoring
       let totalStock = 0;
 
-      for (const [index, variantPayload] of variants.entries()) {
+      for (const [index, variantPayload] of (variants ?? []).entries()) {
         const variantImage = variantImages.get(index);
 
         const variantEntity = variantRepo.create();
@@ -270,9 +295,15 @@ export class ProductsService extends BaseService<Product> {
         variantEntity.status = variantPayload.status ?? ProductVariantStatus.ACTIVE;
         const fallbackVariantImage = this.sanitizeExistingAsset(variantPayload.image ?? undefined);
 
-        variantEntity.image = variantImage
-          ? this.resolveStoredPath(variantImage)
-          : fallbackVariantImage;
+        if (variantImage) {
+          const uploadResult = await this.uploadService.uploadSingle(
+            variantImage,
+            'products/variants',
+          );
+          variantEntity.image = uploadResult.url;
+        } else {
+          variantEntity.image = fallbackVariantImage;
+        }
 
         const savedVariant = await variantRepo.save(variantEntity);
         this.logger.debug(`Saved variant id=${savedVariant.id} for product id=${savedProduct.id}`);
@@ -374,16 +405,56 @@ export class ProductsService extends BaseService<Product> {
     }
 
     const useSimilarity = shouldApplySearch && this.similarityAvailable;
+    const collectionIdFilter =
+      typeof options.collectionId === 'number' && options.collectionId > 0
+        ? options.collectionId
+        : undefined;
+    const collectionSlugFilter = normalizeString(options.collectionSlug)?.toLowerCase();
 
     try {
       const result = await this.paginate(options, (qb) => {
         qb.leftJoinAndSelect('product.brand', 'brand');
         qb.leftJoinAndSelect('product.category', 'category');
 
+        if (collectionIdFilter || collectionSlugFilter) {
+          qb.innerJoin('product.collectionProducts', 'collectionProductFilter');
+
+          if (collectionIdFilter) {
+            qb.andWhere('collectionProductFilter.collectionId = :collectionId', {
+              collectionId: collectionIdFilter,
+            });
+          }
+
+          if (collectionSlugFilter) {
+            qb.innerJoin('collectionProductFilter.collection', 'collectionFilter');
+            qb.andWhere('LOWER(collectionFilter.slug) = :collectionSlug', {
+              collectionSlug: collectionSlugFilter,
+            });
+          }
+
+          qb.distinct(true);
+        }
+
         if (options.categoryIds?.length) {
           qb.andWhere('product.categoryId IN (:...categoryIds)', {
             categoryIds: options.categoryIds,
           });
+        }
+
+        if (options.ids?.length) {
+          qb.andWhere('product.id IN (:...ids)', {
+            ids: options.ids,
+          });
+
+          // Preserver order of IDs if no other sort is specified
+          if (!options.sorts?.length && !shouldApplySearch) {
+            // Safe to inject numbers directly as they are typed as numbers
+            qb.addSelect(
+              `array_position(ARRAY[${options.ids.join(',')}], product.id)`,
+              'relevance_rank',
+            );
+            qb.addOrderBy('relevance_rank', 'ASC');
+          }
         }
 
         // Price range filter via variants
@@ -409,7 +480,7 @@ export class ProductsService extends BaseService<Product> {
           );
         }
 
-        // Colors filter: match any variant attribute value against provided colors
+        // Colors filter: match variant attribute value against provided colors
         if (options.colors?.length) {
           const colorAttrNames = ['color', 'mau', 'màu', 'mau sac', 'màu sắc', 'colorway'];
 
@@ -421,10 +492,8 @@ export class ProductsService extends BaseService<Product> {
               JOIN attributes a ON a.id = vav."attributeId"
               JOIN attribute_values av ON av.id = vav."attributeValueId"
               WHERE v."productId" = product.id
-                AND (
-                  LOWER(av.value) IN (:...colors)
-                  OR LOWER(a.name) IN (:...colorAttrNames) AND LOWER(av.value) IN (:...colors)
-                )
+                AND (LOWER(TRIM(a.name)) IN (:...colorAttrNames) OR LOWER(TRIM(a.name)) LIKE '%màu%' OR LOWER(TRIM(a.name)) LIKE '%color%')
+                AND LOWER(TRIM(av.value)) IN (:...colors)
             )`,
             {
               colors: options.colors.map((c) => c.toLowerCase()),
@@ -433,7 +502,7 @@ export class ProductsService extends BaseService<Product> {
           );
         }
 
-        // Sizes filter: match any variant attribute value against provided sizes
+        // Sizes filter: match variant attribute value against provided sizes
         if (options.sizes?.length) {
           const sizeAttrNames = ['size', 'kich thuoc', 'kích thước', 'kich co', 'kích cỡ'];
 
@@ -445,10 +514,8 @@ export class ProductsService extends BaseService<Product> {
               JOIN attributes a ON a.id = vav."attributeId"
               JOIN attribute_values av ON av.id = vav."attributeValueId"
               WHERE v."productId" = product.id
-                AND (
-                  LOWER(av.value) IN (:...sizes)
-                  OR LOWER(a.name) IN (:...sizeAttrNames) AND LOWER(av.value) IN (:...sizes)
-                )
+                AND (LOWER(TRIM(a.name)) IN (:...sizeAttrNames) OR LOWER(TRIM(a.name)) LIKE '%size%' OR LOWER(TRIM(a.name)) LIKE '%kích%')
+                AND LOWER(TRIM(av.value)) IN (:...sizes)
             )`,
             {
               sizes: options.sizes.map((s) => s.toLowerCase()),
@@ -478,6 +545,207 @@ export class ProductsService extends BaseService<Product> {
 
       throw error;
     }
+  }
+
+  async searchByImage(file: UploadedFile, options: ProductQueryDto) {
+    this.logger.debug(`searchByImage called with file: ${JSON.stringify(file)}`);
+
+    let buffer = file.buffer;
+
+    // If buffer is missing and path is available, read from disk (Multer diskStorage case)
+    if (!buffer && file.path) {
+      try {
+        buffer = fs.readFileSync(file.path);
+      } catch (error) {
+        const err = error as Error;
+        this.logger.error(`Failed to read uploaded file from disk: ${file.path}`, err.stack);
+        throw new BadRequestException('Could not process the uploaded image.');
+      }
+    }
+
+    if (!buffer) {
+      throw new BadRequestException('File buffer is missing.');
+    }
+
+    // 1. Phân tích ảnh bằng Gemini để lấy keywords (giữ lại để bổ sung ngữ cảnh nếu cần)
+    const keywords = await this.geminiService.analyzeImageForSearch({
+      buffer,
+      mimetype: file.mimetype,
+    });
+
+    this.logger.debug(`Gemini extracted keywords: ${keywords.join(', ')}`);
+
+    // 2. Phân tích hình ảnh chuyên sâu (Similarity Search)
+    const visualSearchItems = await this.imageSearchService.searchByImage(buffer);
+
+    // Nếu có kết quả similarity, ưu tiên trả về kết quả này
+    if (visualSearchItems.length > 0) {
+      // Vì SearchBar hiện tại mong đợi một cấu trúc cụ thể, chúng ta sẽ map lại
+      // Lấy tất cả sản phẩm từ tất cả vật thể được nhận diện
+      const allProductIds = new Set<number>();
+      visualSearchItems.forEach((item) => {
+        item.products.forEach((p) => allProductIds.add(p.id));
+      });
+
+      let products: ProductListItem[] = [];
+      if (allProductIds.size > 0) {
+        // Query chi tiết các sản phẩm này để trả về đầy đủ thông tin (viewMode grid/list mong đợi)
+        const productsRaw = await this.productRepo.find({
+          where: { id: In(Array.from(allProductIds)) },
+          relations: ['brand', 'category'],
+        });
+
+        // Sort items by relevance (matching the order of extraction)
+        const productMap = new Map(productsRaw.map((p) => [p.id, p]));
+        const sortedProductsRaw = Array.from(allProductIds)
+          .map((id) => productMap.get(id))
+          .filter((p): p is Product => !!p);
+
+        // Cần enrich thêm priceList và variants như trong findAll
+        products = await this.attachSummary(sortedProductsRaw);
+      }
+
+      return {
+        data: products,
+        meta: {
+          total: products.length,
+          page: options.page ?? 1,
+          limit: options.limit ?? 10,
+        },
+        keywords,
+        visualSearchItems, // Trả thêm thông tin về các vật thể nhận diện được
+      };
+    }
+
+    if (keywords.length === 0) {
+      return {
+        data: [],
+        meta: {
+          total: 0,
+          page: options.page ?? 1,
+          limit: options.limit ?? 10,
+        },
+        keywords: [],
+      };
+    }
+
+    // 2. Tìm kiếm sản phẩm bằng keywords vừa lấy được
+    const searchQuery = keywords.join(' ');
+    const results = await this.findAll({
+      ...options,
+      search: searchQuery,
+    });
+
+    return {
+      ...results,
+      keywords,
+    };
+  }
+
+  async detectObjects(file: Express.Multer.File) {
+    const buffer = await this.getFileBuffer(file);
+    return this.visionService.detectObjects(buffer);
+  }
+
+  async searchBySelectedObjects(
+    file: Express.Multer.File,
+    boxes: BoundingBoxDto[],
+    options: ProductQueryDto,
+  ) {
+    const buffer = await this.getFileBuffer(file);
+    const allProductIds = new Set<number>();
+    const visualSearchItems: ImageSearchResult[] = [];
+
+    for (const box of boxes) {
+      try {
+        const croppedBuffer = await this.visionService.cropImage(buffer, box);
+        const embedding = await this.visionService.generateEmbedding(croppedBuffer);
+        const matches = await this.imageSearchService.searchByEmbedding(embedding);
+
+        if (matches.length > 0) {
+          matches.forEach((p: MatchResult) => allProductIds.add(p.id));
+          visualSearchItems.push({
+            object: 'selected_object', // Label placeholder as we search by box
+            box,
+            score: 1.0,
+            products: matches,
+          });
+        }
+      } catch (error) {
+        this.logger.error(`Error searching for box ${JSON.stringify(box)}:`, error);
+      }
+    }
+
+    // Nếu không tìm thấy sản phẩm nào qua embedding, dùng Gemini làm fallback
+    if (allProductIds.size === 0) {
+      this.logger.debug('No similarity matches found, falling back to Gemini keywords');
+      const keywords = await this.geminiService.analyzeImageForSearch({
+        buffer,
+        mimetype: file.mimetype,
+      });
+
+      if (keywords.length > 0) {
+        const searchQuery = keywords.join(' ');
+        const results = await this.findAll({
+          ...options,
+          search: searchQuery,
+        });
+        return {
+          ...results,
+          keywords,
+        };
+      }
+
+      return {
+        data: [],
+        meta: { total: 0, page: options.page ?? 1, limit: options.limit ?? 10 },
+        keywords: [],
+      };
+    }
+
+    const productsRaw = await this.productRepo.find({
+      where: { id: In(Array.from(allProductIds)) },
+      relations: ['brand', 'category'],
+    });
+
+    // Sort items by relevance (matching the order of extraction)
+    const productMap = new Map(productsRaw.map((p) => [p.id, p]));
+    const sortedProductsRaw = Array.from(allProductIds)
+      .map((id) => productMap.get(id))
+      .filter((p): p is Product => !!p);
+
+    const products = await this.attachSummary(sortedProductsRaw);
+
+    return {
+      data: products,
+      meta: {
+        total: products.length,
+        page: options.page ?? 1,
+        limit: options.limit ?? 10,
+      },
+      visualSearchItems,
+    };
+  }
+
+  private async getFileBuffer(file: Express.Multer.File): Promise<Buffer> {
+    if (file.buffer) {
+      return file.buffer;
+    }
+
+    if (file.path) {
+      try {
+        const fullPath = path.isAbsolute(file.path)
+          ? file.path
+          : path.join(process.cwd(), file.path);
+        return await fs.promises.readFile(fullPath);
+      } catch (error) {
+        const err = error as Error;
+        this.logger.error(`Failed to read uploaded file from disk: ${file.path}`, err.stack);
+        throw new BadRequestException('Could not process the uploaded image.');
+      }
+    }
+
+    throw new BadRequestException('File buffer is missing.');
   }
 
   private async ensureSimilaritySupport(): Promise<void> {
@@ -511,6 +779,11 @@ export class ProductsService extends BaseService<Product> {
     if (!product) {
       return null;
     }
+
+    this.statsTrackingService.recordProductView(product.id).catch((error) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Failed to record product view for id=${product.id}: ${reason}`);
+    });
 
     const { productAttributes = [], ...rest } = product;
 
@@ -768,13 +1041,15 @@ export class ProductsService extends BaseService<Product> {
       }
     }
 
-    const branchExists = await this.branchRepo.exist({
-      where: { id: branchId },
-    });
+    if (branchId) {
+      const branchExists = await this.branchRepo.exist({
+        where: { id: branchId },
+      });
 
-    if (!branchExists) {
-      this.logger.warn(`Branch not found for update: ${branchId}`);
-      throw new BadRequestException(`Branch not found: ${branchId}`);
+      if (!branchExists) {
+        this.logger.warn(`Branch not found for update: ${branchId}`);
+        throw new BadRequestException(`Branch not found: ${branchId}`);
+      }
     }
 
     this.logger.debug(`Received ${files.length} uploaded file(s) for update`);
@@ -798,40 +1073,74 @@ export class ProductsService extends BaseService<Product> {
         throw new NotFoundException(`Product not found: ${id}`);
       }
 
-      productEntity.name = productPayload.name;
-      productEntity.brandId = normalizedBrandId;
-      productEntity.categoryId = normalizedCategoryId;
+      if (productPayload.name) {
+        productEntity.name = productPayload.name;
+      }
+      if (normalizedBrandId !== undefined) {
+        productEntity.brandId = normalizedBrandId;
+      }
+      if (normalizedCategoryId !== undefined) {
+        productEntity.categoryId = normalizedCategoryId;
+      }
 
       if (Object.prototype.hasOwnProperty.call(productPayload, 'description')) {
         productEntity.description = productPayload.description ?? undefined;
       }
 
       if (productImage) {
-        productEntity.image = this.resolveStoredPath(productImage);
+        const uploadResult = await this.uploadService.uploadSingle(productImage, 'products');
+        productEntity.image = uploadResult.url;
       } else if (Object.prototype.hasOwnProperty.call(productPayload, 'image')) {
         productEntity.image = this.sanitizeExistingAsset(productPayload.image ?? undefined);
       }
 
       productEntity.status = productPayload.status ?? productEntity.status ?? ProductStatus.ACTIVE;
-      productEntity.originalPrice = this.resolveOriginalPrice(
+      const newOriginalPrice = this.resolveOriginalPrice(
         explicitOriginalPrice,
-        variants,
+        variants ?? [],
         productEntity.originalPrice,
       );
-      productEntity.stock = 0;
-
-      const savedProduct = await productRepo.save(productEntity);
-
-      const existingVariants = await variantRepo.find({ where: { productId: savedProduct.id } });
-      const existingVariantIds = existingVariants.map((variant) => variant.id);
-
-      if (existingVariantIds.length) {
-        await variantAttributeRepo.delete({ variantId: In(existingVariantIds) });
-        await inventoryRepo.delete({ variantId: In(existingVariantIds) });
+      if (newOriginalPrice > 0) {
+        productEntity.originalPrice = newOriginalPrice;
+      }
+      if (variants) {
+        productEntity.stock = 0; // Will be recalculated from variants if variants are updated
       }
 
-      await variantRepo.delete({ productId: savedProduct.id });
-      await productAttributeRepo.delete({ productId: savedProduct.id });
+      const savedProduct = await productRepo.save(productEntity);
+      let totalStock = savedProduct.stock; // Initialize with current stock
+
+      let fallbackBranchId = typeof branchId === 'number' ? branchId : 1;
+
+      if (variants) {
+        // Only delete old variants if we are updating variants
+        const existingVariants = await variantRepo.find({
+          where: { productId: savedProduct.id },
+          relations: ['inventories'],
+        });
+
+        // Try to capture an existing branchId to use as fallback
+        if (!branchId && existingVariants.length > 0) {
+          const firstInv = existingVariants[0].inventories?.[0];
+          if (firstInv?.branchId) {
+            fallbackBranchId = firstInv.branchId;
+          }
+        }
+
+        const existingVariantIds = existingVariants.map((variant) => variant.id);
+
+        if (existingVariantIds.length) {
+          await variantAttributeRepo.delete({ variantId: In(existingVariantIds) });
+          await inventoryRepo.delete({ variantId: In(existingVariantIds) });
+        }
+
+        await variantRepo.delete({ productId: savedProduct.id });
+        totalStock = 0; // Reset stock calculation for new variants
+      }
+
+      if (attributes) {
+        await productAttributeRepo.delete({ productId: savedProduct.id });
+      }
 
       const attributeById = new Map<number, Attribute>();
       const attributeByName = new Map<string, Attribute>();
@@ -839,7 +1148,45 @@ export class ProductsService extends BaseService<Product> {
       const attributeValueByAttrAndValue = new Map<string, AttributeValue>();
       const linkedProductAttributeIds = new Set<number>();
 
-      for (const attributePayload of attributes) {
+      if (!attributes) {
+        this.logger.debug('Partial update: reloading existing attributes...');
+        const existingProductAttributes = await productAttributeRepo.find({
+          where: { productId: savedProduct.id },
+          relations: ['attribute'],
+        });
+
+        this.logger.debug(`Found ${existingProductAttributes.length} existing attributes`);
+
+        for (const pa of existingProductAttributes) {
+          if (pa.attribute) {
+            attributeById.set(pa.attribute.id, pa.attribute);
+            attributeByName.set(pa.attribute.name.toLowerCase(), pa.attribute);
+            linkedProductAttributeIds.add(pa.attribute.id);
+            this.logger.debug(
+              `Loaded existing attribute: ${pa.attribute.name} (${pa.attribute.id})`,
+            );
+          }
+        }
+
+        // Also load existing attribute values for these attributes to populate value maps
+        if (linkedProductAttributeIds.size > 0) {
+          const existingValues = await attributeValueRepo.find({
+            where: { attributeId: In(Array.from(linkedProductAttributeIds)) },
+          });
+
+          this.logger.debug(`Found ${existingValues.length} existing attribute values`);
+
+          for (const val of existingValues) {
+            attributeValueById.set(val.id, val);
+            attributeValueByAttrAndValue.set(
+              this.getAttributeValueKey(val.attributeId, val.value),
+              val,
+            );
+          }
+        }
+      }
+
+      for (const attributePayload of attributes ?? []) {
         let attributeEntity: Attribute | null = null;
 
         if (attributePayload.id) {
@@ -915,9 +1262,9 @@ export class ProductsService extends BaseService<Product> {
         }
       }
 
-      let totalStock = 0;
+      totalStock = 0;
 
-      for (const [index, variantPayload] of variants.entries()) {
+      for (const [index, variantPayload] of (variants ?? []).entries()) {
         const variantImage = variantImages.get(index);
 
         const variantEntity = variantRepo.create();
@@ -925,9 +1272,15 @@ export class ProductsService extends BaseService<Product> {
         variantEntity.price = variantPayload.price;
         variantEntity.weight = variantPayload.weight ?? undefined;
         variantEntity.status = variantPayload.status ?? ProductVariantStatus.ACTIVE;
-        variantEntity.image = variantImage
-          ? this.resolveStoredPath(variantImage)
-          : this.sanitizeExistingAsset(variantPayload.image ?? undefined);
+        if (variantImage) {
+          const uploadResult = await this.uploadService.uploadSingle(
+            variantImage,
+            'products/variants',
+          );
+          variantEntity.image = uploadResult.url;
+        } else {
+          variantEntity.image = this.sanitizeExistingAsset(variantPayload.image ?? undefined);
+        }
 
         const savedVariant = await variantRepo.save(variantEntity);
         this.logger.debug(
@@ -938,7 +1291,7 @@ export class ProductsService extends BaseService<Product> {
         if (variantStock > 0) {
           const inventoryRecord = inventoryRepo.create({
             variantId: savedVariant.id,
-            branchId,
+            branchId: fallbackBranchId,
             stock: variantStock,
           });
 
@@ -951,6 +1304,11 @@ export class ProductsService extends BaseService<Product> {
         totalStock += variantStock;
 
         for (const attributeRef of variantPayload.attributes) {
+          // Add logging here to debug lookups
+          this.logger.debug(
+            `Resolving attribute for variant: id=${attributeRef.attributeId}, name=${attributeRef.attributeName}`,
+          );
+
           const attributeEntity =
             (attributeRef.attributeId ? attributeById.get(attributeRef.attributeId) : undefined) ??
             (attributeRef.attributeName
@@ -958,10 +1316,12 @@ export class ProductsService extends BaseService<Product> {
               : undefined);
 
           if (!attributeEntity) {
-            this.logger.warn(
-              `Attribute not found for variant during update: ${
-                attributeRef.attributeName ?? attributeRef.attributeId
-              }`,
+            this.logger.error(`Failed to resolve attribute: ${JSON.stringify(attributeRef)}`);
+            this.logger.debug(
+              `Available attributes (IDs): ${Array.from(attributeById.keys()).join(', ')}`,
+            );
+            this.logger.debug(
+              `Available attributes (Names): ${Array.from(attributeByName.keys()).join(', ')}`,
             );
             throw new BadRequestException(
               `Attribute not found for variant: ${
@@ -987,7 +1347,6 @@ export class ProductsService extends BaseService<Product> {
               value: normalizedVariantValue,
               meta: {},
             });
-
             valueEntity = await attributeValueRepo.save(valueEntity);
             this.logger.debug(
               `Update created attribute value id=${valueEntity.id} for attributeId=${attributeEntity.id}`,
@@ -1027,11 +1386,52 @@ export class ProductsService extends BaseService<Product> {
   }
 
   private async refreshProductEmbeddingSafely(productId: number) {
+    // 1. Try to refresh text-based embedding (might fail if dimensions mismatched)
     try {
       await this.semanticSearchService.refreshProductEmbedding(productId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Failed to refresh embedding for product ${productId}: ${message}`);
+      this.logger.debug(
+        `Text-based semantic search refresh failed for product ${productId}: ${message}`,
+      );
+    }
+
+    // 2. Try to refresh image-based embedding (CLIP 512d)
+    try {
+      const product = await this.productRepo.findOne({
+        where: { id: productId },
+        select: { id: true, image: true },
+      });
+
+      if (product?.image) {
+        let buffer: Buffer | null = null;
+
+        if (product.image.startsWith('http')) {
+          try {
+            const response = await axios.get(product.image, { responseType: 'arraybuffer' });
+            buffer = Buffer.from(response.data);
+            this.logger.debug(`Fetched remote image for product ${productId}`);
+          } catch (e) {
+            this.logger.warn(`Failed to fetch remote image ${product.image}: ${e}`);
+          }
+        } else {
+          const fullPath = path.join(process.cwd(), product.image);
+          if (fs.existsSync(fullPath)) {
+            buffer = fs.readFileSync(fullPath);
+          } else {
+            this.logger.warn(`Local image file not found: ${fullPath}`);
+          }
+        }
+
+        if (buffer) {
+          const visualEmbedding = await this.visionService.generateEmbedding(buffer);
+          await this.productRepo.update(productId, { visualEmbedding });
+          this.logger.debug(`Generated image embedding for product ${productId}`);
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Failed to generate image embedding for product ${productId}: ${message}`);
     }
   }
 
@@ -1183,21 +1583,6 @@ export class ProductsService extends BaseService<Product> {
     }
 
     return { productImage, variantImages };
-  }
-
-  private resolveStoredPath(file: UploadedFile): string {
-    this.logger.debug(`resolveStoredPath called for file: ${file.originalname}`);
-    const storedPath = resolveModuleUploadPath('products', file);
-
-    if (!storedPath) {
-      this.logger.warn(
-        `Could not determine stored path for ${file.originalname}; falling back to original name`,
-      );
-      return file.originalname;
-    }
-
-    this.logger.debug(`Resolved stored path for ${file.originalname}: ${storedPath}`);
-    return storedPath;
   }
 
   private sanitizeExistingAsset(value?: string | null): string | undefined {
@@ -1485,5 +1870,130 @@ export class ProductsService extends BaseService<Product> {
 
   private computeSuggestionMinScore(tokenCount: number): number {
     return Math.max(0.1, Math.min(0.35, 0.45 - tokenCount * 0.05));
+  }
+
+  async findByTikiIds(tikiIds: number[]): Promise<ProductDetail[]> {
+    if (!tikiIds || tikiIds.length === 0) {
+      return [];
+    }
+    console.log('findByTikiIds', tikiIds);
+
+    const products = await this.productRepo.find({
+      where: { tikiId: In(tikiIds) },
+      relations: {
+        brand: true,
+        category: true,
+        productAttributes: { attribute: true },
+        variants: {
+          attributeValues: { attribute: true, attributeValue: true },
+          inventories: { branch: true },
+        },
+        ratings: true,
+      },
+    });
+
+    console.log('products', products);
+
+    // Record product views like findOne
+    for (const product of products) {
+      this.statsTrackingService.recordProductView(product.id).catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to record product view for id=${product.id}: ${reason}`);
+      });
+    }
+
+    return products.map((product) => this.mapToDetail(product));
+  }
+
+  private mapToDetail(product: Product): ProductDetail {
+    const { productAttributes = [], ...rest } = product;
+
+    const attributeValueMap = new Map<number, Map<number, AttributeValueSummary>>();
+    for (const variant of rest.variants ?? []) {
+      for (const variantAttribute of variant.attributeValues ?? []) {
+        const attributeEntity = variantAttribute.attribute as Attribute | undefined;
+        const attributeValueEntity = variantAttribute.attributeValue as AttributeValue | undefined;
+
+        if (!attributeEntity || !attributeValueEntity) {
+          continue;
+        }
+
+        let valueMap = attributeValueMap.get(attributeEntity.id);
+        if (!valueMap) {
+          valueMap = new Map<number, AttributeValueSummary>();
+          attributeValueMap.set(attributeEntity.id, valueMap);
+        }
+
+        if (!valueMap.has(attributeValueEntity.id)) {
+          valueMap.set(attributeValueEntity.id, {
+            id: attributeValueEntity.id,
+            value: attributeValueEntity.value,
+            meta:
+              attributeValueEntity.meta && typeof attributeValueEntity.meta === 'object'
+                ? attributeValueEntity.meta
+                : {},
+          });
+        }
+      }
+    }
+
+    const attributes = productAttributes
+      .filter((item): item is ProductAttribute & { attribute: Attribute } =>
+        Boolean(item.attribute),
+      )
+      .map<ProductAttributeSummary>((item) => {
+        const attribute = item.attribute;
+        const valueMap = attributeValueMap.get(attribute.id);
+        const values = valueMap ? Array.from(valueMap.values()) : [];
+
+        return {
+          id: attribute.id,
+          name: attribute.name,
+          type: attribute.type,
+          isRequired: item.isRequired,
+          values,
+        };
+      });
+
+    const normalizedVariants = (rest.variants ?? []).map((variant) => ({
+      ...variant,
+      price: this.asNumber(variant.price),
+      weight: this.asNullableNumber(variant.weight) ?? undefined,
+      image: variant.image ?? undefined,
+      inventories: (variant.inventories ?? []).map((inventory) => ({
+        ...inventory,
+        stock: this.asNumber(inventory.stock),
+      })),
+    }));
+
+    const images: string[] = [];
+    const imageSet = new Set<string>();
+    const pushImage = (candidate?: string | null) => {
+      if (!candidate) {
+        return;
+      }
+
+      const trimmed = candidate.trim();
+      if (!trimmed || imageSet.has(trimmed)) {
+        return;
+      }
+
+      imageSet.add(trimmed);
+      images.push(trimmed);
+    };
+
+    pushImage(rest.image ?? undefined);
+    for (const variant of normalizedVariants) {
+      pushImage(variant.image ?? undefined);
+    }
+
+    return {
+      ...(rest as Omit<Product, 'productAttributes'>),
+      image: rest.image ?? undefined,
+      originalPrice: this.asNumber(rest.originalPrice),
+      variants: normalizedVariants,
+      attributes,
+      images,
+    };
   }
 }

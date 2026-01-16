@@ -1,4 +1,4 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, Query } from '@nestjs/common';
 import { InteractionsService } from './interactions.service';
 import { CreateInteractionDto } from './dto/create-interaction.dto';
 // import { UpdateInteractionDto } from './dto/update-interaction.dto';
@@ -12,15 +12,20 @@ export class InteractionsController {
     return this.service.create(dto);
   }
 
-  // @Get()
-  // findAll() {
-  //   return this.service.findAll();
-  // }
+  @Get()
+  findAll(
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+    @Query('userId') userId?: number,
+    @Query('type') type?: string,
+  ) {
+    return this.service.findAll({ page, limit, userId, type });
+  }
 
-  // @Get(':id')
-  // findOne(@Param('id') id: number) {
-  //   return this.service.findOne(+id);
-  // }
+  @Get(':id')
+  findOne(@Param('id') id: number) {
+    return this.service.findOne(+id);
+  }
 
   // @Put(':id')
   // update(@Param('id') id: number, @Body() dto: UpdateInteractionDto) {

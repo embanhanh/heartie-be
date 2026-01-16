@@ -18,15 +18,36 @@ import { GeminiService, GeminiChatMessage, GeminiChatRole } from '../gemini/gemi
 import { FunctionCall, FunctionResponsePart } from '@google/generative-ai';
 
 // "TOOLS" – nghiệp vụ bên dưới
-import { OrdersService } from '../orders/orders.service';
+import { OrdersService, CreateOrderResult } from '../orders/orders.service';
 import { ProductsService } from '../products/products.service';
-import { OrderStatus } from '../orders/entities/order.entity';
-// import { ProductQueryDto } from '../products/dto/product-query.dto';
+import { OrderStatus, PaymentMethod } from '../orders/entities/order.entity';
+import { UserRole } from '../users/entities/user.entity';
+import { ProductQueryDto } from '../products/dto/product-query.dto';
+import { CartItemsService } from '../cart_items/cart-items.service';
+import { CartsService } from '../carts/carts.service';
+import { AddressesService } from '../addresses/addresses.service';
+import { VouchersService } from '../vouchers/vouchers.service';
 
 interface OrderListItem {
   orderNumber: string;
   status: OrderStatus;
   createdAt: Date;
+}
+
+export interface RequestUserContext {
+  id: number;
+  role: UserRole;
+}
+
+interface SearchFilters {
+  price_min?: string | number;
+  price_max?: string | number;
+  colors?: unknown[]; // Dùng unknown thay vì any cho mảng
+  sizes?: unknown[];
+  category?: unknown[];
+  fit?: unknown[];
+  occasion?: unknown[];
+  sort?: string;
 }
 
 @Injectable()
@@ -40,8 +61,14 @@ export class MessagesService {
     'search_products',
     'get_list_orders',
     'get_order_detail',
-    // 'get_product_detail',
-    // 'update_cart',
+    'get_product_detail',
+    'update_cart',
+    'get_my_cart',
+    'create_order',
+    'get_my_addresses',
+    'get_payment_methods',
+    'get_available_vouchers',
+    'validate_voucher',
   ]);
 
   // Giới hạn lịch sử (có thể chuyển thành cấu hình)
@@ -56,14 +83,21 @@ export class MessagesService {
     // “Tools”
     private readonly ordersService: OrdersService,
     private readonly productsService: ProductsService,
+    private readonly cartItemsService: CartItemsService,
+    private readonly cartsService: CartsService,
+    private readonly addressesService: AddressesService,
+    private readonly vouchersService: VouchersService,
   ) {}
 
   /**
    * Gửi tin nhắn của USER và lấy phản hồi từ Gemini (có thể kèm function call).
    * Toàn bộ trong 1 transaction để đảm bảo tính toàn vẹn.
    */
-  async create(dto: CreateMessageDto, currentUserId: number, opts?: { correlationId?: string }) {
-    if (!currentUserId) throw new ForbiddenException('Missing currentUserId');
+  async create(
+    dto: CreateMessageDto,
+    requestUserContext: RequestUserContext,
+    opts?: { correlationId?: string },
+  ) {
     const logPrefix = `[convo:${dto.conversationId}]${opts?.correlationId ? `[cid:${opts.correlationId}]` : ''}`;
 
     return this.dataSource.transaction(async (trx) => {
@@ -88,7 +122,7 @@ export class MessagesService {
 
       // 1.1) Ownership/participation check (IDOR guard) — không cần load participants
       const isParticipant = await partRepo.exist({
-        where: { conversationId: conversation.id, userId: currentUserId },
+        where: { conversationId: conversation.id, userId: requestUserContext.id },
       });
       if (!isParticipant) {
         throw new ForbiddenException('You are not allowed to send message in this conversation');
@@ -106,7 +140,7 @@ export class MessagesService {
 
       // 1.3) Lấy cấu hình participant (model, name...)
       const participant = await partRepo.findOne({
-        where: { conversationId: conversation.id, userId: currentUserId },
+        where: { conversationId: conversation.id, userId: requestUserContext.id },
       });
 
       // 2) Lấy lịch sử tối thiểu (chọn cột cần thiết)
@@ -130,7 +164,17 @@ export class MessagesService {
 
       // 4) Gọi Gemini (lần 1)
       this.logger.log(`${logPrefix} Calling Gemini (1st)`);
-      const firstCall = await this.geminiService.generateContent(content, history);
+      let firstCall: { text: string | null; functionCall: FunctionCall | null };
+      try {
+        firstCall = await this.geminiService.generateContent(content, history);
+      } catch (error) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        this.logger.error(`${logPrefix} Gemini call failed: ${error.message}`);
+        firstCall = {
+          text: 'Xin lỗi, hệ thống đang gặp sự cố kết nối. Bạn vui lòng thử lại sau giây lát.',
+          functionCall: null,
+        };
+      }
 
       let finalText: string | null = null;
       let finalMetadata: Record<string, unknown> = { provider: 'gemini', type: 'assistant_final' };
@@ -148,43 +192,138 @@ export class MessagesService {
           this.logger.log(`${logPrefix} Executing tool: ${call.name}`);
 
           // 5b) Thực thi tool (KHÔNG lưu vào DB, chỉ trong memory)
-          const toolResult = await this.executeTool(call, currentUserId, logPrefix);
+          const toolResult = await this.executeTool(call, requestUserContext, logPrefix);
 
           // 5c) Tạo history tạm cho Gemini call thứ 2 (KHÔNG lưu DB)
+          // History should end with the model's function call
+          // The function response is passed separately via the functionResponse parameter
           const tempHistory: GeminiChatMessage[] = [
             ...history,
             this.mapMessageToGemini(userMessage),
-            // Function call message (in-memory only)
+            // Function call message (in-memory only) - this is the last item
             {
               role: GeminiChatRole.MODEL,
               content: JSON.stringify(call),
             },
-            // Function response message (in-memory only)
-            {
-              role: GeminiChatRole.USER,
-              content: JSON.stringify(toolResult),
-            },
           ];
 
           // 5d) Gọi Gemini lần 2 để tổng hợp kết quả
+          // 5d) Gọi Gemini lần 2 để tổng hợp kết quả
           this.logger.log(`${logPrefix} Calling Gemini (2nd) with tool result`);
-          const second = await this.geminiService.generateContentWithFunctionResponse(
-            tempHistory,
-            toolResult,
-            { systemPrompt: dto.systemPrompt },
-          );
+          let second: { text: string | null };
+          try {
+            second = await this.geminiService.generateContentWithFunctionResponse(
+              tempHistory,
+              toolResult,
+              { systemPrompt: dto.systemPrompt },
+            );
+          } catch (error) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            this.logger.error(`${logPrefix} Gemini 2nd call failed: ${error.message}`);
+            second = { text: 'Đã xử lý xong yêu cầu của bạn.' };
+          }
           finalText = this.sanitizeMarkdown(second.text ?? '');
           finalMetadata = {
             ...finalMetadata,
             toolUsed: call.name,
             toolArgs: call.args,
           };
+
+          // Helper to extract content from tool result
+          const getToolContent = () => {
+            const response = toolResult.functionResponse.response as
+              | { content?: unknown }
+              | undefined;
+            return response?.content;
+          };
+
+          // Nếu là search_products, đính kèm kết quả vào metadata để frontend hiển thị
+          if (call.name === 'search_products') {
+            const content = getToolContent() as
+              | { data?: unknown[]; meta?: { total?: number } }
+              | undefined;
+            if (content?.data && Array.isArray(content.data)) {
+              finalMetadata.products = content.data;
+              finalMetadata.productCount = content.meta?.total;
+            }
+          }
+
+          // Nếu là get_product_detail, đính kèm chi tiết sản phẩm vào metadata
+          if (call.name === 'get_product_detail') {
+            const content = getToolContent() as { error?: string } | undefined;
+            if (content && !content.error) {
+              finalMetadata.productDetail = content;
+            }
+          }
+
+          // Nếu là get_my_cart, đính kèm giỏ hàng vào metadata
+          if (call.name === 'get_my_cart') {
+            const content = getToolContent() as { error?: string } | undefined;
+            if (content && !content.error) {
+              finalMetadata.cartData = content;
+            }
+          }
+
+          // Nếu là create_order, đính kèm kết quả đặt hàng vào metadata
+          if (call.name === 'create_order') {
+            const content = getToolContent() as { error?: string } | undefined;
+            if (content && !content.error) {
+              finalMetadata.orderResult = content;
+            }
+          }
+
+          // Nếu là get_my_addresses, đính kèm danh sách địa chỉ vào metadata
+          if (call.name === 'get_my_addresses') {
+            const content = getToolContent() as { addresses?: unknown[] } | undefined;
+            if (content?.addresses) {
+              finalMetadata.addresses = content.addresses;
+            }
+          }
+
+          // Nếu là get_payment_methods, đính kèm phương thức thanh toán vào metadata
+          if (call.name === 'get_payment_methods') {
+            const content = getToolContent() as { paymentMethods?: unknown[] } | undefined;
+            if (content?.paymentMethods) {
+              finalMetadata.paymentMethods = content.paymentMethods;
+            }
+          }
+
+          // Nếu là get_available_vouchers, đính kèm danh sách voucher vào metadata
+          if (call.name === 'get_available_vouchers') {
+            const content = getToolContent() as { vouchers?: unknown[] } | undefined;
+            if (content?.vouchers) {
+              finalMetadata.vouchers = content.vouchers;
+            }
+          }
+
+          // [FIX] Nếu là get_list_orders, đính kèm danh sách đơn hàng vào metadata
+          if (call.name === 'get_list_orders') {
+            const content = getToolContent();
+            this.logger.debug(
+              `[get_list_orders] content type: ${typeof content}, isArray: ${Array.isArray(content)}, value: ${JSON.stringify(content)?.substring(0, 200)}`,
+            );
+            // The tool returns an array of orders directly (OrderListItem[])
+            if (Array.isArray(content)) {
+              finalMetadata.orders = content;
+              this.logger.log(`[get_list_orders] Saved ${content.length} orders to metadata`);
+            } else {
+              this.logger.warn(
+                `[get_list_orders] Content is not an array, cannot save to metadata`,
+              );
+            }
+          }
         }
       } else {
         if (!firstCall.text) {
           throw new InternalServerErrorException('Gemini returned neither text nor function call');
         }
-        this.logger.log(`${logPrefix} Direct text response`);
+        // IMPORTANT: Log when Gemini returns text without calling a function
+        // This helps debug cases where function calls should have been made
+        this.logger.log(`${logPrefix} Direct text response (NO function call)`);
+        this.logger.debug(`${logPrefix} User message: "${content.substring(0, 100)}..."`);
+        this.logger.debug(
+          `${logPrefix} Gemini text response: "${firstCall.text.substring(0, 100)}..."`,
+        );
         finalText = this.sanitizeMarkdown(firstCall.text);
       }
 
@@ -305,121 +444,327 @@ export class MessagesService {
 
   private async executeTool(
     functionCall: FunctionCall,
-    currentUserId: number, // vẫn truyền để các tool khác check quyền
+    requestUserContext: RequestUserContext,
     logPrefix: string,
   ): Promise<FunctionResponsePart> {
     const { name, args } = functionCall;
+    const userId = requestUserContext.id;
     let result: unknown;
 
     try {
-      this.logger.log(`${logPrefix} Tool ${name} args=${JSON.stringify(args)}`);
+      this.logger.log(`${logPrefix} [${name}] args=${JSON.stringify(args)}`);
 
       switch (name) {
-        // -------- Orders (ví dụ vẫn giữ nguyên) --------
+        // ══════════════════════════════════════════════════════════════════
+        // ORDERS
+        // ══════════════════════════════════════════════════════════════════
+
         case 'track_order': {
-          const { orderNumber } = (args ?? {}) as { orderNumber?: string };
-          if (!orderNumber) throw new BadRequestException('orderNumber is required');
-          result = await this.ordersService.getOrderStatus(orderNumber, currentUserId);
+          const input = (args ?? {}) as unknown as { orderNumber?: string };
+          if (!input.orderNumber) {
+            throw new BadRequestException('orderNumber is required');
+          }
+
+          result = await this.ordersService.getOrderStatus(input.orderNumber, userId);
+          this.logger.log(`${logPrefix} [${name}] completed for order: ${input.orderNumber}`);
           break;
         }
 
         case 'create_return_request': {
-          const input = (args ?? {}) as {
+          const input = (args ?? {}) as unknown as {
             orderNumber?: string;
             items?: Array<{ itemId: string; quantity: number }>;
             reason?: string;
             note?: string;
           };
-          if (!input?.orderNumber) throw new BadRequestException('orderNumber is required');
-          // tuỳ nghiệp vụ: xác thực items/reason...
-          result = await this.ordersService.requestCancellation(input.orderNumber, currentUserId);
-          break;
-        }
-
-        // -------- Get list orders --------
-        case 'get_list_orders': {
-          const input = (args ?? {}) as {
-            status?: string[];
-            limit?: number;
-            offset?: number;
-          };
-
-          // Luôn dùng currentUserId - không cần user_id từ Gemini
-          this.logger.log(`${logPrefix} get_list_orders for user_id=${currentUserId}`);
-
-          // Lấy limit từ args, mặc định 10
-          const limit = Number.isFinite(input.limit) && input.limit! > 0 ? input.limit! : 10;
-
-          // Gọi service để lấy danh sách đơn hàng
-          let result: OrderListItem[] = await this.ordersService.listRecentOrders(
-            currentUserId,
-            limit,
-          );
-
-          // Nếu có status filter, lọc thêm ở đây
-          if (input.status && Array.isArray(input.status) && input.status.length > 0) {
-            result = result.filter((order) => input.status!.includes(order.status));
-          }
-
-          this.logger.log(`${logPrefix} Found ${result.length} orders for user ${currentUserId}`);
-          break;
-        }
-
-        // -------- Products (cập nhật theo ProductQueryDto mới) --------
-        // case 'search_products': {
-        //   // Map args -> ProductQueryDto
-        //   // Giả định PaginationOptionsDto có: page?, pageSize?, sortBy?, sortOrder?
-        //   const a = (args ?? {}) as Record<string, unknown>;
-
-        //   const dto: ProductQueryDto = {
-        //     search: this.sanitizeSearch(a.search),
-        //     categoryIds: this.toNumberArrayLoose(a.categoryIds),
-        //   };
-
-        //   // Tuỳ PaginationOptionsDto của bạn: map thêm nếu muốn cho phép qua tool
-        //   if (Number.isFinite(Number(a.page))) dto.page = Number(a.page);
-        //   if (Number.isFinite(Number(a.pageSize))) dto.pageSize = Number(a.pageSize);
-        //   if (typeof a.sortBy === 'string') dto.sortBy = a.sortBy.trim();
-        //   if (typeof a.sortOrder === 'string') {
-        //     const o = String(a.sortOrder).toUpperCase();
-        //     if (o === 'ASC' || o === 'DESC') dto.sortOrder = o;
-        //   }
-
-        //   result = await this.productsService.findAll(dto as ProductQueryDto);
-        //   break;
-        // }
-
-        // -------- Get order detail --------
-        case 'get_order_detail': {
-          const input = (args ?? {}) as { orderNumber?: string };
-
           if (!input.orderNumber) {
             throw new BadRequestException('orderNumber is required');
           }
 
-          this.logger.log(`${logPrefix} get_order_detail for order: ${input.orderNumber}`);
-
-          // Gọi service để lấy chi tiết đơn hàng
-          result = await this.ordersService.getOrderDetails(input.orderNumber, currentUserId);
-
-          this.logger.log(`${logPrefix} Retrieved order detail for ${input.orderNumber}`);
+          result = await this.ordersService.requestCancellation(
+            input.orderNumber,
+            requestUserContext,
+          );
+          this.logger.log(`${logPrefix} [${name}] completed for order: ${input.orderNumber}`);
           break;
         }
 
-        // -------- Cart (nếu sau này mở) --------
-        // case 'update_cart': {
-        //   result = await this.cartService.handleCartUpdate(currentUserId, args as any);
-        //   break;
-        // }
+        case 'get_list_orders': {
+          const input = (args ?? {}) as unknown as {
+            status?: string[];
+            limit?: number;
+            offset?: number;
+          };
+          const limit = Number.isFinite(input.limit) && input.limit! > 0 ? input.limit! : 10;
+
+          let orders: OrderListItem[] = await this.ordersService.listRecentOrders(userId, limit);
+
+          // Filter by status if provided
+          if (input.status?.length) {
+            orders = orders.filter((order) => input.status!.includes(order.status));
+          }
+
+          result = orders;
+          this.logger.log(`${logPrefix} [${name}] found ${orders.length} orders`);
+          break;
+        }
+
+        case 'get_order_detail': {
+          const input = (args ?? {}) as unknown as { orderNumber?: string };
+          if (!input.orderNumber) {
+            throw new BadRequestException('orderNumber is required');
+          }
+
+          result = await this.ordersService.getOrderDetails(input.orderNumber, userId);
+          this.logger.log(`${logPrefix} [${name}] completed for order: ${input.orderNumber}`);
+          break;
+        }
+
+        case 'create_order': {
+          const input = (args ?? {}) as unknown as {
+            addressId?: number;
+            paymentMethod?: string;
+            voucherId?: number;
+            items?: Array<{ variantId: number; quantity: number }>;
+            note?: string;
+          };
+          if (!input.addressId) {
+            throw new BadRequestException('addressId is required');
+          }
+          if (!input.paymentMethod) {
+            throw new BadRequestException('paymentMethod is required');
+          }
+
+          // Get cart items if not provided
+          let orderItems = input.items;
+          if (!orderItems?.length) {
+            const cart = await this.cartsService.getMyCart(userId);
+            orderItems = (cart.items ?? [])
+              .map((item) => ({
+                variantId: item.variant?.id ?? 0,
+                quantity: item.quantity,
+              }))
+              .filter((item) => item.variantId > 0);
+          }
+
+          if (!orderItems.length) {
+            throw new BadRequestException('Giỏ hàng trống, không thể tạo đơn hàng');
+          }
+
+          // Map payment method string to enum
+          const paymentMethodMap: Record<string, PaymentMethod> = {
+            COD: PaymentMethod.COD,
+            MOMO: PaymentMethod.MOMO,
+            BANK: PaymentMethod.BANK,
+            STORE: PaymentMethod.STORE,
+          };
+          const paymentMethod =
+            paymentMethodMap[input.paymentMethod.toUpperCase()] ?? PaymentMethod.COD;
+
+          const createResult: CreateOrderResult = await this.ordersService.create(
+            {
+              addressId: input.addressId,
+              paymentMethod,
+              items: orderItems,
+              note: input.note,
+            },
+            userId,
+          );
+
+          result = {
+            success: true,
+            orderId: createResult.order.id,
+            orderNumber: createResult.order.orderNumber,
+            status: createResult.order.status,
+            totalAmount: createResult.order.totalAmount,
+            paymentMethod: createResult.order.paymentMethod,
+            payUrl: createResult.payUrl,
+            message: createResult.payUrl
+              ? `Đơn hàng ${createResult.order.orderNumber} đã được tạo. Vui lòng thanh toán qua MoMo.`
+              : `Đơn hàng ${createResult.order.orderNumber} đã được tạo thành công!`,
+          };
+          this.logger.log(`${logPrefix} [${name}] success: ${createResult.order.orderNumber}`);
+          break;
+        }
+
+        // ══════════════════════════════════════════════════════════════════
+        // PRODUCTS
+        // ══════════════════════════════════════════════════════════════════
+
+        case 'search_products': {
+          const a = (args ?? {}) as unknown as {
+            query?: string;
+            filters?: SearchFilters;
+            limit?: number;
+          };
+          const filters = a.filters ?? {};
+
+          const dto: Partial<ProductQueryDto> = {
+            search: this.sanitizeSearch(a.query),
+            limit: Number(a.limit) || 5,
+          };
+
+          if (filters.price_min) dto.priceMin = Number(filters.price_min);
+          if (filters.price_max) dto.priceMax = Number(filters.price_max);
+          if (Array.isArray(filters.colors)) dto.colors = filters.colors.map((c: any) => String(c));
+          if (Array.isArray(filters.sizes)) dto.sizes = filters.sizes.map((s: any) => String(s));
+
+          result = await this.productsService.findAll(dto as ProductQueryDto);
+          this.logger.log(`${logPrefix} [${name}] completed with dto=${JSON.stringify(dto)}`);
+          break;
+        }
+
+        case 'get_product_detail': {
+          const input = (args ?? {}) as { product_id?: string };
+          const productId = Number(input.product_id);
+          if (!productId || !Number.isFinite(productId)) {
+            throw new BadRequestException('product_id is required');
+          }
+
+          const product = await this.productsService.findOne(productId);
+          result = product ?? { error: 'Product not found' };
+          this.logger.log(`${logPrefix} [${name}] completed for product: ${productId}`);
+          break;
+        }
+
+        // ══════════════════════════════════════════════════════════════════
+        // CART
+        // ══════════════════════════════════════════════════════════════════
+
+        case 'update_cart': {
+          const input = (args ?? {}) as {
+            action?: 'add' | 'remove' | 'change_qty';
+            items?: Array<{ variant_id?: number; quantity?: number }>;
+          };
+          if (!input.action) {
+            throw new BadRequestException('action is required');
+          }
+          if (!input.items?.length) {
+            throw new BadRequestException('items is required');
+          }
+
+          const results: unknown[] = [];
+          for (const item of input.items) {
+            const variantId = item.variant_id;
+            const quantity = Math.max(1, item.quantity ?? 1);
+
+            if (!variantId) {
+              results.push({ variant_id: item.variant_id, error: 'Invalid variant_id' });
+              continue;
+            }
+
+            if (input.action === 'add') {
+              const addResult = await this.cartItemsService.addItem(userId, {
+                variantId,
+                quantity,
+              });
+              results.push({
+                variant_id: variantId,
+                quantity,
+                success: true,
+                cart_item_id: addResult.id,
+              });
+            }
+            // TODO: Implement 'remove' and 'change_qty' actions if needed
+          }
+
+          result = { action: input.action, results };
+          this.logger.log(`${logPrefix} [${name}] completed: ${results.length} items processed`);
+          break;
+        }
+
+        case 'get_my_cart': {
+          const cart = await this.cartsService.getMyCart(userId);
+
+          const cartItems = (cart.items ?? []).map((item) => {
+            const variant = item.variant;
+            const product = variant?.product;
+            return {
+              cartItemId: item.id,
+              variantId: variant?.id,
+              productId: product?.id,
+              productName: product?.name,
+              productImage: product?.image,
+              variantImage: variant?.image,
+              variantPrice: variant?.price ?? 0,
+              quantity: item.quantity,
+              subtotal: (variant?.price ?? 0) * item.quantity,
+              attributeValues:
+                variant?.attributeValues?.map((av) => ({
+                  attributeName: av.attribute?.name,
+                  attributeValue: av.attributeValue?.value,
+                })) ?? [],
+              stock: variant?.inventories?.reduce((sum, inv) => sum + (inv.stock ?? 0), 0) ?? 0,
+            };
+          });
+
+          const totalAmount = cartItems.reduce((sum, item) => sum + item.subtotal, 0);
+          const totalItems = cartItems.reduce((sum, item) => sum + item.quantity, 0);
+
+          result = { cartId: cart.id, totalItems, totalAmount, items: cartItems };
+          this.logger.log(
+            `${logPrefix} [${name}] found ${cartItems.length} items, total: ${totalAmount}`,
+          );
+          break;
+        }
+
+        // ══════════════════════════════════════════════════════════════════
+        // CHECKOUT (Addresses, Payment, Vouchers)
+        // ══════════════════════════════════════════════════════════════════
+
+        case 'get_my_addresses': {
+          const addresses = await this.addressesService.findAllByUser(userId);
+          result = { addresses };
+          this.logger.log(`${logPrefix} [${name}] found ${addresses.length} addresses`);
+          break;
+        }
+
+        case 'get_payment_methods': {
+          result = {
+            paymentMethods: [
+              { code: 'COD', name: 'Thanh toán khi nhận hàng (COD)' },
+              { code: 'BANK', name: 'Chuyển khoản ngân hàng' },
+              { code: 'STORE', name: 'Thanh toán tại cửa hàng' },
+            ],
+          };
+          this.logger.log(`${logPrefix} [${name}] returned 3 payment methods`);
+          break;
+        }
+
+        case 'get_available_vouchers': {
+          const vouchers = await this.vouchersService.findAvailableForUser(userId);
+          result = { vouchers };
+          this.logger.log(`${logPrefix} [${name}] found ${vouchers.length} vouchers`);
+          break;
+        }
+
+        case 'validate_voucher': {
+          const input = (args ?? {}) as { code?: string; orderTotal?: number };
+          if (!input.code) {
+            throw new BadRequestException('Mã voucher là bắt buộc');
+          }
+
+          result = await this.vouchersService.validateVoucher(
+            input.code,
+            userId,
+            input.orderTotal ?? 0,
+          );
+          this.logger.log(`${logPrefix} [${name}] validated code: ${input.code}`);
+          break;
+        }
+
+        // ══════════════════════════════════════════════════════════════════
+        // DEFAULT
+        // ══════════════════════════════════════════════════════════════════
 
         default:
-          this.logger.warn(`${logPrefix} Unknown tool: ${name}`);
+          this.logger.warn(`${logPrefix} [${name}] Unknown tool`);
           result = { error: 'Unknown tool' };
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       const stack = err instanceof Error ? err.stack : undefined;
-      this.logger.error(`${logPrefix} Tool error: ${name} - ${msg}`, stack);
+      this.logger.error(`${logPrefix} [${name}] Error: ${msg}`, stack);
       result = { error: msg };
     }
 

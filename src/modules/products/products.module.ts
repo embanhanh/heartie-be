@@ -8,10 +8,18 @@ import { Brand } from '../brands/entities/brand.entity';
 import { ProductVariant } from '../product_variants/entities/product_variant.entity';
 import { ProductVariantInventory } from '../inventory/entities/product-variant-inventory.entity';
 import { Branch } from '../branches/entities/branch.entity';
-import { AttributesModule } from '../attributes/attributes.module';
-import { MulterModule } from '@nestjs/platform-express';
-import { createModuleMulterOptions } from 'src/common/utils/upload.util';
+import { Attribute } from '../attributes/entities/attribute.entity';
+import { AttributeValue } from '../attribute_values/entities/attribute-value.entity';
+import { ProductAttribute } from '../product_attributes/entities/product-attribute.entity';
+import { VariantAttributeValue } from '../variant_attribute_values/entities/variant-attribute-value.entity';
 import { SemanticSearchModule } from '../semantic_search/semantic-search.module';
+import { StatsModule } from '../stats/stats.module';
+import { GeminiModule } from '../gemini/gemini.module';
+import { VisionModule } from '../vision/vision.module';
+import { ImageSearchModule } from '../image_search/image-search.module';
+import { UploadModule } from '../upload/upload.module';
+
+import { ProductsStatsController } from '../stats/products-stats.controller';
 
 @Module({
   imports: [
@@ -21,13 +29,20 @@ import { SemanticSearchModule } from '../semantic_search/semantic-search.module'
       Brand,
       ProductVariant,
       ProductVariantInventory,
+      Attribute,
+      AttributeValue,
+      ProductAttribute,
+      VariantAttributeValue,
       Branch,
     ]),
-    AttributesModule,
-    MulterModule.register(createModuleMulterOptions({ moduleName: 'products' })),
+    StatsModule,
+    GeminiModule,
+    VisionModule,
+    ImageSearchModule,
+    UploadModule,
     SemanticSearchModule,
   ],
-  controllers: [ProductsController],
+  controllers: [ProductsStatsController, ProductsController],
   providers: [ProductsService],
   exports: [TypeOrmModule, ProductsService],
 })

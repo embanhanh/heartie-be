@@ -34,6 +34,15 @@ export class UserResponseDto {
   @ApiProperty({ description: 'Active flag', default: true })
   isActive: boolean;
 
+  @ApiPropertyOptional({ type: String, format: 'date', nullable: true })
+  birthdate?: Date | null;
+
+  @ApiPropertyOptional({ description: 'Gender', nullable: true })
+  gender?: string | null;
+
+  @ApiPropertyOptional({ description: 'Avatar URL', nullable: true })
+  avatarUrl?: string | null;
+
   @ApiProperty({ type: String, format: 'date-time' })
   createdAt: Date;
 
@@ -56,6 +65,9 @@ export class UserResponseDto {
     dto.role = user.role;
     dto.branchId = user.branchId ?? null;
     dto.isActive = user.isActive;
+    dto.birthdate = user.birthdate ?? null;
+    dto.gender = user.gender ?? null;
+    dto.avatarUrl = user.avatarUrl ?? null;
     dto.createdAt = user.createdAt;
     dto.updatedAt = user.updatedAt;
     const participants = Array.isArray(user.participants) ? user.participants : [];

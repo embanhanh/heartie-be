@@ -41,24 +41,55 @@ export class CartAnalysisRequestDto {
   surface?: string;
 }
 
-export type CartInsightCategory =
-  | 'duplicates'
-  | 'comparison'
-  | 'cross-sell'
-  | 'promotion'
-  | 'shipping'
-  | 'styling'
-  | 'none';
+export interface CartAssistantGreeting {
+  headline: string;
+  subtitle: string;
+}
 
-export interface CartAnalysisSuggestion {
-  category: CartInsightCategory;
-  title: string;
-  message: string;
-  recommendation?: string;
+export interface CartPromotionProductGap {
+  productId: number;
+  productName?: string | null;
+  productSlug?: string | null;
+  productImage?: string | null;
+  productPrice?: number | null;
+  requiredQuantity: number;
+  currentQuantity: number;
+  missingQuantity: number;
+  autoAdd?: boolean;
+}
+
+export interface CartPromotionOpportunity {
+  promotionId: number;
+  promotionName: string;
+  description?: string | null;
+  comboType?: string | null;
+  summary: string;
+  potentialDiscount?: number | null;
+  primaryProductId?: number;
+  missingProducts: CartPromotionProductGap[];
+}
+
+export interface CartComparisonProductSummary {
+  productId: number;
+  name: string;
+  brand?: string | null;
+  category?: string | null;
+  priceRange?: string | null;
+  thumbnail?: string | null;
+}
+
+export interface CartComparisonOpportunity {
+  comparisonId: string;
+  reason: string;
+  productIds: number[];
+  products: CartComparisonProductSummary[];
 }
 
 export interface CartAnalysisResponse {
-  suggestion: CartAnalysisSuggestion | null;
+  greeting: CartAssistantGreeting;
+  promotionOpportunities: CartPromotionOpportunity[];
+  comparisonOpportunities: CartComparisonOpportunity[];
   fallbackApplied: boolean;
   inspectedItems: number;
+  generatedAt: string;
 }

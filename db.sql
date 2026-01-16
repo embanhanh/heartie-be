@@ -124,6 +124,27 @@ CREATE TABLE IF NOT EXISTS product_variants_inventory (
     UNIQUE(variantId, branchId)
 );
 
+-- collections: bộ sưu tập sản phẩm
+CREATE TABLE IF NOT EXISTS collections (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) UNIQUE,
+    description TEXT,
+    image VARCHAR(500),
+    status common_status DEFAULT 'active',
+    createdAt TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updatedAt TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- collection_products: liên kết sản phẩm với bộ sưu tập
+CREATE TABLE IF NOT EXISTS collection_products (
+    id SERIAL PRIMARY KEY,
+    collectionId INT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    productId INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    displayOrder INT DEFAULT 0,
+    UNIQUE(collectionId, productId)
+);
+
 -- promotions: thông tin khuyến mãi
 -- Loại khuyến mãi: DISCOUNT (giảm giá theo % hoặc số tiền cố định), COMBO (bán combo sản phẩm), COUPON (mã giảm giá)
 -- Phạm vi áp dụng: GLOBAL (toàn bộ), BRANCH (chi nhánh cụ thể), CUSTOMER_GROUP (nhóm khách hàng cụ thể)

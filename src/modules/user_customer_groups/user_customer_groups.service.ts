@@ -151,4 +151,62 @@ export class UserCustomerGroupsService {
       throw new NotFoundException(`Customer group not found: ${customerGroupId}`);
     }
   }
+  readonly RANK_NAMES = [
+    'Khách hàng mới',
+    'Khách hàng tiềm năng',
+    'Khách hàng thân thiết',
+    'Khách hàng VIP',
+  ];
+
+  async assignRank(userId: number, rankName: string) {
+    if (!this.RANK_NAMES.includes(rankName)) {
+      throw new Error(`Invalid rank name: ${rankName}`);
+    }
+
+    const targetGroup = await this.customerGroupRepo.findOne({ where: { name: rankName } });
+    if (!targetGroup) {
+      console.warn(`Rank group '${rankName}' not found in database.`);
+      return;
+    }
+
+    // Get current groups
+    const currentLinks = await this.repo.find({
+      where: { userId },
+      relations: { customerGroup: true },
+    });
+
+    const existingRankLinks = currentLinks.filter((link) =>
+      this.RANK_NAMES.includes(link.customerGroup.name),
+    );
+
+    let alreadyHasRank = false;
+
+    // Remove old ranks if different
+    for (const link of existingRankLinks) {
+      if (link.customerGroup.id === targetGroup.id) {
+        alreadyHasRank = true;
+      } else {
+        await this.repo.remove(link);
+      }
+    }
+
+    if (!alreadyHasRank) {
+      const newLink = this.repo.create({
+        userId,
+        customerGroupId: targetGroup.id,
+      });
+      await this.repo.save(newLink);
+    }
+  }
+
+  async getCurrentRank(userId: number): Promise<CustomerGroup | null> {
+    const currentLinks = await this.repo.find({
+      where: { userId },
+      relations: { customerGroup: true },
+    });
+
+    const rankLink = currentLinks.find((link) => this.RANK_NAMES.includes(link.customerGroup.name));
+
+    return rankLink ? rankLink.customerGroup : null;
+  }
 }

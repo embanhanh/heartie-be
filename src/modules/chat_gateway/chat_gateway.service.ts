@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { MessagesService } from '../messages/messages.service';
+import { MessagesService, RequestUserContext } from '../messages/messages.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { CreateMessageDto } from '../messages/dto/create-message.dto';
 import { CreateConversationDto } from '../conversations/dto/create-conversation.dto';
@@ -38,7 +38,7 @@ export class ChatGatewayService {
   /**
    * Xử lý tin nhắn chat (gửi tin và nhận phản hồi từ AI/admin)
    */
-  async handleChatMessage(data: SendMessageDto) {
+  async handleChatMessage(data: SendMessageDto, userContext: RequestUserContext) {
     try {
       this.logger.log(
         `Processing chat message for conversation ${data.conversationId} from user ${data.userId}`,
@@ -53,7 +53,7 @@ export class ChatGatewayService {
       };
 
       // Gọi MessagesService để xử lý tin nhắn (có thể trigger AI response)
-      const result = await this.messagesService.create(createMessageDto, data.userId, {
+      const result = await this.messagesService.create(createMessageDto, userContext, {
         correlationId: data.correlationId,
       });
 

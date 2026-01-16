@@ -8,6 +8,7 @@ import {
   Req,
   Query,
   ParseIntPipe,
+  Delete,
 } from '@nestjs/common';
 import { RatingsService } from './ratings.service';
 import { CreateRatingDto } from './dto/create-rating.dto';
@@ -24,8 +25,8 @@ export class RatingsController {
   @ApiBearerAuth()
   @UseGuards(AuthGuard('jwt'))
   create(@Req() req: Request, @Body() dto: CreateRatingDto) {
-    const user = req.user as { sub: number };
-    return this.service.create(dto, user.sub);
+    const user = req.user as { id: number };
+    return this.service.create(dto, user.id);
   }
 
   @Get()
@@ -43,8 +44,9 @@ export class RatingsController {
   //   return this.service.update(+id, dto);
   // }
 
-  // @Delete(':id')
-  // remove(@Param('id') id: number) {
-  //   return this.service.remove(+id);
-  // }
+  @Delete(':id')
+  @UseGuards(AuthGuard('jwt'))
+  remove(@Param('id') id: number) {
+    return this.service.remove(+id);
+  }
 }

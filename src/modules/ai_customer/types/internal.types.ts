@@ -30,6 +30,7 @@ export interface ProductVariantHydrated {
 export interface ProductDetailHydrated {
   id: number;
   name: string;
+  slug?: string;
   images?: string[] | null;
   category?: { name?: string | null } | null;
   brand?: { name?: string | null } | null;

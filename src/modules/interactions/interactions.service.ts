@@ -1,12 +1,19 @@
 // interaction.service.ts
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThanOrEqual } from 'typeorm';
+import { Repository, MoreThanOrEqual, FindOptionsWhere } from 'typeorm';
 import { Interaction, InteractionType } from './entities/interaction.entity';
 import { ProductVariant } from '../product_variants/entities/product_variant.entity';
 import { User } from '../users/entities/user.entity';
 import { CreateInteractionDto } from './dto/create-interaction.dto';
 import { AnalyticsService } from '../analytics/analytics.service';
+
+interface FindAllOptions {
+  page?: number;
+  limit?: number;
+  userId?: number;
+  type?: string;
+}
 
 @Injectable()
 export class InteractionsService {
@@ -22,15 +29,61 @@ export class InteractionsService {
     private readonly analyticsService: AnalyticsService,
   ) {}
 
+  async findAll(options: FindAllOptions = {}) {
+    const { page = 1, limit = 20, userId, type } = options;
+    const skip = (page - 1) * limit;
+
+    const where: FindOptionsWhere<Interaction> = {};
+
+    if (userId) {
+      where.idUser = userId;
+    }
+
+    if (type && Object.values(InteractionType).includes(type as InteractionType)) {
+      where.type = type as InteractionType;
+    }
+
+    const [data, total] = await this.interactionRepository.findAndCount({
+      where,
+      order: { createdAt: 'DESC' },
+      skip,
+      take: limit,
+      relations: ['productVariant', 'user'],
+    });
+
+    return {
+      data,
+      meta: {
+        total,
+        page: Number(page),
+        limit: Number(limit),
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async findOne(id: number): Promise<Interaction> {
+    const interaction = await this.interactionRepository.findOne({
+      where: { id },
+      relations: ['productVariant', 'user'],
+    });
+
+    if (!interaction) {
+      throw new NotFoundException(`Interaction with ID ${id} not found`);
+    }
+
+    return interaction;
+  }
+
   async create(createDto: CreateInteractionDto): Promise<Interaction> {
     // Validate ProductVariant exists
     const productVariant = await this.productVariantRepository.findOne({
-      where: { id: createDto.idProductVariant },
+      where: { id: createDto.idProduct },
     });
 
     if (!productVariant) {
       throw new BadRequestException(
-        `Product variant with ID ${createDto.idProductVariant} does not exist`,
+        `Product variant with ID ${createDto.idProduct} does not exist`,
       );
     }
 
@@ -51,7 +104,7 @@ export class InteractionsService {
     ) {
       const recentInteraction = await this.interactionRepository.findOne({
         where: {
-          idProductVariant: createDto.idProductVariant,
+          idProduct: createDto.idProduct,
           idUser: createDto.idUser,
           type: createDto.type,
           createdAt: MoreThanOrEqual(new Date(Date.now() - 60000)), // Within last minute
@@ -69,7 +122,7 @@ export class InteractionsService {
 
     const savedInteraction = await this.interactionRepository.save(interaction);
 
-    await this.analyticsService.recordInteraction(createDto.idProductVariant, createDto.type, {
+    await this.analyticsService.recordInteraction(createDto.idProduct, createDto.type, {
       occurredAt: savedInteraction.createdAt,
     });
 

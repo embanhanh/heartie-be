@@ -11,10 +11,20 @@ import { Message } from '../messages/entities/message.entity';
 import { TrendForecastingModule } from '../trend_forecasting/trend-forecasting.module';
 import { GeminiModule } from '../gemini/gemini.module';
 import { AuthModule } from '../auth/auth.module';
+import { AdsAiModule } from '../ads_ai/ads_ai.module';
+import { StatsModule } from '../stats/stats.module';
+import { User } from '../users/entities/user.entity';
+import { ProductsModule } from '../products/products.module';
+import { PromotionsModule } from '../promotions/promotions.module';
+import { AdminCopilotProactiveService } from './services/admin-copilot-proactive.service';
+import { CacheModule } from '@nestjs/cache-manager';
+import { redisStore } from 'cache-manager-redis-yet';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
+      User,
       OrderItem,
       ProductVariantInventory,
       Conversation,
@@ -23,10 +33,25 @@ import { AuthModule } from '../auth/auth.module';
     ]),
     TrendForecastingModule,
     GeminiModule,
+    AdsAiModule,
+    StatsModule,
     AuthModule,
+    ProductsModule,
+    PromotionsModule,
+    CacheModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: async (configService: ConfigService) => ({
+        store: await redisStore({
+          url: `redis://${configService.get<string>('REDIS_HOST', 'localhost')}:${configService.get<string>('REDIS_PORT', '6379')}`,
+          password: configService.get<string>('REDIS_PASSWORD') || undefined,
+        }),
+        ttl: 3600, // 1 hour cache
+      }),
+    }),
   ],
   controllers: [AdminCopilotController],
-  providers: [AdminCopilotService, AdminCopilotGateway],
+  providers: [AdminCopilotService, AdminCopilotGateway, AdminCopilotProactiveService],
   exports: [AdminCopilotService],
 })
 export class AdminCopilotModule {}

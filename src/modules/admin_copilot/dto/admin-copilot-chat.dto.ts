@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { plainToInstance, Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsEnum,
@@ -10,10 +10,93 @@ import {
   MaxLength,
   ValidateNested,
 } from 'class-validator';
+import { i18nValidationMessage } from 'nestjs-i18n';
+
+function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  return undefined;
+}
+
+function parseAttachmentArray(value: unknown): AdminCopilotAttachmentDto[] | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (Array.isArray(parsed)) {
+        return plainToInstance(AdminCopilotAttachmentDto, parsed);
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    return plainToInstance(AdminCopilotAttachmentDto, value);
+  }
+
+  return undefined;
+}
 
 export enum AdminCopilotMessageRole {
   USER = 'user',
   ASSISTANT = 'assistant',
+}
+
+export class AdminCopilotAttachmentDto {
+  @ApiProperty({ description: 'ID đính kèm (thường là UUID)' })
+  @IsString()
+  id!: string;
+
+  @ApiProperty({ description: 'Loại đính kèm', enum: ['image', 'file', 'video', 'link'] })
+  @IsString()
+  type!: 'image' | 'file' | 'video' | 'link';
+
+  @ApiProperty({ description: 'Đường dẫn hoặc URL tới file' })
+  @IsString()
+  url!: string;
+
+  @ApiPropertyOptional({ description: 'Tên file gốc' })
+  @IsOptional()
+  @IsString()
+  name?: string;
+
+  @ApiPropertyOptional({ description: 'Kích thước file (bytes)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  size?: number;
+
+  @ApiPropertyOptional({ description: 'MIME type của file' })
+  @IsOptional()
+  @IsString()
+  mimeType?: string;
+
+  @ApiPropertyOptional({ description: 'Metadata bổ sung cho đính kèm', type: Object })
+  @IsOptional()
+  meta?: Record<string, unknown>;
 }
 
 export class AdminCopilotHistoryMessageDto {
@@ -25,13 +108,20 @@ export class AdminCopilotHistoryMessageDto {
   @IsString()
   @MaxLength(4000)
   content!: string;
+
+  @ApiPropertyOptional({ description: 'Metadata lưu kèm tin nhắn', type: Object })
+  @IsOptional()
+  @Transform(({ value }) => parseJsonObject(value))
+  metadata?: Record<string, unknown> | null;
 }
 
 export class AdminCopilotChatRequestDto {
   @ApiProperty({ description: 'Tin nhắn câu hỏi của admin', maxLength: 4000 })
-  @IsString()
-  @MaxLength(4000)
-  @IsNotEmpty()
+  @IsString({ message: i18nValidationMessage('adminCopilot.validation.message.string') })
+  @MaxLength(4000, {
+    message: i18nValidationMessage('adminCopilot.validation.message.maxLength'),
+  })
+  @IsNotEmpty({ message: i18nValidationMessage('adminCopilot.validation.message.required') })
   message!: string;
 
   @ApiPropertyOptional({ description: 'Conversation ID để tiếp tục hội thoại', type: Number })
@@ -40,12 +130,21 @@ export class AdminCopilotChatRequestDto {
   @IsInt()
   conversationId?: number;
 
-  @ApiPropertyOptional({ type: [AdminCopilotHistoryMessageDto] })
+  @ApiPropertyOptional({ description: 'Đối tượng meta bổ sung cho ngữ cảnh', type: Object })
+  @IsOptional()
+  @Transform(({ value }) => parseJsonObject(value))
+  metadata?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description: 'Danh sách đính kèm hiện có',
+    type: [AdminCopilotAttachmentDto],
+  })
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => AdminCopilotHistoryMessageDto)
-  history?: AdminCopilotHistoryMessageDto[];
+  @Transform(({ value }) => parseAttachmentArray(value))
+  @Type(() => AdminCopilotAttachmentDto)
+  attachments?: AdminCopilotAttachmentDto[];
 }
 
 export class AdminCopilotFunctionCallDto {

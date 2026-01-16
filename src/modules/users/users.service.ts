@@ -1,19 +1,47 @@
-import { Injectable, ConflictException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  ConflictException,
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User, UserRole } from './entities/user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { UserSafe } from './types/user-safe.type';
 import { BaseService } from '../../common/services/base.service';
 import * as bcrypt from 'bcrypt';
 import { FilterUserDto } from './dto/filter-users.dto';
 import { PaginatedResult, SortParam } from '../../common/dto/pagination.dto';
+import { UploadedFile } from 'src/common/types/uploaded-file.type';
+import { UploadService } from '../upload/upload.service';
+import { UserCustomerGroupsService } from '../user_customer_groups/user_customer_groups.service';
+import axios from 'axios';
+import { ProductsService } from '../products/products.service';
+
+export interface TikiRecommendationItem {
+  productId: number;
+  score: number;
+  rank: number;
+}
+
+export interface TikiRecommendationResponse {
+  userId: number;
+  recommendations: TikiRecommendationItem[];
+  model?: string;
+  count?: number;
+}
 
 @Injectable()
 export class UsersService extends BaseService<User> {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly uploadService: UploadService,
+    private readonly userCustomerGroupsService: UserCustomerGroupsService,
+    private readonly productService: ProductsService,
   ) {
     super(userRepository, 'user');
   }
@@ -31,7 +59,38 @@ export class UsersService extends BaseService<User> {
     return safeUser;
   }
 
-  async create(createUserDto: CreateUserDto): Promise<UserSafe> {
+  private normalizeBirthdate(input?: string | Date | null): Date | null {
+    if (input === undefined || input === null) {
+      return null;
+    }
+
+    const normalizedInput = typeof input === 'string' ? input.trim() : input;
+
+    if (!normalizedInput) {
+      return null;
+    }
+
+    const date = normalizedInput instanceof Date ? normalizedInput : new Date(normalizedInput);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  private normalizeGender(input?: string | null): string | null {
+    if (!input) {
+      return null;
+    }
+    const trimmed = input.trim();
+    return trimmed.length ? trimmed : null;
+  }
+
+  private normalizeAvatarFallback(value?: string | null): string | null {
+    if (!value) {
+      return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  }
+
+  async create(createUserDto: CreateUserDto, avatarFile?: UploadedFile): Promise<UserSafe> {
     const [existingUserByEmail, existingUserByPhone] = await Promise.all([
       this.userRepository.findOne({ where: { email: createUserDto.email } }),
       this.userRepository.findOne({ where: { phoneNumber: createUserDto.phoneNumber } }),
@@ -55,18 +114,128 @@ export class UsersService extends BaseService<User> {
       }
     }
 
+    let avatarUrl = this.normalizeAvatarFallback(createUserDto.avatarUrl ?? null);
+    if (avatarFile) {
+      const uploadResult = await this.uploadService.uploadSingle(avatarFile, 'users/avatars');
+      avatarUrl = uploadResult.url;
+    }
+
     const newUser = this.userRepository.create({
       ...createUserDto,
       role: createUserDto.role ?? UserRole.CUSTOMER,
       branchId: createUserDto.branchId ?? null,
       password: hashedPassword,
+      birthdate: this.normalizeBirthdate(createUserDto.birthdate),
+      gender: this.normalizeGender(createUserDto.gender),
+      avatarUrl,
     });
 
     const savedUser = await this.userRepository.save(newUser);
+
+    // Assign default rank 'Khách hàng mới'
+    if (savedUser.role === UserRole.CUSTOMER) {
+      await this.userCustomerGroupsService
+        .assignRank(savedUser.id, 'Khách hàng mới')
+        .catch((err) => {
+          console.warn(`Failed to assign default rank to user ${savedUser.id}:`, err);
+        });
+    }
+
     const safeUser = this.sanitizeUser(savedUser);
     if (!safeUser) {
       throw new Error('Không thể khởi tạo người dùng mới');
     }
+    return safeUser;
+  }
+
+  async update(
+    id: number,
+    updateUserDto: UpdateUserDto,
+    updaterId: number,
+    avatarFile?: UploadedFile,
+  ): Promise<UserSafe> {
+    if (updaterId !== id) {
+      throw new ForbiddenException('Bạn chỉ có thể cập nhật thông tin của chính mình');
+    }
+
+    const user = await this.userRepository.findOne({ where: { id } });
+
+    if (!user) {
+      throw new NotFoundException(`Không tìm thấy user với id ${id}`);
+    }
+
+    if (updateUserDto.email && updateUserDto.email !== user.email) {
+      const existingByEmail = await this.userRepository.findOne({
+        where: { email: updateUserDto.email },
+      });
+      if (existingByEmail && existingByEmail.id !== id) {
+        throw new ConflictException('Email đã tồn tại');
+      }
+    }
+
+    if (updateUserDto.phoneNumber && updateUserDto.phoneNumber !== user.phoneNumber) {
+      const existingByPhone = await this.userRepository.findOne({
+        where: { phoneNumber: updateUserDto.phoneNumber },
+      });
+      if (existingByPhone && existingByPhone.id !== id) {
+        throw new ConflictException('Số điện thoại đã tồn tại');
+      }
+    }
+
+    const targetRole = updateUserDto.role ?? user.role;
+    const nextBranchId =
+      updateUserDto.branchId !== undefined ? updateUserDto.branchId : (user.branchId ?? null);
+
+    if (
+      (targetRole === UserRole.BRANCH_MANAGER || targetRole === UserRole.STAFF) &&
+      (nextBranchId === null || nextBranchId === undefined)
+    ) {
+      throw new BadRequestException('Branch assignment is required for staff and branch managers');
+    }
+
+    const nextBirthdate =
+      updateUserDto.birthdate === undefined
+        ? (user.birthdate ?? null)
+        : this.normalizeBirthdate(updateUserDto.birthdate);
+
+    const nextGender =
+      updateUserDto.gender !== undefined
+        ? this.normalizeGender(updateUserDto.gender)
+        : (user.gender ?? null);
+
+    let avatarUrl =
+      updateUserDto.avatarUrl !== undefined
+        ? this.normalizeAvatarFallback(updateUserDto.avatarUrl)
+        : (user.avatarUrl ?? null);
+
+    if (avatarFile) {
+      const uploadResult = await this.uploadService.uploadSingle(avatarFile, 'users/avatars');
+      avatarUrl = uploadResult.url;
+    }
+
+    const payload: Partial<User> = {
+      ...updateUserDto,
+      branchId: nextBranchId,
+      birthdate: nextBirthdate,
+      gender: nextGender,
+      avatarUrl,
+    };
+
+    delete (payload as Partial<CreateUserDto>).password;
+
+    const merged = this.userRepository.merge(user, payload);
+
+    if (updateUserDto.password) {
+      merged.password = await bcrypt.hash(updateUserDto.password, 10);
+    }
+
+    const savedUser = await this.userRepository.save(merged);
+    const safeUser = this.sanitizeUser(savedUser);
+
+    if (!safeUser) {
+      throw new Error('Không thể cập nhật người dùng');
+    }
+
     return safeUser;
   }
 
@@ -157,5 +326,46 @@ export class UsersService extends BaseService<User> {
       data,
       meta: result.meta,
     };
+  }
+
+  async getRecommendations(userId: number) {
+    try {
+      const user = await this.userRepository.findOne({ where: { id: userId } });
+      if (!user) {
+        throw new NotFoundException(`User with ID ${userId} not found`);
+      }
+
+      // console.log(user);
+
+      const response = await axios.get<TikiRecommendationResponse>(
+        'http://localhost:5000/api/v1/recommendations',
+        {
+          params: {
+            user_id: user.tikiId,
+          },
+        },
+      );
+
+      const data = response.data;
+      if (!data.recommendations || !Array.isArray(data.recommendations)) {
+        return [];
+      }
+
+      const productIds = data.recommendations.map((rec) => rec.productId);
+      console.log(productIds);
+
+      if (productIds.length === 0) {
+        return [];
+      }
+
+      const products = await this.productService.findByTikiIds(productIds);
+
+      console.log(products);
+
+      return products;
+    } catch (error) {
+      console.error('Error fetching recommendations:', error);
+      return [];
+    }
   }
 }

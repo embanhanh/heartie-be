@@ -1,0 +1,32 @@
+{
+  "common": {
+    "badRequest": "The request is invalid.",
+    "unauthorized": "You are not authorized to perform this action.",
+    "forbidden": "You do not have permission to perform this action.",
+    "notFound": "The requested resource was not found.",
+    "conflict": "The request could not be processed because of a conflict.",
+    "internal": "An unexpected error occurred. Please try again later."
+  },
+  "validation": {
+    "invalidPayload": "The payload is invalid.",
+    "missingField": "A required field is missing.",
+    "invalidFormat": "The value format is invalid.",
+    "toxicContent": "Review content contains inappropriate language.",
+    "spamContent": "Review content appears to be spam."
+  },
+  "adminCopilot": {
+    "messageEmpty": "Message cannot be empty.",
+    "conversationNotFound": "Admin copilot conversation not found.",
+    "conversationAccessDenied": "You are not allowed to access this conversation.",
+    "conversationUnauthorized": "Unauthorized access to admin copilot conversation.",
+    "toolUnsupported": "The requested tool is not supported.",
+    "geminiNoAnswer": "Gemini did not return any answer.",
+    "stockAlertBranchMismatch": "Branch administrators must query their own branch data only.",
+    "adminNotFound": "Admin user not found.",
+    "historyLoadFailed": "Failed to fetch admin copilot history.",
+    "socketUnauthorized": "You must be authenticated to use admin copilot chat.",
+    "socketTokenInvalid": "The access token is invalid.",
+    "toolExecutionFailed": "An error occurred while executing the admin copilot tool.",
+    "postPlanParseFailed": "The generated post plan could not be parsed."
+  }
+}

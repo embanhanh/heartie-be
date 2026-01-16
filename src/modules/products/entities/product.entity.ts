@@ -15,6 +15,8 @@ import { ProductVariant } from '../../product_variants/entities/product_variant.
 import { ProductAttribute } from '../../product_attributes/entities/product-attribute.entity';
 import { Rating } from 'src/modules/ratings/entities/rating.entity';
 import { VectorTransformer } from 'src/common/transformers/vector.transformer';
+import { CollectionProduct } from '../../collection_products/entities/collection-product.entity';
+import { Favorite } from '../../favorites/entities/favorite.entity';
 
 export enum ProductStatus {
   ACTIVE = 'active',
@@ -47,6 +49,12 @@ export class Product {
   @Column({ type: 'int', default: 0 })
   stock: number;
 
+  @Column({ type: 'int', default: 0 })
+  viewCount: number;
+
+  @Column({ type: 'int', default: 0 })
+  soldCount: number;
+
   @Column({ type: 'varchar', length: 20, default: ProductStatus.ACTIVE })
   status: ProductStatus;
 
@@ -73,13 +81,32 @@ export class Product {
   @OneToMany(() => Rating, (rating) => rating.product)
   ratings: Rating[];
 
+  @OneToMany(() => CollectionProduct, (collectionProduct) => collectionProduct.product)
+  collectionProducts: CollectionProduct[];
+
+  @OneToMany(() => Favorite, (favorite) => favorite.product)
+  favorites: Favorite[];
+
   @Column({
     type: 'vector' as unknown as ColumnType,
     nullable: true,
     transformer: VectorTransformer,
+    select: false,
   })
   embedding?: number[] | null;
 
+  @Column({
+    type: 'vector' as unknown as ColumnType,
+    nullable: true,
+    transformer: VectorTransformer,
+    name: 'visualEmbedding',
+    select: false,
+  })
+  visualEmbedding?: number[] | null;
+
   @Column({ type: 'float', default: 0 })
   rating: number;
+
+  @Column({ type: 'bigint', nullable: true, unique: true })
+  tikiId?: number | null;
 }

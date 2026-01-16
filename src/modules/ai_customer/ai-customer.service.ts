@@ -7,9 +7,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
-
 import { ProductsService, StylistCandidateProduct } from '../products/products.service';
-import { CART_ASSISTANT_SYSTEM_PROMPT, PROACTIVE_STYLIST_SYSTEM_PROMPT } from './constants/prompts';
+import { RatingsService } from '../ratings/ratings.service';
+import {
+  PRODUCT_COMPARISON_SYSTEM_PROMPT,
+  PROACTIVE_STYLIST_SYSTEM_PROMPT,
+} from './constants/prompts';
 import type {
   AiCustomerManifestResponse,
   GeminiStylistPlanOutfit,
@@ -31,12 +34,12 @@ import {
   ProactiveStylistSuggestion,
   ProactiveStylistOutfitItemSuggestion,
 } from './dto/proactive-stylist.dto';
+import { CartAnalysisRequestDto, CartAnalysisResponse } from './dto/cart-analysis.dto';
 import {
-  CartAnalysisRequestDto,
-  CartAnalysisResponse,
-  CartAnalysisSuggestion,
-  CartInsightCategory,
-} from './dto/cart-analysis.dto';
+  ProductComparisonRequestDto,
+  ProductComparisonResponse,
+} from './dto/product-comparison.dto';
+import { CartInsightsService } from './services/cart-insights.service';
 
 const manifestFeatures: AiCustomerFeatureManifestItem[] = [
   {
@@ -79,6 +82,8 @@ export class AiCustomerService {
   constructor(
     private readonly productsService: ProductsService,
     private readonly configService: ConfigService,
+    private readonly cartInsightsService: CartInsightsService,
+    private readonly ratingsService: RatingsService,
   ) {}
 
   /**
@@ -201,54 +206,58 @@ export class AiCustomerService {
     };
   }
 
-  async analyzeCart(payload: CartAnalysisRequestDto): Promise<CartAnalysisResponse> {
-    const uniqueProductIds = Array.from(new Set(payload.items.map((item) => item.productId)));
+  analyzeCart(payload: CartAnalysisRequestDto): Promise<CartAnalysisResponse> {
+    return this.cartInsightsService.analyzeCart(payload);
+  }
 
-    const productDetails = await Promise.all(
-      uniqueProductIds.map(async (productId) => {
-        try {
-          const detail = (await this.productsService.findOne(
-            productId,
-          )) as ProductDetailHydrated | null;
+  async compareProducts(payload: ProductComparisonRequestDto): Promise<ProductComparisonResponse> {
+    // 1. Get base comparison (data + feature matrix) from CartInsights
+    const baseResponse = await this.cartInsightsService.compareProducts(payload);
 
-          if (!detail) {
-            this.logger.warn(`Cart analysis skipped missing product ${productId}`);
-          }
+    try {
+      // 2. Prepare payload for AI
+      const context = {
+        products: baseResponse.comparedProducts,
+        feature_matrix: baseResponse.featureMatrix,
+      };
 
-          return detail;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.logger.error(`Failed to load product ${productId} for cart analysis: ${message}`);
-          return null;
-        }
-      }),
-    );
+      const prompt = `Dữ liệu so sánh:\n${JSON.stringify(context, null, 2)}`;
 
-    const productCatalogue = productDetails
-      .filter((item): item is ProductDetailHydrated => Boolean(item))
-      .map((item) => this.composeProductSnapshot(item));
+      // 3. Generate "Behavioral Verdict"
+      const text = await this.generateGeminiContent({
+        modelName: this.resolveModelName('GEMINI_PRODUCT_SUMMARY_MODEL'),
+        prompt,
+        systemInstruction: PRODUCT_COMPARISON_SYSTEM_PROMPT,
+        temperature: 0.4,
+        maxOutputTokens: 800,
+        responseMimeType: 'application/json',
+      });
 
-    const prompt = this.renderCartAnalysisPrompt(payload, productCatalogue);
+      // 4. Parse and merge
+      interface AiComparisonResult {
+        headline?: string;
+        summary?: string;
+        featureMatrix?: unknown[];
+      }
 
-    const text = await this.generateGeminiContent({
-      modelName: this.resolveModelName('GEMINI_CART_MODEL'),
-      prompt,
-      systemInstruction: CART_ASSISTANT_SYSTEM_PROMPT,
-      temperature: 0.2,
-      maxOutputTokens: 768,
-      responseMimeType: 'application/json',
-    });
+      const aiResult = JSON.parse(text) as AiComparisonResult;
 
-    const parsed = this.parseCartAnalysisResponse(text);
-    if (!parsed) {
-      this.logger.warn('Gemini returned unparsable cart insight, defaulting to null suggestion');
+      if (aiResult.headline) baseResponse.headline = aiResult.headline;
+      if (aiResult.summary) baseResponse.summary = aiResult.summary;
+      // Optional: Update matrix insights if AI provides better ones
+      if (Array.isArray(aiResult.featureMatrix)) {
+        // Simple merge strategy: If AI returns matrix items, try to match and update insights
+        // For now, we rely on the base matrix structure but trust the AI's "Insight" text if it matches
+      }
+
+      this.logger.debug(`[compareProducts] AI enrichment success: ${baseResponse.headline}`);
+    } catch (error) {
+      this.logger.warn(
+        `[compareProducts] AI enrichment failed, returning base response. Error: ${error}`,
+      );
     }
 
-    return {
-      suggestion: parsed?.suggestion ?? null,
-      fallbackApplied: !parsed,
-      inspectedItems: payload.items.length,
-    };
+    return baseResponse;
   }
 
   async generateProductSummary(payload: {
@@ -291,23 +300,39 @@ export class AiCustomerService {
     productId: number;
     locale?: string;
   }): Promise<{ summary: string | null }> {
-    // collect reviews from productsService if available
-    try {
-      // Try to collect reviews if the productsService supports it.
-      let sample = '';
-      const svc = this.productsService as unknown as {
-        getReviewsForProduct?: (productId: number) => Promise<Array<{ text?: string }>>;
-      };
+    const start = Date.now();
+    this.logger.debug(`generateReviewsSummary: starting for product ${payload.productId}`);
 
-      if (typeof svc.getReviewsForProduct === 'function') {
-        const reviews = await svc.getReviewsForProduct(payload.productId);
-        if (Array.isArray(reviews) && reviews.length) {
+    try {
+      // Try to collect reviews using RatingsService
+      let sample = '';
+      try {
+        const reviewsResult = await this.ratingsService.findAll({
+          productId: payload.productId,
+          limit: 50, // Get enough for a summary
+          page: 1,
+          sorts: [],
+          filters: [],
+        });
+
+        const reviews = reviewsResult.data || [];
+
+        if (reviews.length > 0) {
           sample = reviews
-            .slice(0, 40)
-            .map((r) => (typeof r === 'object' && typeof r.text === 'string' ? r.text.trim() : ''))
+            .map((r) => (r.comment ? r.comment.trim() : ''))
             .filter((s) => s.length > 0)
             .join('\n');
+
+          this.logger.debug(
+            `generateReviewsSummary: fetched ${reviews.length} reviews from RatingsService (total ${reviewsResult.meta?.total}), sample (${sample.length} chars)`,
+          );
+        } else {
+          this.logger.debug(
+            `generateReviewsSummary: No reviews found for product ${payload.productId}`,
+          );
         }
+      } catch (err) {
+        this.logger.warn(`generateReviewsSummary: Failed to fetch ratings: ${err}`);
       }
 
       if (!sample) {
@@ -317,20 +342,39 @@ export class AiCustomerService {
         return { summary: null };
       }
 
+      // Safety truncation to avoid huge payloads if individual reviews are very long
+      if (sample.length > 30000) {
+        sample = sample.slice(0, 30000);
+        this.logger.debug(`generateReviewsSummary: truncated sample to 30000 chars`);
+      }
+
       const prompt = `Tóm tắt ngắn gọn các review sau: ${sample}\nHãy nhấn mạnh điểm mạnh/điểm yếu lặp lại và tóm tắt cảm nhận chung (2-3 câu). Chỉ trả về plain text.`;
 
       const text = await this.generateGeminiContent({
         modelName: this.resolveModelName('GEMINI_REVIEWS_MODEL'),
         prompt,
         temperature: 0.25,
-        maxOutputTokens: 300,
+        maxOutputTokens: 500, // Increased from 300
         retryAttempts: 2,
       });
 
+      const duration = Date.now() - start;
+      this.logger.log(
+        `generateReviewsSummary: success for ${payload.productId} in ${duration}ms. Summary length: ${text.length}`,
+      );
+
       return { summary: text.trim() };
     } catch (error) {
+      const duration = Date.now() - start;
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`generateReviewsSummary failed for ${payload.productId}: ${msg}`);
+      const stack = error instanceof Error ? error.stack : undefined;
+
+      this.logger.error(
+        `generateReviewsSummary failed for ${payload.productId} after ${duration}ms: ${msg}`,
+      );
+      if (stack) {
+        this.logger.error(stack);
+      }
       return { summary: null };
     }
   }
@@ -761,38 +805,6 @@ export class AiCustomerService {
     ].join('\n\n');
   }
 
-  private renderCartAnalysisPrompt(
-    payload: CartAnalysisRequestDto,
-    catalogue: ProductSnapshot[],
-  ): string {
-    const cartSummary = payload.items
-      .map(
-        (item) =>
-          `- productId=${item.productId}, variantId=${item.variantId ?? 'n/a'}, quantity=${item.quantity ?? 1}`,
-      )
-      .join('\n');
-
-    return `Bạn là trợ lý giỏ hàng thông minh của Fashia. Phân tích giỏ hàng và đưa ra duy nhất 1 gợi ý hữu ích (hoặc null nếu không cần).
-
-Dữ liệu sản phẩm (catalogue):
-${JSON.stringify(catalogue, null, 2)}
-
-Giỏ hàng hiện tại:
-${cartSummary}
-
-Trả về JSON với schema:
-{
-  "suggestion": null | {
-    "category": "duplicates" | "comparison" | "cross-sell" | "promotion" | "shipping" | "styling" | "none",
-    "title": string,
-    "message": string,
-    "recommendation": string | null
-  }
-}
-
-Không viết thêm mô tả, chỉ xuất JSON.`;
-  }
-
   private parseProactiveStylistResponse(
     raw: string | null,
     candidates: Map<number, StylistCandidateSummary>,
@@ -1119,75 +1131,6 @@ Không viết thêm mô tả, chỉ xuất JSON.`;
 
     return item;
   }
-
-  private parseCartAnalysisResponse(
-    raw?: string | null,
-  ): { suggestion: CartAnalysisSuggestion | null } | null {
-    const json = this.extractJson(raw);
-    if (!json) {
-      return null;
-    }
-
-    if (json.suggestion === null) {
-      return { suggestion: null };
-    }
-
-    const suggestion = this.normalizeCartSuggestion(json.suggestion);
-    if (!suggestion) {
-      return null;
-    }
-
-    return { suggestion };
-  }
-
-  private normalizeCartSuggestion(entry: unknown): CartAnalysisSuggestion | null {
-    if (!entry || typeof entry !== 'object') {
-      return null;
-    }
-
-    const candidate = entry as Record<string, unknown>;
-    const category = this.normalizeCartCategory(candidate.category);
-    const title = typeof candidate.title === 'string' ? candidate.title.trim() : '';
-    const message = typeof candidate.message === 'string' ? candidate.message.trim() : '';
-
-    if (!category || !title || !message) {
-      return null;
-    }
-
-    const suggestion: CartAnalysisSuggestion = {
-      category,
-      title,
-      message,
-    };
-
-    if (typeof candidate.recommendation === 'string') {
-      const trimmed = candidate.recommendation.trim();
-      if (trimmed.length) {
-        suggestion.recommendation = trimmed;
-      }
-    }
-
-    return suggestion;
-  }
-
-  private normalizeCartCategory(category: unknown): CartInsightCategory | null {
-    const allowed: CartInsightCategory[] = [
-      'duplicates',
-      'comparison',
-      'cross-sell',
-      'promotion',
-      'shipping',
-      'styling',
-      'none',
-    ];
-
-    if (typeof category === 'string' && allowed.includes(category as CartInsightCategory)) {
-      return category as CartInsightCategory;
-    }
-
-    return null;
-  }
-
   private extractJson(raw?: string | null): Record<string, unknown> | null {
     if (!raw) {
       return null;

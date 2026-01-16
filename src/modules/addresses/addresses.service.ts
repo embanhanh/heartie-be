@@ -38,8 +38,9 @@ export class AddressesService {
     return saved;
   }
 
-  findAll() {
-    return this.repo.find({ order: { createdAt: 'DESC' } });
+  findAll(userId?: number) {
+    const where = userId ? { userId } : {};
+    return this.repo.find({ where, order: { createdAt: 'DESC' } });
   }
 
   async findOne(id: number) {
@@ -126,6 +127,13 @@ export class AddressesService {
     }
 
     return saved;
+  }
+
+  async findAllByUser(userId: number) {
+    return this.repo.find({
+      where: { userId },
+      order: { isDefault: 'DESC', createdAt: 'DESC' },
+    });
   }
 
   async remove(id: number) {

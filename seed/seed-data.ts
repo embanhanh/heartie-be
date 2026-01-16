@@ -7,6 +7,10 @@ import { seedBanners } from './modules/banners.seed';
 import { seedUsers } from './modules/users.seed';
 import { seedProducts } from './modules/products.seed';
 import { seedCustomerGroups } from './modules/customer-groups.seed';
+import { seedCollections } from './modules/collections.seed';
+import { seedDemoData } from './modules/demo-data.seed';
+import { seedAdsAiMetrics } from './modules/ads-ai-metrics.seed';
+import { seedTikiProducts } from './modules/tiki-products.seed';
 import type { DataSource } from 'typeorm';
 
 const seedRegistry = {
@@ -16,8 +20,12 @@ const seedRegistry = {
   branches: seedBranches,
   banners: seedBanners,
   users: seedUsers,
+  collections: seedCollections,
   products: seedProducts,
+  tikiProducts: seedTikiProducts,
   customerGroups: seedCustomerGroups,
+  demoData: seedDemoData,
+  adsAiMetrics: seedAdsAiMetrics,
 } satisfies Record<string, (dataSource: DataSource) => Promise<void>>;
 
 type SeedKey = keyof typeof seedRegistry;

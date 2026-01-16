@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsOrder, Repository } from 'typeorm';
 import { Cart } from './entities/cart.entity';
@@ -47,6 +47,17 @@ export class CartsService {
 
   async getMyCart(userId: number): Promise<Cart> {
     const cart = await this.getOrCreateCart(userId);
+    return cart;
+  }
+
+  async findCartForCheckout(userId: number): Promise<Cart> {
+    const cart = await this.cartRepo.findOne({
+      where: { userId },
+      relations: ['items', 'items.variant', 'items.variant.product'],
+    });
+    if (!cart) {
+      throw new NotFoundException('Cart not found');
+    }
     return cart;
   }
 }

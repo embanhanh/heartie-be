@@ -31,6 +31,18 @@ export class Rating {
   @Column({ type: 'text', nullable: true })
   comment: string | null;
 
+  @Column({ type: 'json', nullable: true })
+  images: string[] | null;
+
+  @Column({ type: 'json', nullable: true })
+  videos: string[] | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  sentiment: string | null;
+
+  @Column({ type: 'boolean', default: true })
+  isVisible: boolean;
+
   @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 

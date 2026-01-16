@@ -3,14 +3,15 @@ import {
   Controller,
   Delete,
   Get,
+  Logger,
   Param,
   Patch,
   Post,
   Query,
-  UploadedFile,
+  UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { AdsAiService } from './ads_ai.service';
 import { GenerateAdsAiDto } from './dto/generate-ads-ai.dto';
@@ -22,18 +23,21 @@ import { PublishAdsAiDto } from './dto/publish-ads-ai.dto';
 import { UploadedFile as UploadedFileType } from 'src/common/types/uploaded-file.type';
 import { createModuleMulterOptions } from 'src/common/utils/upload.util';
 
-const adsImageUploadOptions = createModuleMulterOptions({
+const adsUploadOptions = createModuleMulterOptions({
   moduleName: 'ads-ai',
-  allowedMimeTypes: ['image/*'],
+  allowedMimeTypes: ['image/*', 'video/*'],
 });
 
 @ApiTags('ads-ai')
 @Controller('ads-ai')
 export class AdsAiController {
+  private readonly logger = new Logger(AdsAiController.name);
+
   constructor(private readonly service: AdsAiService) {}
 
   @Post('generate')
   generate(@Body() dto: GenerateAdsAiDto) {
+    this.logger.debug(`[generate] DTO: ${JSON.stringify(dto)}`);
     return this.service.generateCreative(dto);
   }
 
@@ -47,6 +51,7 @@ export class AdsAiController {
         name: { type: 'string' },
         productName: { type: 'string', nullable: true },
         productId: { type: 'number', nullable: true },
+        // ... (truncated common properties for brevity if possible, or keep all)
         targetAudience: { type: 'string', nullable: true },
         tone: { type: 'string', nullable: true },
         objective: { type: 'string', nullable: true },
@@ -58,18 +63,39 @@ export class AdsAiController {
         scheduledAt: { type: 'string', format: 'date-time', nullable: true },
         prompt: { type: 'string', nullable: true },
         image: { type: 'string', format: 'binary', nullable: true },
-        postType: { type: 'string', enum: ['link', 'photo'], nullable: true },
+        images: { type: 'array', items: { type: 'string', format: 'binary' }, nullable: true },
+        video: { type: 'string', format: 'binary', nullable: true },
+        postType: { type: 'string', enum: ['link', 'photo', 'carousel', 'video'], nullable: true },
         hashtags: {
           type: 'array',
           items: { type: 'string' },
           nullable: true,
         },
+        rating: { type: 'number', nullable: true },
+        notes: { type: 'string', nullable: true },
       },
     },
   })
-  @UseInterceptors(FileInterceptor('image', adsImageUploadOptions))
-  create(@UploadedFile() file: UploadedFileType | undefined, @Body() dto: CreateAdsAiDto) {
-    return this.service.createFromForm(dto, file);
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'image', maxCount: 1 },
+        { name: 'images', maxCount: 10 },
+        { name: 'video', maxCount: 1 },
+      ],
+      adsUploadOptions,
+    ),
+  )
+  create(
+    @UploadedFiles()
+    files: { image?: UploadedFileType[]; images?: UploadedFileType[]; video?: UploadedFileType[] },
+    @Body() dto: CreateAdsAiDto,
+  ) {
+    this.logger.debug(`[create] DTO: ${JSON.stringify(dto)}`);
+    const mainFile = files?.image?.[0];
+    const extraFiles = files?.images;
+    const videoFile = files?.video?.[0];
+    return this.service.createFromForm(dto, mainFile, extraFiles, videoFile);
   }
 
   @Get()
@@ -102,32 +128,57 @@ export class AdsAiController {
         scheduledAt: { type: 'string', format: 'date-time', nullable: true },
         prompt: { type: 'string', nullable: true },
         image: { type: 'string', format: 'binary', nullable: true },
-        postType: { type: 'string', enum: ['link', 'photo'], nullable: true },
+        images: { type: 'array', items: { type: 'string', format: 'binary' }, nullable: true },
+        video: { type: 'string', format: 'binary', nullable: true },
+        postType: { type: 'string', enum: ['link', 'photo', 'carousel', 'video'], nullable: true },
         hashtags: {
           type: 'array',
           items: { type: 'string' },
           nullable: true,
         },
+        rating: { type: 'number', nullable: true },
+        notes: { type: 'string', nullable: true },
       },
     },
   })
-  @UseInterceptors(FileInterceptor('image', adsImageUploadOptions))
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'image', maxCount: 1 },
+        { name: 'images', maxCount: 10 },
+        { name: 'video', maxCount: 1 },
+      ],
+      adsUploadOptions,
+    ),
+  )
   update(
     @Param('id') id: string,
-    @UploadedFile() file: UploadedFileType | undefined,
+    @UploadedFiles()
+    files: { image?: UploadedFileType[]; images?: UploadedFileType[]; video?: UploadedFileType[] },
     @Body() dto: UpdateAdsAiDto,
   ) {
-    return this.service.updateFromForm(Number(id), dto, file);
+    this.logger.debug(`[update] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
+    const mainFile = files?.image?.[0];
+    const extraFiles = files?.images;
+    const videoFile = files?.video?.[0];
+    return this.service.updateFromForm(Number(id), dto, mainFile, extraFiles, videoFile);
   }
 
   @Post(':id/schedule')
   schedule(@Param('id') id: string, @Body() dto: ScheduleAdsAiDto) {
+    this.logger.debug(`[schedule] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
     return this.service.schedule(Number(id), dto);
   }
 
   @Post(':id/publish')
   publish(@Param('id') id: string, @Body() dto: PublishAdsAiDto) {
+    this.logger.debug(`[publish] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
     return this.service.publishNow(Number(id), dto);
+  }
+
+  @Post(':id/sync-metrics')
+  syncMetrics(@Param('id') id: string) {
+    return this.service.syncMetrics(Number(id));
   }
 
   @Delete(':id')

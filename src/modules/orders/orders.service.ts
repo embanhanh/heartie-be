@@ -1,10 +1,17 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsRelations, Repository } from 'typeorm';
+import { FindOptionsRelations, In, MoreThan, Repository } from 'typeorm';
 import { FulfillmentMethod, Order, OrderStatus, PaymentMethod } from './entities/order.entity';
+import { Product } from '../products/entities/product.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
-import { User } from '../users/entities/user.entity';
+import { User, UserRole } from '../users/entities/user.entity';
 import { Branch } from '../branches/entities/branch.entity';
 import { OrderItem } from '../order_items/entities/order-item.entity';
 import { Address } from '../addresses/entities/address.entity';
@@ -16,6 +23,7 @@ import {
   ProductVariant,
   ProductVariantStatus,
 } from '../product_variants/entities/product_variant.entity';
+import { ProductVariantInventory } from '../inventory/entities/product-variant-inventory.entity';
 import { ComboType } from '../promotions/entities/promotion.entity';
 import { Cart } from '../carts/entities/cart.entity';
 import { CartItem } from '../cart_items/entities/cart-item.entity';
@@ -25,11 +33,24 @@ import {
   OrderStatusChangedPayload,
 } from '../notifications/notifications.service';
 import { BaseService } from '../../common/services/base.service';
-import { PaginationOptionsDto, SortParam } from '../../common/dto/pagination.dto';
+import { SortParam } from '../../common/dto/pagination.dto';
+import { OrdersQueryDto } from './dto/orders-query.dto';
+import { MomoService } from '../momo/momo.service';
+import { UserCustomerGroupsService } from '../user_customer_groups/user_customer_groups.service';
 
 interface AutoGiftLine {
   variant: ProductVariant;
   quantity: number;
+}
+
+interface RequestUserContext {
+  id: number;
+  role: UserRole;
+}
+
+export interface CreateOrderResult {
+  order: Order;
+  payUrl: string | null;
 }
 
 @Injectable()
@@ -42,6 +63,10 @@ export class OrdersService extends BaseService<Order> {
     items: {
       variant: {
         product: true,
+        attributeValues: {
+          attribute: true,
+          attributeValue: true,
+        },
       },
     },
   };
@@ -67,24 +92,30 @@ export class OrdersService extends BaseService<Order> {
     private readonly addressRepo: Repository<Address>,
     @InjectRepository(ProductVariant)
     private readonly variantRepo: Repository<ProductVariant>,
+    @InjectRepository(ProductVariantInventory)
+    private readonly inventoryRepo: Repository<ProductVariantInventory>,
+    @InjectRepository(Product)
+    private readonly productRepo: Repository<Product>,
     private readonly addressesService: AddressesService,
     private readonly pricingService: PricingService,
     private readonly notificationsService: NotificationsService,
+    private readonly momoService: MomoService,
+    private readonly userCustomerGroupsService: UserCustomerGroupsService,
   ) {
     super(repo, 'order');
   }
 
-  async create(dto: CreateOrderDto) {
+  async create(dto: CreateOrderDto, userId?: number): Promise<CreateOrderResult> {
     const resolvedAddressId = await this.resolveAddressId({
       providedAddressId: dto.addressId,
       addressPayload: dto.address,
-      userId: dto.userId,
+      userId,
     });
 
     const effectiveAddressId = resolvedAddressId ?? undefined;
 
     await this.validateRelations({
-      userId: dto.userId,
+      userId,
       branchId: dto.branchId,
       addressId: effectiveAddressId,
     });
@@ -94,14 +125,21 @@ export class OrdersService extends BaseService<Order> {
       promotionCode: dto.promotionCode,
       branchId: dto.branchId,
       addressId: effectiveAddressId,
-      userId: dto.userId,
+      userId,
     });
 
     const autoGiftLines = await this.resolveAutoGiftLines(pricing);
     const giftTotals = this.calculateGiftTotals(autoGiftLines);
 
+    // Determine initial status based on payment method
+    const isMomoPayment: boolean = Boolean(dto.paymentMethod === PaymentMethod.MOMO);
+    let initialStatus: OrderStatus = OrderStatus.PENDING;
+    if (isMomoPayment) {
+      initialStatus = OrderStatus.PENDING_PAYMENT;
+    }
+
     const entity = this.repo.create({
-      userId: dto.userId ?? null,
+      userId: userId ?? null,
       branchId: dto.branchId ?? null,
       addressId: resolvedAddressId ?? null,
       note: dto.note,
@@ -111,7 +149,7 @@ export class OrdersService extends BaseService<Order> {
       paidAt: dto.paidAt,
       deliveredAt: dto.deliveredAt,
       cancelledAt: dto.cancelledAt,
-      status: dto.status ?? OrderStatus.PENDING,
+      status: initialStatus,
       orderNumber: this.generateOrderNumber(),
       subTotal: this.roundMoney(pricing.totals.subTotal + giftTotals.subTotal),
       discountTotal: this.roundMoney(pricing.totals.discountTotal + giftTotals.discountTotal),
@@ -122,10 +160,10 @@ export class OrdersService extends BaseService<Order> {
 
     const savedOrder = await this.repo.save(entity);
 
-    await this.saveOrderItems(savedOrder.id, pricing, autoGiftLines);
+    await this.saveOrderItems(savedOrder.id, pricing, autoGiftLines, savedOrder.branchId);
 
-    if (dto.userId) {
-      await this.removePurchasedCartItems(dto.userId, dto.items);
+    if (userId) {
+      await this.removePurchasedCartItems(userId, dto.items);
     }
 
     await this.notifyAdminsOrderCreated({
@@ -135,14 +173,58 @@ export class OrdersService extends BaseService<Order> {
       userId: savedOrder.userId,
     });
 
-    return this.findOne(savedOrder.id);
+    let payUrl: string | null = null;
+
+    if (isMomoPayment) {
+      const momoResult = await this.momoService.createPayment(
+        savedOrder.id,
+        savedOrder.orderNumber,
+        savedOrder.totalAmount,
+      );
+      payUrl = momoResult.payUrl;
+    }
+
+    // return this.findOne(savedOrder.id);
+    const fullOrder = await this.repo.findOne({
+      where: { id: savedOrder.id },
+      relations: {
+        user: true,
+        address: true,
+        items: {
+          variant: {
+            product: true,
+            attributeValues: {
+              attribute: true,
+              attributeValue: true,
+            },
+          },
+        },
+      },
+    });
+
+    if (fullOrder) {
+      this.logger.log(
+        `Created Order ID: ${savedOrder.id}, Address Email: ${fullOrder.address?.email}`,
+      );
+      await this.notificationsService.notifyUserOrderCreated(fullOrder);
+      return { order: fullOrder, payUrl };
+    }
+
+    return { order: savedOrder, payUrl };
   }
 
-  // Get order status by order number and user ID
+  // Get order status by order number and user ID (used for payment polling)
   async getOrderStatus(
     orderNumber: string,
     userId: number,
-  ): Promise<{ id: number; orderNumber: string; status: OrderStatus; totalAmount: number }> {
+  ): Promise<{
+    id: number;
+    orderNumber: string;
+    status: OrderStatus;
+    totalAmount: number;
+    isPaid: boolean;
+    paidAt: Date | null;
+  }> {
     const order = await this.repo.findOne({ where: { orderNumber, user: { id: userId } } });
 
     if (!order) {
@@ -153,6 +235,8 @@ export class OrdersService extends BaseService<Order> {
       orderNumber: order.orderNumber,
       status: order.status,
       totalAmount: order.totalAmount,
+      isPaid: order.paidAt !== null,
+      paidAt: order.paidAt ?? null,
     };
   }
 
@@ -187,12 +271,30 @@ export class OrdersService extends BaseService<Order> {
   // Request to cancel an order
   async requestCancellation(
     orderNumber: string,
-    userId: number,
+    requester?: RequestUserContext,
   ): Promise<{ orderNumber: string; status: OrderStatus; message: string }> {
-    const order = await this.repo.findOne({ where: { orderNumber, user: { id: userId } } });
+    const order = await this.repo.findOne({ where: { orderNumber, user: { id: requester?.id } } });
 
     if (!order) {
-      throw new NotFoundException(`Order with number ${orderNumber} not found for user ${userId}`);
+      throw new NotFoundException(
+        `Order with number ${orderNumber} not found for user ${requester?.id}`,
+      );
+    }
+
+    if (requester?.role === UserRole.CUSTOMER) {
+      if (order.userId !== requester.id) {
+        throw new ForbiddenException('Customers can only manage their own orders.');
+      }
+      if (order.status !== OrderStatus.PENDING) {
+        if (order.status === OrderStatus.CANCELLED) {
+          return {
+            orderNumber: order.orderNumber ?? '',
+            status: order.status,
+            message: 'Order is already cancelled',
+          };
+        }
+        throw new BadRequestException('Customers can only cancel pending orders');
+      }
     }
 
     if (order.status === OrderStatus.CANCELLED) {
@@ -202,6 +304,7 @@ export class OrdersService extends BaseService<Order> {
         message: 'Order is already cancelled',
       };
     }
+
     order.status = OrderStatus.CANCELLED;
     await this.repo.save(order);
 
@@ -212,18 +315,64 @@ export class OrdersService extends BaseService<Order> {
     };
   }
 
-  async findAll(pagination: PaginationOptionsDto = new PaginationOptionsDto()) {
-    return this.paginate(pagination, (qb) => {
+  async findAll(query: OrdersQueryDto = new OrdersQueryDto()) {
+    return this.paginate(query, (qb) => {
       qb.leftJoinAndSelect('order.user', 'user')
         .leftJoinAndSelect('order.branch', 'branch')
         .leftJoinAndSelect('order.address', 'address')
         .leftJoinAndSelect('order.items', 'items')
         .leftJoinAndSelect('items.variant', 'variant')
         .leftJoinAndSelect('variant.product', 'variantProduct');
+
+      if (query.status?.length) {
+        qb.andWhere('order.status IN (:...status)', { status: query.status });
+      }
+
+      if (query.paymentMethods?.length) {
+        qb.andWhere('order.paymentMethod IN (:...paymentMethods)', {
+          paymentMethods: query.paymentMethods,
+        });
+      }
+
+      if (query.fulfillmentMethods?.length) {
+        qb.andWhere('order.fulfillmentMethod IN (:...fulfillmentMethods)', {
+          fulfillmentMethods: query.fulfillmentMethods,
+        });
+      }
+
+      if (query.branchId) {
+        qb.andWhere('order.branchId = :branchId', { branchId: query.branchId });
+      }
+
+      if (query.userId) {
+        qb.andWhere('order.userId = :userId', { userId: query.userId });
+      }
+
+      if (typeof query.minTotal === 'number') {
+        qb.andWhere('order.totalAmount >= :minTotal', { minTotal: query.minTotal });
+      }
+
+      if (typeof query.maxTotal === 'number') {
+        qb.andWhere('order.totalAmount <= :maxTotal', { maxTotal: query.maxTotal });
+      }
+
+      const search = query.search?.trim();
+      if (search) {
+        const formattedSearch = `%${search.replace(/\s+/g, '%')}%`;
+        qb.andWhere(
+          'order.orderNumber ILIKE :search OR user.firstName ILIKE :search OR user.lastName ILIKE :search OR user.email ILIKE :search OR user.phoneNumber ILIKE :search',
+          { search: formattedSearch },
+        );
+      }
+
+      this.applyDateFilter(qb, 'createdAt', query.createdFrom, query.createdTo);
     });
   }
 
-  async findOne(id: number) {
+  async findOne(id: number, requester?: RequestUserContext) {
+    if (!id) {
+      throw new BadRequestException('Invalid order ID');
+    }
     const order = await this.repo.findOne({
       where: { id },
       relations: this.orderRelations,
@@ -233,10 +382,12 @@ export class OrdersService extends BaseService<Order> {
       throw new NotFoundException(`Order ${id} not found`);
     }
 
+    this.ensureCustomerOwnership(order, requester);
+
     return order;
   }
 
-  async update(id: number, dto: UpdateOrderDto) {
+  async update(id: number, dto: UpdateOrderDto, requester?: RequestUserContext) {
     const existing = await this.repo.findOne({
       where: { id },
       relations: { items: true },
@@ -246,14 +397,31 @@ export class OrdersService extends BaseService<Order> {
       throw new NotFoundException(`Order ${id} not found`);
     }
 
+    this.ensureCustomerOwnership(existing, requester);
+
+    if (requester?.role === UserRole.CUSTOMER) {
+      if (dto.status && dto.status !== existing.status) {
+        throw new ForbiddenException('Customers cannot change order status');
+      }
+      if (
+        existing.status === OrderStatus.CANCELLED ||
+        existing.status === OrderStatus.DELIVERED ||
+        existing.status === OrderStatus.SHIPPED
+      ) {
+        throw new BadRequestException('Cannot update order in current status');
+      }
+    }
+
     const { items, promotionCode, address, ...rest } = dto;
+    type MutableOrderFields = Partial<Omit<CreateOrderDto, 'items' | 'promotionCode' | 'address'>>;
+    const restPayload: MutableOrderFields = { ...rest };
 
     const previousStatus = existing.status;
 
-    const targetUserId = rest.userId ?? existing.userId ?? undefined;
-    const targetBranchId = rest.branchId ?? existing.branchId ?? undefined;
+    const targetUserId = existing.userId ?? undefined;
+    const targetBranchId = restPayload.branchId ?? existing.branchId ?? undefined;
     const resolvedAddressId = await this.resolveAddressId({
-      providedAddressId: rest.addressId,
+      providedAddressId: restPayload.addressId,
       addressPayload: address,
       userId: targetUserId,
     });
@@ -278,7 +446,7 @@ export class OrdersService extends BaseService<Order> {
       });
     }
 
-    const merged = this.repo.merge(existing, rest);
+    const merged = this.repo.merge(existing, restPayload);
 
     merged.addressId = resolvedAddressId ?? existing.addressId ?? null;
 
@@ -301,37 +469,92 @@ export class OrdersService extends BaseService<Order> {
 
       const saved = await this.repo.save(merged);
 
+      // Restore inventory for items being replaced
+      const currentItems = await this.orderItemRepo.find({ where: { orderId: saved.id } });
+      await this.adjustInventory(
+        saved.branchId ?? null,
+        currentItems.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+        'restore',
+      );
+
       await this.orderItemRepo.delete({ orderId: saved.id });
-      await this.saveOrderItems(saved.id, pricing, autoGiftLines);
+      await this.saveOrderItems(saved.id, pricing, autoGiftLines, saved.branchId);
+
+      const updatedOrder = await this.findOne(saved.id, requester);
 
       const userId = saved.userId;
       if (statusChanged && typeof userId === 'number') {
-        await this.notifyUserOrderStatusChanged({
+        await this.notifyUserOrderStatusChanged(
+          {
+            userId,
+            orderId: saved.id,
+            orderNumber: saved.orderNumber ?? '',
+            status: saved.status,
+            totalAmount: saved.totalAmount,
+          },
+          updatedOrder,
+        );
+      }
+
+      if (statusChanged && saved.status === OrderStatus.DELIVERED && typeof userId === 'number') {
+        this.checkAndUpgradeCustomerRank(userId).catch((err) =>
+          this.logger.error(`Failed to upgrade customer rank for user ${userId}`, err),
+        );
+      }
+
+      if (statusChanged) {
+        if (saved.status === OrderStatus.CANCELLED || saved.status === OrderStatus.RETURNED) {
+          const newItems = await this.orderItemRepo.find({ where: { orderId: saved.id } });
+          await this.adjustInventory(
+            saved.branchId ?? null,
+            newItems.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+            'restore',
+          );
+        }
+      }
+
+      return updatedOrder;
+    }
+
+    const saved = await this.repo.save(merged);
+
+    const updatedOrder = await this.findOne(saved.id, requester);
+
+    const userId = saved.userId;
+    if (statusChanged && typeof userId === 'number') {
+      await this.notifyUserOrderStatusChanged(
+        {
           userId,
           orderId: saved.id,
           orderNumber: saved.orderNumber ?? '',
           status: saved.status,
           totalAmount: saved.totalAmount,
+        },
+        updatedOrder,
+      );
+    }
+
+    if (statusChanged) {
+      // Handle inventory restoration if cancelled/returned
+      if (saved.status === OrderStatus.CANCELLED || saved.status === OrderStatus.RETURNED) {
+        const orderItems = await this.orderItemRepo.find({
+          where: { orderId: saved.id },
         });
+        await this.adjustInventory(
+          saved.branchId ?? null,
+          orderItems.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+          'restore',
+        );
       }
 
-      return this.findOne(saved.id);
+      if (saved.status === OrderStatus.DELIVERED && typeof userId === 'number') {
+        this.checkAndUpgradeCustomerRank(userId).catch((err) =>
+          this.logger.error(`Failed to upgrade customer rank for user ${userId}`, err),
+        );
+      }
     }
 
-    const saved = await this.repo.save(merged);
-
-    const userId = saved.userId;
-    if (statusChanged && typeof userId === 'number') {
-      await this.notifyUserOrderStatusChanged({
-        userId,
-        orderId: saved.id,
-        orderNumber: saved.orderNumber ?? '',
-        status: saved.status,
-        totalAmount: saved.totalAmount,
-      });
-    }
-
-    return this.findOne(saved.id);
+    return updatedOrder;
   }
 
   async remove(id: number) {
@@ -348,6 +571,7 @@ export class OrdersService extends BaseService<Order> {
     orderId: number,
     pricing: PricingSummary,
     autoGifts: AutoGiftLine[] = [],
+    branchId?: number | null,
   ) {
     if (pricing.items.length === 0 && autoGifts.length === 0) {
       return;
@@ -384,6 +608,45 @@ export class OrdersService extends BaseService<Order> {
 
     if (persistedItems.length > 0) {
       await this.orderItemRepo.save(persistedItems);
+
+      // Group quantity by product ID to update soldCount
+      const variantIds = persistedItems
+        .map((i) => i.variantId)
+        .filter((id): id is number => typeof id === 'number');
+      if (variantIds.length > 0) {
+        const variants = await this.variantRepo.find({
+          where: { id: In(variantIds) },
+          select: { id: true, productId: true },
+        });
+        const variantMap = new Map(variants.map((v) => [v.id, v.productId]));
+        const productSoldMap = new Map<number, number>();
+
+        persistedItems.forEach((item) => {
+          const variantId = item.variantId;
+          if (typeof variantId === 'number') {
+            const productId = variantMap.get(variantId);
+            if (productId) {
+              const current = productSoldMap.get(productId) ?? 0;
+              productSoldMap.set(productId, current + item.quantity);
+            }
+          }
+        });
+
+        for (const [productId, quantity] of productSoldMap) {
+          this.productRepo.increment({ id: productId }, 'soldCount', quantity).catch((err) => {
+            this.logger.error(
+              `Failed to increment soldCount for product ${productId}`,
+              err instanceof Error ? err.stack : undefined,
+            );
+          });
+        }
+      }
+
+      await this.adjustInventory(
+        branchId ?? null,
+        persistedItems.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+        'deduct',
+      );
     }
   }
 
@@ -545,6 +808,56 @@ export class OrdersService extends BaseService<Order> {
     return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 
+  private async checkAndUpgradeCustomerRank(userId: number) {
+    if (!userId) return;
+
+    // Calculate total completed orders
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const result = await this.repo
+      .createQueryBuilder('order')
+      .where('order.userId = :userId', { userId })
+      .andWhere('order.status = :status', { status: OrderStatus.DELIVERED }) // Using DELIVERED as criterion
+      .select('COUNT(order.id)', 'count')
+      .addSelect('SUM(order.totalAmount)', 'total')
+      .getRawOne();
+
+    const stats = result as { count?: string; total?: string };
+
+    const orderCount = parseInt(stats.count || '0', 10);
+    const totalSpent = parseFloat(stats.total || '0');
+
+    let targetRank = 'Khách hàng mới';
+
+    // Check criteria (Higher rank overrides lower logic, so check highest first)
+    if (totalSpent > 50000000) {
+      targetRank = 'Khách hàng VIP';
+    } else if (totalSpent > 10000000 || orderCount >= 10) {
+      targetRank = 'Khách hàng thân thiết';
+    } else if (totalSpent > 1000000 || orderCount >= 2) {
+      targetRank = 'Khách hàng tiềm năng';
+    }
+
+    // Rank hierarchy
+    const ranks = [
+      'Khách hàng mới',
+      'Khách hàng tiềm năng',
+      'Khách hàng thân thiết',
+      'Khách hàng VIP',
+    ];
+    const targetIndex = ranks.indexOf(targetRank);
+
+    const currentGroup = await this.userCustomerGroupsService.getCurrentRank(userId);
+    const currentIndex = currentGroup ? ranks.indexOf(currentGroup.name) : -1;
+
+    // Only update if target rank is higher than current rank
+    if (targetIndex > currentIndex) {
+      this.logger.log(
+        `Upgrading user ${userId} to rank ${targetRank} (Orders: ${orderCount}, Spent: ${totalSpent})`,
+      );
+      await this.userCustomerGroupsService.assignRank(userId, targetRank);
+    }
+  }
+
   private async validateRelations(payload: {
     userId?: number;
     branchId?: number;
@@ -626,11 +939,135 @@ export class OrdersService extends BaseService<Order> {
     }
   }
 
-  private async notifyUserOrderStatusChanged(payload: OrderStatusChangedPayload) {
+  private async notifyUserOrderStatusChanged(payload: OrderStatusChangedPayload, order?: Order) {
     try {
-      await this.notificationsService.notifyUserOrderStatusChanged(payload);
+      await this.notificationsService.notifyUserOrderStatusChanged(payload, order);
     } catch (error: unknown) {
       this.logNotificationError(error, 'notify user order status updated');
+    }
+  }
+
+  async ensureOrderBelongsToUserOrFail(orderId: number, userId: number) {
+    const order = await this.repo.findOne({
+      where: { id: orderId },
+      select: { id: true, userId: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Order ${orderId} not found`);
+    }
+
+    if (order.userId !== userId) {
+      throw new ForbiddenException('Customers can only manage their own orders.');
+    }
+  }
+
+  private ensureCustomerOwnership(order: Order, requester?: RequestUserContext) {
+    if (!requester || requester.role !== UserRole.CUSTOMER) {
+      return;
+    }
+
+    if (order.userId !== requester.id) {
+      throw new ForbiddenException('Customers can only manage their own orders.');
+    }
+  }
+
+  private async adjustInventory(
+    branchId: number | null,
+    items: { variantId?: number | null; quantity: number }[],
+    operation: 'deduct' | 'restore',
+  ) {
+    if (!items.length) {
+      return;
+    }
+
+    const validItems = items.filter((i) => typeof i.variantId === 'number' && i.quantity > 0) as {
+      variantId: number;
+      quantity: number;
+    }[];
+
+    if (!validItems.length) {
+      return;
+    }
+
+    if (!branchId) {
+      if (operation === 'deduct') {
+        const potentialInventories = await this.inventoryRepo.find({
+          where: {
+            variantId: In(validItems.map((i) => i.variantId)),
+            stock: MoreThan(0),
+          },
+          order: { branchId: 'ASC' },
+          take: 100,
+        });
+
+        // Heuristic: Find first branch that has stock for at least the first item?
+        // Or grouped by branch.
+        const branchIds = new Set(potentialInventories.map((i) => i.branchId));
+        if (branchIds.size > 0) {
+          // Sort numeric
+          const sorted = Array.from(branchIds).sort((a, b) => a - b);
+          branchId = sorted[0];
+        }
+      }
+
+      // If still no branchId (restore or no stock found), fallback to first branch in system
+      if (!branchId) {
+        const firstBranch = await this.branchRepo.findOne({
+          order: { id: 'ASC' },
+          select: { id: true },
+        });
+        branchId = firstBranch?.id ?? null;
+      }
+
+      if (!branchId) {
+        // Absolute fallback, stop
+        return;
+      }
+    }
+
+    const variantIds = validItems.map((i) => i.variantId);
+    const inventories = await this.inventoryRepo.find({
+      where: {
+        branchId,
+        variantId: In(variantIds),
+      },
+    });
+
+    const inventoryMap = new Map(inventories.map((inv) => [inv.variantId, inv]));
+
+    const inputsToSave: ProductVariantInventory[] = [];
+
+    for (const item of validItems) {
+      const inventory = inventoryMap.get(item.variantId);
+      if (inventory) {
+        if (operation === 'deduct') {
+          inventory.stock -= item.quantity;
+        } else {
+          inventory.stock += item.quantity;
+        }
+        inputsToSave.push(inventory);
+      } else {
+        if (operation === 'restore') {
+          const newInv = this.inventoryRepo.create({
+            branchId,
+            variantId: item.variantId,
+            stock: item.quantity,
+          });
+          inputsToSave.push(newInv);
+        } else {
+          const newInv = this.inventoryRepo.create({
+            branchId,
+            variantId: item.variantId,
+            stock: -item.quantity,
+          });
+          inputsToSave.push(newInv);
+        }
+      }
+    }
+
+    if (inputsToSave.length > 0) {
+      await this.inventoryRepo.save(inputsToSave);
     }
   }
 }

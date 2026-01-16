@@ -106,6 +106,8 @@ export class PricingService {
       };
     }
 
+    console.log('calculateFromItems', items, normalizedContext);
+
     return this.calculateSummary(items, normalizedContext);
   }
 
@@ -133,6 +135,9 @@ export class PricingService {
 
     const userGroupIds = await this.resolveUserGroupIds(context.userId);
     const promotions = await this.fetchApplicablePromotions(context, userGroupIds);
+
+    console.log('promotions', promotions);
+
     const comboPromotions = promotions.filter(
       (promotion) => promotion.type === PromotionType.COMBO,
     );
@@ -300,6 +305,8 @@ export class PricingService {
     if (!promotions.length || !lineItems.length) {
       return { adjustments: [], totalDiscount: 0 };
     }
+
+    console.log('applyAutomaticPromotions', promotions, productBuckets, lineItems);
 
     const adjustments: PromotionAdjustment[] = [];
     let totalDiscount = 0;

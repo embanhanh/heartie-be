@@ -13,6 +13,7 @@ import { PromotionCustomerGroup } from '../../promotion_customer_groups/entities
 export enum PromotionType {
   COMBO = 'COMBO',
   COUPON = 'COUPON',
+  FLASH_SALE = 'FLASH_SALE',
 }
 
 export enum ComboType {

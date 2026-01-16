@@ -15,30 +15,32 @@ import { Brand } from '../../src/modules/brands/entities/brand.entity';
 import { Category } from '../../src/modules/categories/entities/category.entity';
 import { AppModule } from '../../src/app.module';
 import { SemanticSearchService } from '../../src/modules/semantic_search/semantic-search.service';
+import { Collection } from '../../src/modules/collections/entities/collection.entity';
+import { CollectionProduct } from '../../src/modules/collection_products/entities/collection-product.entity';
 
 const TARGET_PRODUCT_COUNT = 100;
 
 const collectionNames = [
-  'Urban Luxe',
-  'Heritage Line',
-  'City Explorer',
-  'Midnight Glow',
-  'Weekend Escape',
-  'Cozy Studio',
-  'Premium Tailor',
-  'Street Legend',
-  'Everyday Essential',
-  'Modern Muse',
-  'Sunset Wander',
-  'Ocean Breeze',
-  'Mountain Peak',
-  'Velvet Dream',
-  'Aurora Chic',
-  'Nomad Spirit',
-  'Lunar Voyage',
-  'Floral Whisper',
-  'Silk Route',
-  'Amber Horizon',
+  'Sắc Màu Đô Thị',
+  'Dáng Việt Tinh Tế',
+  'Hơi Thở Thủ Đô',
+  'Nếp Gấp Sài Gòn',
+  'Chu Du Miền Cát',
+  'Hành Trình Cao Nguyên',
+  'Nắng Phố Cổ',
+  'Sương Mai Hồ Tây',
+  'Hương Lụa Phương Nam',
+  'Biển Xanh Cát Trắng',
+  'Thu Hà Nội',
+  'Mùa Hoa Ban',
+  'Gốm Việt Đương Đại',
+  'Mộc Nhiên',
+  'Gió Ô Nam',
+  'Cảm Hứng Tràng Tiền',
+  'Nét Huế',
+  'Đảo Ngọc',
+  'Bình Minh Bến Cảng',
+  'Đêm Phố Thị',
 ];
 
 const styleDescriptors = [
@@ -47,10 +49,10 @@ const styleDescriptors = [
   'Năng Động',
   'Cá Tính',
   'Cao Cấp',
-  'Vintage',
-  'Boho',
-  'Outdoor',
-  'Athleisure',
+  'Hoài Cổ',
+  'Du Mục',
+  'Dã Ngoại',
+  'Thể Thao Phong Cách',
   'Công Sở',
   'Đương Đại',
   'Tinh Tế',
@@ -171,6 +173,30 @@ const imagePool = [
 ];
 
 const sizeOptions = ['XS', 'S', 'M', 'L', 'XL'];
+
+const selectCollectionsForProduct = (
+  productIndex: number,
+  collections: Collection[],
+): Collection[] => {
+  if (!collections.length) {
+    return [];
+  }
+
+  const total = collections.length;
+  const primary = collections[productIndex % total];
+
+  if (total === 1) {
+    return [primary];
+  }
+
+  const secondary = collections[(productIndex * 3 + 5) % total];
+
+  if (secondary.id === primary.id) {
+    return [primary];
+  }
+
+  return [primary, secondary];
+};
 
 const titleize = (value: string): string =>
   value
@@ -414,11 +440,13 @@ export async function seedProducts(dataSource: DataSource) {
   const attributeRepo = dataSource.getRepository(Attribute);
   const attributeValueRepo = dataSource.getRepository(AttributeValue);
   const branchRepo = dataSource.getRepository(Branch);
+  const collectionRepo = dataSource.getRepository(Collection);
 
   const brands = await brandRepo.find();
   const categories = await categoryRepo.find();
   const branches = await branchRepo.find({ order: { isMainBranch: 'DESC', id: 'ASC' } });
   const branchIds = branches.map((branch) => branch.id);
+  const collections = await collectionRepo.find({ order: { id: 'ASC' } });
 
   if (!categories.length) {
     console.warn('⚠️  Skipping product seeds: no categories found.');
@@ -428,6 +456,12 @@ export async function seedProducts(dataSource: DataSource) {
   if (!branchIds.length) {
     console.warn(
       '⚠️  Product seeds: no branches found. Variant inventory records will be skipped.',
+    );
+  }
+
+  if (!collections.length) {
+    console.warn(
+      '⚠️  Product seeds: no collections found. Collection-product relationships will be skipped.',
     );
   }
 
@@ -703,6 +737,22 @@ export async function seedProducts(dataSource: DataSource) {
         }
 
         totalStock += blueprint.stock;
+      }
+
+      if (collections.length) {
+        const assignedCollections = selectCollectionsForProduct(index, collections);
+        const uniqueCollectionIds = Array.from(new Set(assignedCollections.map((col) => col.id)));
+        const collectionProductRepo = manager.getRepository(CollectionProduct);
+
+        for (const [position, collectionId] of uniqueCollectionIds.entries()) {
+          const collectionProduct = collectionProductRepo.create({
+            productId: savedProduct.id,
+            collectionId,
+            displayOrder: position,
+          });
+
+          await collectionProductRepo.save(collectionProduct);
+        }
       }
 
       savedProduct.stock = totalStock;

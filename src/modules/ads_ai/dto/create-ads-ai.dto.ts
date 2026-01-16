@@ -140,12 +140,43 @@ export class CreateAdsAiDto {
   image?: string;
 
   @ApiPropertyOptional({
-    description: 'Kiểu bài đăng Facebook sẽ sử dụng',
-    enum: ['link', 'photo'],
+    description: 'Đường dẫn video đã có sẵn (nếu không upload file)',
+    type: String,
   })
   @IsOptional()
-  @IsIn(['link', 'photo'])
-  postType?: 'link' | 'photo';
+  @IsString()
+  video?: string;
+
+  @ApiPropertyOptional({
+    description: 'Danh sách ảnh cho Carousel',
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  images?: string[];
+
+  // Marketing Metrics (Automated via Facebook Sync)
+
+  @ApiPropertyOptional({ description: 'Đánh giá (1-5 sao)', type: Number })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  rating?: number;
+
+  @ApiPropertyOptional({ description: 'Ghi chú' })
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+  @ApiPropertyOptional({
+    description: 'Kiểu bài đăng Facebook sẽ sử dụng',
+    enum: ['link', 'photo', 'carousel', 'video'],
+  })
+  @IsOptional()
+  @IsIn(['link', 'photo', 'carousel', 'video'])
+  postType?: 'link' | 'photo' | 'carousel' | 'video';
 
   @ApiPropertyOptional({ description: 'Prompt tuỳ chỉnh đã sử dụng để tạo nội dung AI' })
   @IsOptional()

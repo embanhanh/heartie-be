@@ -1,4 +1,11 @@
-import { Injectable, BadRequestException, ConflictException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  ConflictException,
+  Logger,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Rating } from './entities/rating.entity';
@@ -23,6 +30,7 @@ export class RatingsService {
 
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    @Inject(forwardRef(() => ReviewAnalysisService))
     private readonly reviewAnalysisService: ReviewAnalysisService,
   ) {}
 
@@ -67,12 +75,20 @@ export class RatingsService {
     // Round rating to 1 decimal place
     const roundedRating = Math.round(createDto.rating * 10) / 10;
 
+    // Validate content safety (toxic/spam check)
+    if (createDto.comment) {
+      await this.reviewAnalysisService.validateReviewContent(createDto.comment);
+    }
+
     // Create rating
     const rating = this.ratingRepository.create({
       productId: createDto.productId,
       userId: userId,
       rating: roundedRating,
       comment: createDto.comment?.trim() || null,
+      images: createDto.images || [],
+      videos: createDto.videos || [],
+      isVisible: false, // Hidden by default, pending AI moderation
     });
 
     const savedRating = await this.ratingRepository.save(rating);
@@ -119,6 +135,7 @@ export class RatingsService {
 
     const qb = this.ratingRepository
       .createQueryBuilder('rating')
+      .leftJoinAndSelect('rating.user', 'user')
       .orderBy('rating.createdAt', 'DESC');
 
     if (query.productId) {
@@ -140,6 +157,9 @@ export class RatingsService {
         createdAtTo: createdAtTo.toISOString(),
       });
     }
+
+    // Filter out hidden ratings by default (can be parameterized if admin access needed)
+    qb.andWhere('rating.isVisible = :isVisible', { isVisible: true });
 
     const [data, total] = await qb.skip(offset).take(limit).getManyAndCount();
 
@@ -168,7 +188,27 @@ export class RatingsService {
   //   return this.repo.update(id, dto);
   // }
 
-  // remove(id: number) {
-  //   return this.repo.delete(id);
-  // }
+  async remove(id: number) {
+    const rating = await this.ratingRepository.findOne({ where: { id } });
+    if (!rating) {
+      throw new BadRequestException(`Rating with ID ${id} not found`);
+    }
+
+    await this.ratingRepository.delete(id);
+    await this.updateProductAverageRating(rating.productId);
+  }
+
+  async updateProductAverageRating(productId: number): Promise<void> {
+    const result = await this.ratingRepository
+      .createQueryBuilder('rating')
+      .select('AVG(rating.rating)', 'average')
+      .where('rating.productId = :productId', { productId })
+      .andWhere('rating.isVisible = :isVisible', { isVisible: true })
+      .getRawOne<{ average: string | null }>();
+
+    const averageRating = result?.average ? parseFloat(result.average) : 0;
+    const roundedRating = Math.round(averageRating * 10) / 10;
+
+    await this.productRepository.update(productId, { rating: roundedRating });
+  }
 }
