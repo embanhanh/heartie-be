@@ -47,7 +47,8 @@ export class VisionService implements OnModuleInit {
       this.logger.log('Vision Models loaded successfully');
     } catch (error) {
       this.logger.error('Failed to load Vision Models', error);
-      throw error;
+      this.logger.error('Failed to load Vision Models', error);
+      // throw error; // Don't crash the app if vision models fail to load
     }
   }
 
