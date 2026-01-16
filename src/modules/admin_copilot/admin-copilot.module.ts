@@ -43,8 +43,15 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
       inject: [ConfigService],
       useFactory: async (configService: ConfigService) => ({
         store: await redisStore({
-          url: `redis://${configService.get<string>('REDIS_HOST', 'localhost')}:${configService.get<string>('REDIS_PORT', '6379')}`,
+          url: `${configService.get<string>('REDIS_SSL') === 'true' ? 'rediss' : 'redis'}://${configService.get<string>('REDIS_HOST', 'localhost')}:${configService.get<string>('REDIS_PORT', '6379')}`,
           password: configService.get<string>('REDIS_PASSWORD') || undefined,
+          socket:
+            configService.get<string>('REDIS_SSL') === 'true'
+              ? {
+                  tls: true,
+                  rejectUnauthorized: false, // Upstash/Render might need this
+                }
+              : undefined,
         }),
         ttl: 3600, // 1 hour cache
       }),
