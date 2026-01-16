@@ -16,6 +16,7 @@ export class StatsCacheService implements OnModuleDestroy {
       enableReadyCheck: false,
       lazyConnect: true,
       keyPrefix: 'stats:',
+      tls: this.configService.get<string>('REDIS_SSL') === 'true' ? {} : undefined,
     };
 
     this.client = new Redis(redisOptions);

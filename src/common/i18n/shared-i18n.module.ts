@@ -20,7 +20,7 @@ import { FALLBACK_LANGUAGE, LANGUAGE_QUERY_KEYS, USER_LANGUAGE_HEADER } from './
       },
       loader: I18nJsonLoader,
       loaderOptions: {
-        path: join(process.cwd(), 'src', 'i18n'),
+        path: join(__dirname, '../../../../i18n'),
         watch: process.env.NODE_ENV !== 'production',
       },
       typesOutputPath: join(

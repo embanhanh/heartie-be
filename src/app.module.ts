@@ -83,6 +83,7 @@ const BullModuleTyped = BullModule as unknown as {
           host: configService.get<string>('REDIS_HOST', 'localhost'),
           port: parseInt(configService.get<string>('REDIS_PORT') || '6379', 10),
           password: configService.get<string>('REDIS_PASSWORD') || undefined,
+          tls: configService.get<string>('REDIS_SSL') === 'true' ? {} : undefined,
         },
       }),
     }),
