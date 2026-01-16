@@ -7,7 +7,7 @@ import { OrderItem } from '../order_items/entities/order-item.entity';
 import { Order } from '../orders/entities/order.entity';
 import { Product } from '../products/entities/product.entity';
 import { DailyStatistic } from './entities/daily-statistic.entity';
-import { ProductsStatsController } from './products-stats.controller';
+
 import { StatsCacheService } from './services/stats-cache.service';
 import { StatsTrackingService } from './services/stats-tracking.service';
 import { StatsCronService } from './stats-cron.service';
@@ -26,7 +26,7 @@ import { StatsService } from './stats.service';
       Branch,
     ]),
   ],
-  controllers: [StatsController, ProductsStatsController],
+  controllers: [StatsController],
   providers: [StatsService, StatsCacheService, StatsTrackingService, StatsCronService],
   exports: [StatsService, StatsTrackingService],
 })

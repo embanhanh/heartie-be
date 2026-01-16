@@ -14,6 +14,7 @@ import { Cart } from '../carts/entities/cart.entity';
 import { CartItem } from '../cart_items/entities/cart-item.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Product } from '../products/entities/product.entity';
+import { ProductVariantInventory } from '../inventory/entities/product-variant-inventory.entity';
 import { MomoModule } from '../momo/momo.module';
 import { UserCustomerGroupsModule } from '../user_customer_groups/user_customer_groups.module';
 
@@ -29,6 +30,7 @@ import { UserCustomerGroupsModule } from '../user_customer_groups/user_customer_
       Cart,
       CartItem,
       Product,
+      ProductVariantInventory,
     ]),
     PricingModule,
     AddressesModule,

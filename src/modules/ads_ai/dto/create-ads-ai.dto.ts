@@ -140,6 +140,14 @@ export class CreateAdsAiDto {
   image?: string;
 
   @ApiPropertyOptional({
+    description: 'Đường dẫn video đã có sẵn (nếu không upload file)',
+    type: String,
+  })
+  @IsOptional()
+  @IsString()
+  video?: string;
+
+  @ApiPropertyOptional({
     description: 'Danh sách ảnh cho Carousel',
     type: [String],
   })
@@ -164,11 +172,11 @@ export class CreateAdsAiDto {
 
   @ApiPropertyOptional({
     description: 'Kiểu bài đăng Facebook sẽ sử dụng',
-    enum: ['link', 'photo', 'carousel'],
+    enum: ['link', 'photo', 'carousel', 'video'],
   })
   @IsOptional()
-  @IsIn(['link', 'photo', 'carousel'])
-  postType?: 'link' | 'photo' | 'carousel';
+  @IsIn(['link', 'photo', 'carousel', 'video'])
+  postType?: 'link' | 'photo' | 'carousel' | 'video';
 
   @ApiPropertyOptional({ description: 'Prompt tuỳ chỉnh đã sử dụng để tạo nội dung AI' })
   @IsOptional()

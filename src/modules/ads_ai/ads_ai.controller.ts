@@ -23,9 +23,9 @@ import { PublishAdsAiDto } from './dto/publish-ads-ai.dto';
 import { UploadedFile as UploadedFileType } from 'src/common/types/uploaded-file.type';
 import { createModuleMulterOptions } from 'src/common/utils/upload.util';
 
-const adsImageUploadOptions = createModuleMulterOptions({
+const adsUploadOptions = createModuleMulterOptions({
   moduleName: 'ads-ai',
-  allowedMimeTypes: ['image/*'],
+  allowedMimeTypes: ['image/*', 'video/*'],
 });
 
 @ApiTags('ads-ai')
@@ -51,6 +51,7 @@ export class AdsAiController {
         name: { type: 'string' },
         productName: { type: 'string', nullable: true },
         productId: { type: 'number', nullable: true },
+        // ... (truncated common properties for brevity if possible, or keep all)
         targetAudience: { type: 'string', nullable: true },
         tone: { type: 'string', nullable: true },
         objective: { type: 'string', nullable: true },
@@ -63,7 +64,8 @@ export class AdsAiController {
         prompt: { type: 'string', nullable: true },
         image: { type: 'string', format: 'binary', nullable: true },
         images: { type: 'array', items: { type: 'string', format: 'binary' }, nullable: true },
-        postType: { type: 'string', enum: ['link', 'photo', 'carousel'], nullable: true },
+        video: { type: 'string', format: 'binary', nullable: true },
+        postType: { type: 'string', enum: ['link', 'photo', 'carousel', 'video'], nullable: true },
         hashtags: {
           type: 'array',
           items: { type: 'string' },
@@ -79,19 +81,21 @@ export class AdsAiController {
       [
         { name: 'image', maxCount: 1 },
         { name: 'images', maxCount: 10 },
+        { name: 'video', maxCount: 1 },
       ],
-      adsImageUploadOptions,
+      adsUploadOptions,
     ),
   )
   create(
     @UploadedFiles()
-    files: { image?: UploadedFileType[]; images?: UploadedFileType[] },
+    files: { image?: UploadedFileType[]; images?: UploadedFileType[]; video?: UploadedFileType[] },
     @Body() dto: CreateAdsAiDto,
   ) {
     this.logger.debug(`[create] DTO: ${JSON.stringify(dto)}`);
-    const mainFile = files.image?.[0];
-    const extraFiles = files.images;
-    return this.service.createFromForm(dto, mainFile, extraFiles);
+    const mainFile = files?.image?.[0];
+    const extraFiles = files?.images;
+    const videoFile = files?.video?.[0];
+    return this.service.createFromForm(dto, mainFile, extraFiles, videoFile);
   }
 
   @Get()
@@ -125,7 +129,8 @@ export class AdsAiController {
         prompt: { type: 'string', nullable: true },
         image: { type: 'string', format: 'binary', nullable: true },
         images: { type: 'array', items: { type: 'string', format: 'binary' }, nullable: true },
-        postType: { type: 'string', enum: ['link', 'photo', 'carousel'], nullable: true },
+        video: { type: 'string', format: 'binary', nullable: true },
+        postType: { type: 'string', enum: ['link', 'photo', 'carousel', 'video'], nullable: true },
         hashtags: {
           type: 'array',
           items: { type: 'string' },
@@ -141,20 +146,22 @@ export class AdsAiController {
       [
         { name: 'image', maxCount: 1 },
         { name: 'images', maxCount: 10 },
+        { name: 'video', maxCount: 1 },
       ],
-      adsImageUploadOptions,
+      adsUploadOptions,
     ),
   )
   update(
     @Param('id') id: string,
     @UploadedFiles()
-    files: { image?: UploadedFileType[]; images?: UploadedFileType[] },
+    files: { image?: UploadedFileType[]; images?: UploadedFileType[]; video?: UploadedFileType[] },
     @Body() dto: UpdateAdsAiDto,
   ) {
     this.logger.debug(`[update] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
-    const mainFile = files.image?.[0];
-    const extraFiles = files.images;
-    return this.service.updateFromForm(Number(id), dto, mainFile, extraFiles);
+    const mainFile = files?.image?.[0];
+    const extraFiles = files?.images;
+    const videoFile = files?.video?.[0];
+    return this.service.updateFromForm(Number(id), dto, mainFile, extraFiles, videoFile);
   }
 
   @Post(':id/schedule')

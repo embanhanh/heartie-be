@@ -40,6 +40,9 @@ import {
   ADMIN_COPILOT_FULFILLED_ORDER_STATUSES,
   ADMIN_COPILOT_RANGE_OPTIONS,
 } from './constants/admin-copilot.constants';
+import { ProductsService } from '../products/products.service';
+import { DiscountType } from '../promotions/entities/promotion.entity';
+import { PromotionsService } from '../promotions/promotions.service';
 import { ADMIN_COPILOT_TOOLS } from './constants/admin-copilot.tools';
 import {
   AdminCopilotChatRequestDto,
@@ -111,6 +114,8 @@ export class AdminCopilotService {
     @InjectRepository(Message)
     private readonly messageRepository: Repository<Message>,
     private readonly statsService: StatsService,
+    private readonly productsService: ProductsService,
+    private readonly promotionsService: PromotionsService,
   ) {}
 
   async chat(
@@ -198,6 +203,11 @@ export class AdminCopilotService {
         metadata: requestMeta,
       },
     ];
+
+    const requestContextEnrichment = await this.resolveContextEntities(adminUserId, requestMeta);
+    if (requestContextEnrichment) {
+      geminiMessage += `\n\n[Attached Context Details]:\n${requestContextEnrichment}`;
+    }
 
     this.logger.debug(`call with system prompt: ${systemPrompt}`);
 
@@ -487,6 +497,141 @@ export class AdminCopilotService {
       `Admin ${adminUserId} fetching stock alerts (threshold=${params.threshold ?? 'default'}, limit=${params.limit ?? 'default'})${branchSuffix}`,
     );
     return this.computeStockAlerts(params, context);
+  }
+
+  private async resolveContextEntities(
+    adminUserId: number,
+    meta?: Record<string, unknown>,
+  ): Promise<string> {
+    if (!meta) return '';
+
+    const parts: string[] = [];
+
+    // 1. Resolve Products
+    // Support formats: products: [{id: 1}, ...], productIds: [1, 2], or single productId/product
+    const productIds = new Set<number>();
+
+    const metaProducts = meta.products;
+    if (Array.isArray(metaProducts)) {
+      metaProducts.forEach((p: unknown) => {
+        if (p && typeof p === 'object' && 'id' in p) {
+          productIds.add(Number((p as { id: unknown }).id));
+        }
+      });
+    }
+
+    const metaProductIds = meta.productIds;
+    if (Array.isArray(metaProductIds)) {
+      metaProductIds.forEach((id: unknown) => id && productIds.add(Number(id)));
+    }
+
+    if (meta.productId) productIds.add(Number(meta.productId));
+
+    if (
+      meta.product &&
+      typeof meta.product === 'object' &&
+      meta.product !== null &&
+      'id' in meta.product
+    ) {
+      const p = meta.product as { id: unknown };
+      productIds.add(Number(p.id));
+    }
+
+    if (productIds.size > 0) {
+      const uniqueIds = Array.from(productIds);
+      const products = await this.productsService.findAll({
+        ids: uniqueIds,
+        page: 1,
+        limit: uniqueIds.length || 20,
+        sorts: [],
+        filters: [],
+      });
+      if (products.data.length > 0) {
+        parts.push('--- PRODUCTS ---');
+        products.data.forEach((p) => {
+          const price =
+            p.priceList?.[0] || p.variants?.[0]?.price || p.originalPrice || 'Contact for price';
+          parts.push(
+            `ID: ${p.id} | Name: ${p.name} | Brand: ${p.brand?.name || 'N/A'} | Price: ${price} | Stock: ${p.stock}`,
+          );
+          if (p.description) {
+            // Truncate description to avoid token limit overflow if too long
+            const desc =
+              p.description.length > 200 ? p.description.slice(0, 200) + '...' : p.description;
+            parts.push(`Description: ${desc}`);
+          }
+        });
+      }
+    }
+
+    // 2. Resolve Promotions
+    const promotionIds = new Set<number>();
+
+    const metaPromotions = meta.promotions;
+    if (Array.isArray(metaPromotions)) {
+      metaPromotions.forEach((p: unknown) => {
+        if (p && typeof p === 'object' && 'id' in p) {
+          promotionIds.add(Number((p as { id: unknown }).id));
+        }
+      });
+    }
+
+    const metaPromotionIds = meta.promotionIds;
+    if (Array.isArray(metaPromotionIds)) {
+      metaPromotionIds.forEach((id: unknown) => id && promotionIds.add(Number(id)));
+    }
+
+    if (meta.promotionId) promotionIds.add(Number(meta.promotionId));
+
+    if (promotionIds.size > 0) {
+      const promotions = await Promise.all(
+        Array.from(promotionIds).map((id) => this.promotionsService.findOne(id).catch(() => null)),
+      );
+      const validPromotions = promotions.filter((p) => p !== null);
+      if (validPromotions.length > 0) {
+        parts.push('--- PROMOTIONS ---');
+        validPromotions.forEach((p) => {
+          if (!p) return;
+          const discountType = p.discountType === DiscountType.PERCENT ? '%' : 'VND';
+          parts.push(
+            `ID: ${p.id} | Name: ${p.name} | Code: ${p.code || 'Auto'} | Value: ${p.discountValue}${discountType} | MinOrder: ${p.minOrderValue}`,
+          );
+          if (p.description) parts.push(`Description: ${p.description}`);
+        });
+      }
+    }
+
+    // 3. Resolve Videos
+    // Support formats: videos: [{url: '...'}], video: {url: '...'}
+    const videoUrls: string[] = [];
+
+    const metaVideos = meta.videos;
+    if (Array.isArray(metaVideos)) {
+      metaVideos.forEach((v: unknown) => {
+        if (v && typeof v === 'object' && 'url' in v) {
+          videoUrls.push(String((v as { url: unknown }).url));
+        }
+      });
+    }
+
+    const metaVideo = meta.video;
+    if (metaVideo && typeof metaVideo === 'object' && metaVideo !== null && 'url' in metaVideo) {
+      const v = metaVideo as { url: unknown };
+      videoUrls.push(String(v.url));
+    }
+
+    if (typeof meta.videoUrl === 'string') {
+      videoUrls.push(meta.videoUrl);
+    }
+
+    if (videoUrls.length > 0) {
+      parts.push('--- VIDEOS ---');
+      videoUrls.forEach((url, index) => {
+        parts.push(`Video ${index + 1}: ${url}`);
+      });
+    }
+
+    return parts.join('\n');
   }
 
   public async resolveAdminContext(adminUserId: number): Promise<AdminCopilotAdminContext> {
@@ -1513,6 +1658,7 @@ export class AdminCopilotService {
     const objective = normalizeString(raw['objective']);
     const headline = normalizeString(raw['headline']);
     let image = normalizeString(raw['image']);
+    let video = normalizeString(raw['video']);
     const postType = normalizeString(raw['postType']);
 
     let productId = parsePositiveInt(raw['productId'], undefined, 1);
@@ -1528,6 +1674,13 @@ export class AdminCopilotService {
       const imageFromMeta = this.resolveImageFromMeta(options.requestMeta);
       if (imageFromMeta) {
         image = imageFromMeta;
+      }
+    }
+    if (!video) {
+      // Resolve video from meta if not provided by gemini
+      const videoFromMeta = this.resolveVideoFromMeta(options.requestMeta);
+      if (videoFromMeta) {
+        video = videoFromMeta;
       }
     }
 
@@ -1581,6 +1734,9 @@ export class AdminCopilotService {
     }
     if (image) {
       dtoInput.image = image;
+    }
+    if (video) {
+      dtoInput.video = video;
     }
     if (postType) {
       dtoInput.postType = postType;
@@ -2204,6 +2360,33 @@ export class AdminCopilotService {
 
     const url = imageSource ? normalizeString(imageSource['url']) : undefined;
     return url ?? undefined;
+  }
+
+  private resolveVideoFromMeta(meta: Record<string, unknown> | undefined): string | undefined {
+    if (!meta) return undefined;
+
+    if (typeof meta.video === 'string') return meta.video;
+    if (typeof meta.videoUrl === 'string') return meta.videoUrl;
+
+    if (
+      meta.video &&
+      typeof meta.video === 'object' &&
+      'url' in meta.video &&
+      typeof (meta.video as { url: unknown }).url === 'string'
+    ) {
+      return (meta.video as { url: string }).url;
+    }
+
+    if (Array.isArray(meta.videos) && meta.videos.length > 0) {
+      const videos = meta.videos as unknown[];
+      const first = videos[0];
+      if (typeof first === 'string') return first;
+      if (typeof first === 'object' && first !== null && 'url' in first) {
+        return (first as { url: string }).url;
+      }
+    }
+
+    return undefined;
   }
 
   private normalizeSinglePostDraft(

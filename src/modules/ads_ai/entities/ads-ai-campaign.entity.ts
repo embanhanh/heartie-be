@@ -17,6 +17,7 @@ export enum AdsAiPostType {
   LINK = 'link',
   PHOTO = 'photo',
   CAROUSEL = 'carousel',
+  VIDEO = 'video',
 }
 
 @Entity('ads_ai_campaigns')
@@ -68,6 +69,9 @@ export class AdsAiCampaign {
 
   @Column({ type: 'varchar', length: 500, nullable: true })
   image: string | null;
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  video: string | null;
 
   @Column({ type: 'jsonb', nullable: true })
   images: string[] | null;

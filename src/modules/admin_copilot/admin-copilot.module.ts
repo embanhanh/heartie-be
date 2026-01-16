@@ -14,6 +14,8 @@ import { AuthModule } from '../auth/auth.module';
 import { AdsAiModule } from '../ads_ai/ads_ai.module';
 import { StatsModule } from '../stats/stats.module';
 import { User } from '../users/entities/user.entity';
+import { ProductsModule } from '../products/products.module';
+import { PromotionsModule } from '../promotions/promotions.module';
 import { AdminCopilotProactiveService } from './services/admin-copilot-proactive.service';
 import { CacheModule } from '@nestjs/cache-manager';
 import { redisStore } from 'cache-manager-redis-yet';
@@ -34,6 +36,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     AdsAiModule,
     StatsModule,
     AuthModule,
+    ProductsModule,
+    PromotionsModule,
     CacheModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

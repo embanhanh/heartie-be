@@ -89,12 +89,21 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     }
   }
 
-  async createFromForm(dto: CreateAdsAiDto, file?: UploadedFile, extraFiles?: UploadedFile[]) {
+  async createFromForm(
+    dto: CreateAdsAiDto,
+    file?: UploadedFile,
+    extraFiles?: UploadedFile[],
+    videoFile?: UploadedFile,
+  ) {
     this.logger.debug(`[createFromForm] DTO: ${JSON.stringify(dto)}`);
     if (file)
       this.logger.debug(`[createFromForm] Main File: ${file.originalname} (${file.size} bytes)`);
     if (extraFiles?.length)
       this.logger.debug(`[createFromForm] Extra Files: ${extraFiles.length} files`);
+    if (videoFile)
+      this.logger.debug(
+        `[createFromForm] Video File: ${videoFile.originalname} (${videoFile.size} bytes)`,
+      );
 
     let imagePath: string | null = null;
     if (file) {
@@ -121,7 +130,15 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     const basePostType = this.normalizePostTypeInput(dto.postType);
     let resolvedPostType = basePostType;
 
-    if (combinedImages.length > 1) {
+    let videoPath = dto.video ? dto.video.trim() : null;
+    if (videoFile) {
+      const uploadResult = await this.uploadService.uploadSingle(videoFile, 'ads-ai');
+      videoPath = uploadResult.url;
+    }
+
+    if (videoPath) {
+      resolvedPostType = AdsAiPostType.VIDEO;
+    } else if (combinedImages.length > 1) {
       resolvedPostType = AdsAiPostType.CAROUSEL;
     } else if (imagePath || combinedImages.length === 1) {
       resolvedPostType = AdsAiPostType.PHOTO;
@@ -149,6 +166,7 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       description: dto.description ?? null,
       hashtags: this.normalizeStoredHashtags(dto.hashtags),
       image: imagePath ?? (combinedImages.length === 1 ? combinedImages[0] : null),
+      video: videoPath,
       images: combinedImages.length > 0 ? combinedImages : null,
       postType: resolvedPostType,
       status,
@@ -171,8 +189,14 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     dto: UpdateAdsAiDto,
     file?: UploadedFile,
     extraFiles?: UploadedFile[],
+    videoFile?: UploadedFile,
   ) {
     this.logger.debug(`[updateFromForm] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
+    if (videoFile)
+      this.logger.debug(
+        `[updateFromForm] Video File: ${videoFile.originalname} (${videoFile.size} bytes)`,
+      );
+
     const ad = await this.getCampaignOrFail(id);
 
     let product: Product | null = null;
@@ -242,6 +266,16 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       ad.images = this.normalizeImagesInput(dto.images);
     }
 
+    if (videoFile) {
+      const uploadResult = await this.uploadService.uploadSingle(videoFile, 'ads-ai');
+      ad.video = uploadResult.url;
+      ad.postType = AdsAiPostType.VIDEO;
+    } else if (dto.video !== undefined) {
+      // If user explicitly sends video string (or empty to clear)
+      ad.video = dto.video ? dto.video.trim() : null;
+      if (ad.video) ad.postType = AdsAiPostType.VIDEO;
+    }
+
     const normalizedImage = this.normalizeImageInput(dto.image);
 
     if (file) {
@@ -255,18 +289,25 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
       }
     }
 
-    // Tự động đồng bộ postType với trạng thái ảnh:
-    // - Nếu có nhiều ảnh -> CAROUSEL
-    // - Nếu có 1 ảnh -> PHOTO
-    // - Nếu không có ảnh và đang là PHOTO/CAROUSEL -> quay về LINK
-    if (ad.images && ad.images.length > 1) {
+    if (dto.video !== undefined) {
+      ad.video = dto.video ? dto.video.trim() : null;
+    }
+
+    // Tự động đồng bộ postType với trạng thái ảnh/video:
+    if (ad.video) {
+      ad.postType = AdsAiPostType.VIDEO;
+    } else if (ad.images && ad.images.length > 1) {
       ad.postType = AdsAiPostType.CAROUSEL;
     } else if (ad.image || (ad.images && ad.images.length === 1)) {
       ad.postType = AdsAiPostType.PHOTO;
       if (!ad.image && ad.images && ad.images.length === 1) {
         ad.image = ad.images[0];
       }
-    } else if (ad.postType === AdsAiPostType.PHOTO || ad.postType === AdsAiPostType.CAROUSEL) {
+    } else if (
+      ad.postType === AdsAiPostType.PHOTO ||
+      ad.postType === AdsAiPostType.CAROUSEL ||
+      ad.postType === AdsAiPostType.VIDEO
+    ) {
       ad.postType = AdsAiPostType.LINK;
     }
 
@@ -533,6 +574,8 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
         postId = await this.publishPhotoPost(ad, message, pageId, accessToken, baseUrl);
       } else if (ad.postType === AdsAiPostType.CAROUSEL) {
         postId = await this.publishCarouselPost(ad, message, pageId, accessToken, baseUrl);
+      } else if (ad.postType === AdsAiPostType.VIDEO) {
+        postId = await this.publishVideoPost(ad, message, pageId, accessToken, baseUrl);
       } else {
         postId = await this.publishLinkPost(ad, message, pageId, accessToken, baseUrl);
       }
@@ -656,6 +699,30 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     return response.data?.id ?? null;
   }
 
+  private async publishVideoPost(
+    ad: AdsAiCampaign,
+    message: string,
+    pageId: string,
+    accessToken: string,
+    baseUrl: string,
+  ): Promise<string | null> {
+    if (!ad.video) {
+      throw new BadRequestException('Chiến dịch dạng video cần có video đính kèm.');
+    }
+
+    const params = new URLSearchParams();
+    params.append('file_url', ad.video);
+    params.append('access_token', accessToken);
+    params.append('description', message); // Video uses 'description' as caption
+
+    const response = await this.httpClient.post<{ id: string }>(
+      `${baseUrl}/${pageId}/videos`,
+      params,
+    );
+
+    return response.data?.id ?? null;
+  }
+
   private async uploadPhotoToFacebook(
     imageUrl: string,
     pageId: string,
@@ -731,6 +798,10 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     if (ad.postType === AdsAiPostType.PHOTO && !ad.image) {
       throw new BadRequestException('Bài đăng dạng ảnh yêu cầu có ít nhất một ảnh đính kèm.');
     }
+
+    if (ad.postType === AdsAiPostType.VIDEO && !ad.video) {
+      throw new BadRequestException('Bài đăng dạng video yêu cầu có video đính kèm.');
+    }
   }
 
   private async getCampaignOrFail(id: number) {
@@ -787,6 +858,9 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     }
     if (normalized === 'carousel') {
       return AdsAiPostType.CAROUSEL;
+    }
+    if (normalized === 'video') {
+      return AdsAiPostType.VIDEO;
     }
 
     return AdsAiPostType.LINK;

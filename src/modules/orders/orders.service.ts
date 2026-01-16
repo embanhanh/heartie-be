@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsRelations, In, Repository } from 'typeorm';
+import { FindOptionsRelations, In, MoreThan, Repository } from 'typeorm';
 import { FulfillmentMethod, Order, OrderStatus, PaymentMethod } from './entities/order.entity';
 import { Product } from '../products/entities/product.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -23,6 +23,7 @@ import {
   ProductVariant,
   ProductVariantStatus,
 } from '../product_variants/entities/product_variant.entity';
+import { ProductVariantInventory } from '../inventory/entities/product-variant-inventory.entity';
 import { ComboType } from '../promotions/entities/promotion.entity';
 import { Cart } from '../carts/entities/cart.entity';
 import { CartItem } from '../cart_items/entities/cart-item.entity';
@@ -91,6 +92,8 @@ export class OrdersService extends BaseService<Order> {
     private readonly addressRepo: Repository<Address>,
     @InjectRepository(ProductVariant)
     private readonly variantRepo: Repository<ProductVariant>,
+    @InjectRepository(ProductVariantInventory)
+    private readonly inventoryRepo: Repository<ProductVariantInventory>,
     @InjectRepository(Product)
     private readonly productRepo: Repository<Product>,
     private readonly addressesService: AddressesService,
@@ -157,7 +160,7 @@ export class OrdersService extends BaseService<Order> {
 
     const savedOrder = await this.repo.save(entity);
 
-    await this.saveOrderItems(savedOrder.id, pricing, autoGiftLines);
+    await this.saveOrderItems(savedOrder.id, pricing, autoGiftLines, savedOrder.branchId);
 
     if (userId) {
       await this.removePurchasedCartItems(userId, dto.items);
@@ -466,8 +469,16 @@ export class OrdersService extends BaseService<Order> {
 
       const saved = await this.repo.save(merged);
 
+      // Restore inventory for items being replaced
+      const currentItems = await this.orderItemRepo.find({ where: { orderId: saved.id } });
+      await this.adjustInventory(
+        saved.branchId ?? null,
+        currentItems.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+        'restore',
+      );
+
       await this.orderItemRepo.delete({ orderId: saved.id });
-      await this.saveOrderItems(saved.id, pricing, autoGiftLines);
+      await this.saveOrderItems(saved.id, pricing, autoGiftLines, saved.branchId);
 
       const updatedOrder = await this.findOne(saved.id, requester);
 
@@ -491,6 +502,17 @@ export class OrdersService extends BaseService<Order> {
         );
       }
 
+      if (statusChanged) {
+        if (saved.status === OrderStatus.CANCELLED || saved.status === OrderStatus.RETURNED) {
+          const newItems = await this.orderItemRepo.find({ where: { orderId: saved.id } });
+          await this.adjustInventory(
+            saved.branchId ?? null,
+            newItems.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+            'restore',
+          );
+        }
+      }
+
       return updatedOrder;
     }
 
@@ -512,10 +534,24 @@ export class OrdersService extends BaseService<Order> {
       );
     }
 
-    if (statusChanged && saved.status === OrderStatus.DELIVERED && typeof userId === 'number') {
-      this.checkAndUpgradeCustomerRank(userId).catch((err) =>
-        this.logger.error(`Failed to upgrade customer rank for user ${userId}`, err),
-      );
+    if (statusChanged) {
+      // Handle inventory restoration if cancelled/returned
+      if (saved.status === OrderStatus.CANCELLED || saved.status === OrderStatus.RETURNED) {
+        const orderItems = await this.orderItemRepo.find({
+          where: { orderId: saved.id },
+        });
+        await this.adjustInventory(
+          saved.branchId ?? null,
+          orderItems.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+          'restore',
+        );
+      }
+
+      if (saved.status === OrderStatus.DELIVERED && typeof userId === 'number') {
+        this.checkAndUpgradeCustomerRank(userId).catch((err) =>
+          this.logger.error(`Failed to upgrade customer rank for user ${userId}`, err),
+        );
+      }
     }
 
     return updatedOrder;
@@ -535,6 +571,7 @@ export class OrdersService extends BaseService<Order> {
     orderId: number,
     pricing: PricingSummary,
     autoGifts: AutoGiftLine[] = [],
+    branchId?: number | null,
   ) {
     if (pricing.items.length === 0 && autoGifts.length === 0) {
       return;
@@ -604,6 +641,12 @@ export class OrdersService extends BaseService<Order> {
           });
         }
       }
+
+      await this.adjustInventory(
+        branchId ?? null,
+        persistedItems.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+        'deduct',
+      );
     }
   }
 
@@ -926,6 +969,105 @@ export class OrdersService extends BaseService<Order> {
 
     if (order.userId !== requester.id) {
       throw new ForbiddenException('Customers can only manage their own orders.');
+    }
+  }
+
+  private async adjustInventory(
+    branchId: number | null,
+    items: { variantId?: number | null; quantity: number }[],
+    operation: 'deduct' | 'restore',
+  ) {
+    if (!items.length) {
+      return;
+    }
+
+    const validItems = items.filter((i) => typeof i.variantId === 'number' && i.quantity > 0) as {
+      variantId: number;
+      quantity: number;
+    }[];
+
+    if (!validItems.length) {
+      return;
+    }
+
+    if (!branchId) {
+      if (operation === 'deduct') {
+        const potentialInventories = await this.inventoryRepo.find({
+          where: {
+            variantId: In(validItems.map((i) => i.variantId)),
+            stock: MoreThan(0),
+          },
+          order: { branchId: 'ASC' },
+          take: 100,
+        });
+
+        // Heuristic: Find first branch that has stock for at least the first item?
+        // Or grouped by branch.
+        const branchIds = new Set(potentialInventories.map((i) => i.branchId));
+        if (branchIds.size > 0) {
+          // Sort numeric
+          const sorted = Array.from(branchIds).sort((a, b) => a - b);
+          branchId = sorted[0];
+        }
+      }
+
+      // If still no branchId (restore or no stock found), fallback to first branch in system
+      if (!branchId) {
+        const firstBranch = await this.branchRepo.findOne({
+          order: { id: 'ASC' },
+          select: { id: true },
+        });
+        branchId = firstBranch?.id ?? null;
+      }
+
+      if (!branchId) {
+        // Absolute fallback, stop
+        return;
+      }
+    }
+
+    const variantIds = validItems.map((i) => i.variantId);
+    const inventories = await this.inventoryRepo.find({
+      where: {
+        branchId,
+        variantId: In(variantIds),
+      },
+    });
+
+    const inventoryMap = new Map(inventories.map((inv) => [inv.variantId, inv]));
+
+    const inputsToSave: ProductVariantInventory[] = [];
+
+    for (const item of validItems) {
+      const inventory = inventoryMap.get(item.variantId);
+      if (inventory) {
+        if (operation === 'deduct') {
+          inventory.stock -= item.quantity;
+        } else {
+          inventory.stock += item.quantity;
+        }
+        inputsToSave.push(inventory);
+      } else {
+        if (operation === 'restore') {
+          const newInv = this.inventoryRepo.create({
+            branchId,
+            variantId: item.variantId,
+            stock: item.quantity,
+          });
+          inputsToSave.push(newInv);
+        } else {
+          const newInv = this.inventoryRepo.create({
+            branchId,
+            variantId: item.variantId,
+            stock: -item.quantity,
+          });
+          inputsToSave.push(newInv);
+        }
+      }
+    }
+
+    if (inputsToSave.length > 0) {
+      await this.inventoryRepo.save(inputsToSave);
     }
   }
 }

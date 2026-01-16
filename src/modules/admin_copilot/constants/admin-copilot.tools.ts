@@ -179,7 +179,7 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
           'Lưu bài viết đã chốt vào Ads AI để quản lý và theo dõi. ' +
           'NẾU người dùng yêu cầu "lưu và lên lịch" hoặc cung cấp thời gian đăng (ví dụ: "lưu bài này và đăng lúc 9h tối"), ' +
           'HÃY ĐIỀN thời gian vào field "scheduledAt" trong campaign để hệ thống vừa lưu vừa lên lịch luôn. ' +
-          'Nếu metadata của tin nhắn có productId/productName, imageUrl/image.url hoặc images (danh sách ảnh) thì hãy map sang các field tương ứng (productId, productName, image, images).',
+          'Nếu metadata của tin nhắn có productId/productName, imageUrl/image.url, video/video.url hoặc images (danh sách ảnh) thì hãy map sang các field tương ứng (productId, productName, image, video, images).',
         parameters: {
           type: SchemaType.OBJECT,
           properties: {
@@ -248,13 +248,17 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
                 postType: {
                   type: SchemaType.STRING,
                   format: 'enum',
-                  enum: ['link', 'photo', 'carousel'],
+                  enum: ['link', 'photo', 'carousel', 'video'],
                   description:
-                    'Loại bài đăng: "link" (kèm ảnh nền), "photo" (ảnh đơn), hoặc "carousel" (nhiều ảnh).',
+                    'Loại bài đăng: "link" (kèm ảnh nền), "photo" (ảnh đơn), "carousel" (nhiều ảnh) hoặc "video".',
                 },
                 image: {
                   type: SchemaType.STRING,
                   description: 'Đường dẫn asset đã có sẵn, nếu cần.',
+                },
+                video: {
+                  type: SchemaType.STRING,
+                  description: 'Đường dẫn video đã có sẵn, nếu cần.',
                 },
                 images: {
                   type: SchemaType.ARRAY,

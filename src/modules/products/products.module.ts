@@ -19,6 +19,8 @@ import { VisionModule } from '../vision/vision.module';
 import { ImageSearchModule } from '../image_search/image-search.module';
 import { UploadModule } from '../upload/upload.module';
 
+import { ProductsStatsController } from '../stats/products-stats.controller';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -40,7 +42,7 @@ import { UploadModule } from '../upload/upload.module';
     UploadModule,
     SemanticSearchModule,
   ],
-  controllers: [ProductsController],
+  controllers: [ProductsStatsController, ProductsController],
   providers: [ProductsService],
   exports: [TypeOrmModule, ProductsService],
 })
