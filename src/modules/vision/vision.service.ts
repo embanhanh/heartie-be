@@ -1,4 +1,6 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import sharp from 'sharp';
 
 export interface DetectionResult {
@@ -12,150 +14,168 @@ export interface DetectionResult {
   };
 }
 
+interface GeminiDetectionItem {
+  label: string;
+  score?: number;
+  box_2d?: number[];
+  box?: {
+    xmin: number;
+    ymin: number;
+    xmax: number;
+    ymax: number;
+  };
+}
+
 @Injectable()
-export class VisionService implements OnModuleInit {
+export class VisionService {
   private readonly logger = new Logger(VisionService.name);
-  private detector: any;
-  private embedder: any;
-  private RawImage: any;
+  private genAI: GoogleGenerativeAI;
+  private detectionModel: GenerativeModel;
+  private descriptionModel: GenerativeModel;
+  private embeddingModel: GenerativeModel;
 
-  async onModuleInit() {
-    this.logger.log('Initializing Vision Models...');
-    try {
-      const { pipeline, RawImage, env } = await import('@xenova/transformers');
-
-      // Configure transformers environment
-      env.allowLocalModels = false;
-      env.useBrowserCache = false;
-      // Disable multi-threading to avoid worker blob issues in some Node environments
-      env.backends.onnx.wasm.numThreads = 1;
-
-      this.RawImage = RawImage;
-
-      this.logger.log('Loading OwlViT (Zero-Shot Object Detection)...');
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-      this.detector = await pipeline('zero-shot-object-detection', 'Xenova/owlvit-base-patch32', {
-        device: 'cpu',
-      } as any);
-
-      this.logger.log('Loading CLIP (Embedding)...');
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-      this.embedder = await pipeline('image-feature-extraction', 'Xenova/clip-vit-base-patch32', {
-        device: 'cpu',
-      } as any);
-
-      this.logger.log('Vision Models loaded successfully');
-    } catch (error) {
-      this.logger.error('Failed to load Vision Models', error);
-      this.logger.error('Failed to load Vision Models', error);
-      // throw error; // Don't crash the app if vision models fail to load
+  constructor(private readonly configService: ConfigService) {
+    const apiKey = this.configService.get<string>('GEMINI_API_KEY');
+    if (!apiKey) {
+      this.logger.error('GEMINI_API_KEY is not defined');
+      throw new Error('GEMINI_API_KEY is required');
     }
+
+    this.genAI = new GoogleGenerativeAI(apiKey);
+
+    // Model for Object Detection (using Flash for speed/cost)
+    this.detectionModel = this.genAI.getGenerativeModel({
+      model: this.configService.get<string>('GEMINI_AI_MODEL') ?? 'gemini-1.5-flash',
+      generationConfig: { responseMimeType: 'application/json' },
+    });
+
+    // Model for Description (to convert image to text for embedding)
+    this.descriptionModel = this.genAI.getGenerativeModel({
+      model: this.configService.get<string>('GEMINI_AI_MODEL') ?? 'gemini-1.5-flash',
+    });
+
+    // Model for Embeddings (Text)
+    this.embeddingModel = this.genAI.getGenerativeModel({
+      model: 'text-embedding-004',
+    });
   }
 
   async detectObjects(imageBuffer: Buffer): Promise<DetectionResult[]> {
-    this.logger.debug('Detecting objects in image (OwlViT)...');
-    const { data: rawData, info } = await sharp(imageBuffer)
-      .removeAlpha()
+    this.logger.debug('Detecting objects via Gemini...');
+
+    // Resize if too large to save tokens/bandwidth, though Gemini handles large images well.
+    // 800x800 is a reasonable balance.
+    const resizedBuffer = await sharp(imageBuffer)
       .resize({ width: 800, height: 800, fit: 'inside' })
-      .raw()
-      .toBuffer({ resolveWithObject: true });
+      .toBuffer();
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
-    const img = new this.RawImage(new Uint8Array(rawData), info.width, info.height, 3);
+    const prompt = `
+      Detect clothing items in this image. 
+      Return a JSON list of objects. Each object must have:
+      - "label": string (e.g. shirt, dress, pants, shoes, bag). use simple english terms.
+      - "score": number (confidence between 0.0 and 1.0, assumed 0.9 if sure)
+      - "box_2d": [ymin, xmin, ymax, xmax] (normalized coordinates 0-1000). 
+      IMPORTANT: Return standardized JSON format like: 
+      [{"label": "shirt", "score": 0.95, "box_2d": [100, 200, 500, 600]}]
+    `;
 
-    const candidateLabels = [
-      'shirt',
-      'blouse',
-      'top',
-      't-shirt',
-      'sweatshirt',
-      'sweater',
-      'cardigan',
-      'jacket',
-      'vest',
-      'pants',
-      'shorts',
-      'skirt',
-      'coat',
-      'dress',
-      'jumpsuit',
-      'glasses',
-      'hat',
-      'tie',
-      'glove',
-      'watch',
-      'belt',
-      'stockings',
-      'sock',
-      'shoe',
-      'bag',
-      'wallet',
-      'scarf',
-      'jeans',
-      'denim',
-      'footwear',
-      'heels',
-      'boots',
-      'sandals',
-      'sneakers',
-      'handbag',
-      'clutch',
-      'backpack',
-      'tote',
-      'jewelry',
-      'necklace',
-      'earrings',
-      'bracelet',
-      'ring',
-      'sunglasses',
-      'cosmetics',
-      'makeup',
-      'perfume',
-    ];
+    try {
+      const result = await this.detectionModel.generateContent([
+        prompt,
+        {
+          inlineData: {
+            data: resizedBuffer.toString('base64'),
+            mimeType: 'image/jpeg',
+          },
+        },
+      ]);
 
-    interface InternalDetection {
-      score: number;
-      label: string;
-      box: { xmin: number; ymin: number; xmax: number; ymax: number };
+      const responseText = result.response.text();
+      this.logger.debug(`Gemini Detection Response: ${responseText}`);
+
+      // Basic parsing of the JSON response
+      let parsed: GeminiDetectionItem[] = [];
+      try {
+        const raw = JSON.parse(responseText) as unknown;
+        if (Array.isArray(raw)) {
+          parsed = raw as GeminiDetectionItem[];
+        } else if (raw && typeof raw === 'object') {
+          // Sometimes Gemini wraps in { "result": [...] } or similar
+          const r = raw as { result?: GeminiDetectionItem[]; objects?: GeminiDetectionItem[] };
+          parsed = r.result || r.objects || [];
+          if (!Array.isArray(parsed)) parsed = [];
+        }
+      } catch (e) {
+        this.logger.warn('Failed to parse Gemini JSON output', e);
+        return [];
+      }
+
+      return parsed.map((item) => {
+        let box = { xmin: 0, ymin: 0, xmax: 0, ymax: 0 };
+
+        // Handle Gemini 0-1000 normalized coordinates
+        if (Array.isArray(item.box_2d) && item.box_2d.length === 4) {
+          const [ymin, xmin, ymax, xmax] = item.box_2d;
+          box = {
+            xmin: xmin / 1000,
+            ymin: ymin / 1000,
+            xmax: xmax / 1000,
+            ymax: ymax / 1000,
+          };
+        } else if (item.box) {
+          // Fallback if it returned 'box' object
+          box = item.box;
+        }
+
+        return {
+          label: item.label,
+          score: item.score ?? 0.8,
+          box,
+        };
+      });
+    } catch (error) {
+      this.logger.error('Gemini Object Detection Failed', error);
+      return [];
     }
-
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-    const output = (await this.detector(img, candidateLabels, {
-      threshold: 0.1, // Lower threshold to detect more objects
-      percentage: true,
-    })) as InternalDetection[];
-
-    return output.map((d) => ({
-      label: d.label,
-      score: d.score,
-      box: {
-        // OwlViT with percentage: true returns normalized coordinates [0, 1]
-        xmin: d.box.xmin,
-        ymin: d.box.ymin,
-        xmax: d.box.xmax,
-        ymax: d.box.ymax,
-      },
-    }));
   }
 
   async generateEmbedding(imageBuffer: Buffer): Promise<number[]> {
-    this.logger.debug('Generating embedding for image...');
-    const { data: rawData, info } = await sharp(imageBuffer)
-      .removeAlpha()
-      .resize({ width: 224, height: 224, fit: 'cover' }) // Optimization for CLIP
-      .raw()
-      .toBuffer({ resolveWithObject: true });
+    // this.logger.debug('Generating embedding via Gemini (Describe -> Embed)...');
+    try {
+      // 1. Resize for description
+      const resizedBuffer = await sharp(imageBuffer)
+        .resize({ width: 512, height: 512, fit: 'inside' })
+        .toFormat('jpeg')
+        .toBuffer();
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
-    const img = new this.RawImage(new Uint8Array(rawData), info.width, info.height, 3);
+      // 2. Describe image
+      const descriptionResult = await this.descriptionModel.generateContent([
+        'Describe the main clothing item in this image in detail: details, color, material, style, pattern. Be concise (max 50 words).',
+        {
+          inlineData: {
+            data: resizedBuffer.toString('base64'),
+            mimeType: 'image/jpeg',
+          },
+        },
+      ]);
+      const description = descriptionResult.response.text();
+      // this.logger.debug(`Image Description: ${description}`);
 
-    // CLIP processing
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
-    const output = await this.embedder(img);
+      if (!description) {
+        this.logger.warn('Empty description from Gemini');
+        return [];
+      }
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-    const embeddingData = output.data as number[];
-    return Array.from(embeddingData || []);
+      // 3. Embed description
+      const embeddingResult = await this.embeddingModel.embedContent(description);
+
+      const embedding = embeddingResult.embedding.values;
+      // this.logger.debug(`Generated embedding with dimension: ${embedding.length}`);
+      return embedding;
+    } catch (error) {
+      this.logger.error('Gemini Embedding Failed: ', error);
+      return [];
+    }
   }
 
   async cropImage(
@@ -166,7 +186,7 @@ export class VisionService implements OnModuleInit {
     const width = metadata.width || 0;
     const height = metadata.height || 0;
 
-    this.logger.debug(`Cropping image with dimensions ${width}x${height}`);
+    // this.logger.debug(`Cropping image with dimensions ${width}x${height}`);
 
     const left = Math.max(0, Math.min(width - 1, Math.round(box.xmin * width)));
     const top = Math.max(0, Math.min(height - 1, Math.round(box.ymin * height)));
