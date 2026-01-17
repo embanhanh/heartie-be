@@ -6,7 +6,7 @@ import { OrderItem } from '../order_items/entities/order-item.entity';
 import { Product } from '../products/entities/product.entity';
 import { ReviewInsight } from '../review_analysis/entities/review-insight.entity';
 import { Interaction, InteractionType } from '../interactions/entities/interaction.entity';
-import { ProductVariant } from '../product_variants/entities/product_variant.entity';
+
 import { TrendForecastQueryDto, TrendGranularity } from './dto/trend-forecast-query.dto';
 import { TrendForecastResponseDto } from './dto/trend-forecast-response.dto';
 
@@ -45,8 +45,7 @@ export class TrendForecastingService {
     private readonly reviewInsightRepository: Repository<ReviewInsight>,
     @InjectRepository(Interaction)
     private readonly interactionRepository: Repository<Interaction>,
-    @InjectRepository(ProductVariant)
-    private readonly productVariantRepository: Repository<ProductVariant>,
+
     @InjectRepository(DailyStatistic)
     private readonly dailyStatsRepository: Repository<DailyStatistic>,
   ) {}
@@ -453,15 +452,14 @@ export class TrendForecastingService {
 
     const qb = this.interactionRepository
       .createQueryBuilder('interaction')
-      .leftJoin('interaction.productVariant', 'variant')
-      .leftJoin('variant.product', 'product')
+      .leftJoin('interaction.product', 'product')
       .select('interaction.type', 'type')
       .addSelect('COUNT(*)', 'count')
       .where('interaction.createdAt >= :startDate', { startDate: startDate.toISOString() })
       .groupBy('interaction.type');
 
     if (productId) {
-      qb.andWhere('variant.productId = :productId', { productId });
+      qb.andWhere('product.id = :productId', { productId });
     }
 
     if (categoryId) {
