@@ -1,6 +1,14 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UserSafe } from '../types/user-safe.type';
 
+class CustomerGroupDto {
+  @ApiProperty()
+  id: number;
+
+  @ApiProperty()
+  name: string;
+}
+
 class ConversationParticipantInfo {
   @ApiProperty({ example: 1 })
   conversationId: number;
@@ -55,6 +63,9 @@ export class UserResponseDto {
   })
   participants?: ConversationParticipantInfo[];
 
+  @ApiProperty({ type: [CustomerGroupDto] })
+  customerGroups: CustomerGroupDto[];
+
   static from(user: UserSafe): UserResponseDto {
     const dto = new UserResponseDto();
     dto.id = user.id;
@@ -70,6 +81,7 @@ export class UserResponseDto {
     dto.avatarUrl = user.avatarUrl ?? null;
     dto.createdAt = user.createdAt;
     dto.updatedAt = user.updatedAt;
+
     const participants = Array.isArray(user.participants) ? user.participants : [];
     dto.participants = participants.map((participant) => {
       const info = new ConversationParticipantInfo();
@@ -77,6 +89,20 @@ export class UserResponseDto {
       info.userId = participant.userId;
       return info;
     });
+
+    const userCustomerGroups = Array.isArray(user.userCustomerGroups)
+      ? user.userCustomerGroups
+      : [];
+    dto.customerGroups = userCustomerGroups
+      .map((ucg) => {
+        if (!ucg.customerGroup) return null;
+        return {
+          id: ucg.customerGroup.id,
+          name: ucg.customerGroup.name,
+        };
+      })
+      .filter((g): g is CustomerGroupDto => g !== null);
+
     return dto;
   }
 }
