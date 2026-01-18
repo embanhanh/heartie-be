@@ -14,6 +14,7 @@ import { Cart } from '../carts/entities/cart.entity';
 import { CartItem } from '../cart_items/entities/cart-item.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { MomoModule } from '../momo/momo.module';
+import { InteractionsModule } from '../interactions/interactions.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { MomoModule } from '../momo/momo.module';
     AddressesModule,
     NotificationsModule,
     MomoModule,
+    InteractionsModule,
   ],
   controllers: [OrdersController],
   providers: [OrdersService],

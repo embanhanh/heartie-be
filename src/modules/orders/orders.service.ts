@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsRelations, Repository } from 'typeorm';
+import { FindOptionsRelations, Repository, In } from 'typeorm';
 import { FulfillmentMethod, Order, OrderStatus, PaymentMethod } from './entities/order.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
@@ -34,6 +34,8 @@ import { BaseService } from '../../common/services/base.service';
 import { SortParam } from '../../common/dto/pagination.dto';
 import { OrdersQueryDto } from './dto/orders-query.dto';
 import { MomoService } from '../momo/momo.service';
+import { InteractionsService } from '../interactions/interactions.service';
+import { InteractionType } from '../interactions/entities/interaction.entity';
 
 interface AutoGiftLine {
   variant: ProductVariant;
@@ -89,6 +91,7 @@ export class OrdersService extends BaseService<Order> {
     private readonly pricingService: PricingService,
     private readonly notificationsService: NotificationsService,
     private readonly momoService: MomoService,
+    private readonly interactionsService: InteractionsService,
   ) {
     super(repo, 'order');
   }
@@ -148,6 +151,37 @@ export class OrdersService extends BaseService<Order> {
     const savedOrder = await this.repo.save(entity);
 
     await this.saveOrderItems(savedOrder.id, pricing, autoGiftLines);
+
+    // Track PURCHASE interactions
+    if (userId) {
+      const variantIds = [
+        ...pricing.items.map((i) => i.variantId),
+        ...autoGiftLines.map((g) => g.variant.id),
+      ];
+
+      if (variantIds.length > 0) {
+        // Bulk fetch variants with products to get product IDs
+        const variants = await this.variantRepo.find({
+          where: { id: In(variantIds) },
+          relations: ['product'],
+          select: {
+            id: true,
+            product: {
+              id: true,
+              tikiId: true,
+            },
+          },
+        });
+
+        const tikiIds = new Set(variants.map((v) => v.product?.tikiId).filter((id) => !!id));
+
+        for (const tikiId of tikiIds) {
+          if (tikiId) {
+            this.interactionsService.logInteraction(userId, +tikiId, InteractionType.PURCHASE);
+          }
+        }
+      }
+    }
 
     if (userId) {
       await this.removePurchasedCartItems(userId, dto.items);

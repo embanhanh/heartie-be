@@ -423,6 +423,70 @@ export class ChatGatewayGateway implements OnGatewayInit, OnGatewayConnection, O
   }
 
   /**
+   * GetOrCreate conversation - Lấy conversation hiện có hoặc tạo mới nếu chưa có
+   */
+  @SubscribeMessage('getOrCreate_conversation')
+  async handleGetOrCreateConversation(@ConnectedSocket() client: ChatSocket) {
+    const lang = this.getSocketLanguage(client);
+    const userId = client.data?.userId;
+
+    if (!userId) {
+      return this.createErrorResponse(
+        await this.translateKey(
+          'chat.messages.errors.unauthorized',
+          lang,
+          'You must be authenticated to use chat.',
+        ),
+      );
+    }
+
+    try {
+      this.logger.log(`Client ${client.id} (userId=${userId}) requesting getOrCreate conversation`);
+
+      // Create or get existing conversation using the service (which has getOrCreate logic)
+      const conversation = await this.chatGatewayService.createConversation({
+        userId,
+      });
+
+      const conversationId = conversation.id;
+
+      // Auto-join the conversation room
+      const roomName = `conversation_${conversationId}`;
+      await client.join(roomName);
+      this.logger.log(`Client ${client.id} auto-joined ${roomName}`);
+
+      // Load messages for the conversation
+      const conversationWithMessages = await this.chatGatewayService.getConversation(
+        conversationId,
+        userId,
+      );
+
+      this.logger.log(
+        `GetOrCreate completed for userId=${userId}, conversationId=${conversationId}, messages=${conversationWithMessages.messages?.length || 0}`,
+      );
+
+      const responseData = {
+        event: 'conversation_ready',
+        data: conversationWithMessages,
+      };
+
+      // Emit directly to client as well (for event-based listeners)
+      this.emit(client, 'conversation_ready', responseData);
+
+      return responseData;
+    } catch (error) {
+      const message = await this.translateErrorMessage(
+        error,
+        lang,
+        'chat.messages.errors.createConversationFailed',
+        'Failed to create or get conversation',
+      );
+      this.logger.error(`Error in getOrCreate conversation: ${message}`);
+      return this.createErrorResponse(message);
+    }
+  }
+
+  /**
    * Xóa cuộc hội thoại
    */
   @SubscribeMessage('delete_conversation')

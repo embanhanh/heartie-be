@@ -35,7 +35,7 @@ export class Interaction {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'bigint' })
+  @Column({ type: 'bigint', nullable: true })
   idProduct: number;
 
   @Column({ type: 'bigint' })
@@ -61,10 +61,10 @@ export class Interaction {
   createdAt: Date;
 
   // Relationships
-  @ManyToOne(() => Product, (product) => product.id, {
+  @ManyToOne(() => Product, {
     onDelete: 'CASCADE',
   })
-  @JoinColumn({ name: 'idProduct' })
+  @JoinColumn({ name: 'idProduct', referencedColumnName: 'tikiId' })
   product: Product;
 
   @ManyToOne(() => User, (user) => user.id, {

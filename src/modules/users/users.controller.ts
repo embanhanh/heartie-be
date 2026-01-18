@@ -165,4 +165,32 @@ export class UsersController {
     const recommendations = await this.usersService.getRecommendations(user!.id);
     return recommendations;
   }
+
+  @ApiOperation({
+    summary: 'Lấy gợi ý sản phẩm real-time dựa trên tương tác gần đây',
+    description:
+      'Query TẤT CẢ interactions trong time window (cross-session), kết hợp ALS với short-term intent',
+  })
+  @Post('me/recommendations/realtime')
+  async getRealtimeRecommendations(
+    @Req() req: Request,
+    @Body()
+    body: {
+      time_window_minutes?: number; // Default: 30 minutes
+      k?: number; // Default: 10 recommendations
+    },
+  ) {
+    const user = req.user as { id: number } | undefined;
+    if (!user?.id) {
+      throw new UnauthorizedException('Authenticated user is required');
+    }
+
+    const result = await this.usersService.getRealtimeRecommendations(
+      user.id,
+      body.time_window_minutes ?? 30,
+      body.k ?? 10,
+    );
+
+    return result;
+  }
 }

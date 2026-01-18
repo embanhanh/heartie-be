@@ -11,5 +11,6 @@ import { AnalyticsModule } from '../analytics/analytics.module';
   imports: [TypeOrmModule.forFeature([Interaction, ProductVariant, User]), AnalyticsModule],
   controllers: [InteractionsController],
   providers: [InteractionsService],
+  exports: [InteractionsService],
 })
 export class InteractionsModule {}

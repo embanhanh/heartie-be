@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
@@ -27,6 +28,11 @@ import { UploadedFile } from 'src/common/types/uploaded-file.type';
 import { plainToInstance } from 'class-transformer';
 import { validateOrReject } from 'class-validator';
 import { ProductStatus } from './entities/product.entity';
+import { InteractionsService } from '../interactions/interactions.service';
+import { InteractionType } from '../interactions/entities/interaction.entity';
+import { Request } from 'express';
+import { UseGuards } from '@nestjs/common';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt.guard';
 
 @ApiExtraModels(
   ProductFormPayloadDto,
@@ -38,7 +44,10 @@ import { ProductStatus } from './entities/product.entity';
 @ApiTags('products')
 @Controller('products')
 export class ProductsController {
-  constructor(private readonly service: ProductsService) {}
+  constructor(
+    private readonly service: ProductsService,
+    private readonly interactionsService: InteractionsService,
+  ) {}
   @Post()
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -112,8 +121,26 @@ export class ProductsController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: number) {
-    return this.service.findOne(+id);
+  @UseGuards(OptionalJwtAuthGuard)
+  async findOne(@Req() req: Request, @Param('id') id: number) {
+    const product = await this.service.findOne(+id);
+    const user = req.user as { id?: number };
+
+    // Track CLICK interaction if user is logged in
+    if (user?.id && product && product.tikiId) {
+      console.log(
+        `[ProductsController] Logging CLICK for User ${user.id}, TikiId ${product.tikiId}`,
+      );
+      this.interactionsService.logInteraction(user.id, +product.tikiId, InteractionType.CLICK);
+    } else {
+      if (user?.id) {
+        console.warn(
+          `[ProductsController] SKIPPING interaction log. User: ${user.id}, Product: ${product?.id}, TikiId: ${product?.tikiId}`,
+        );
+      }
+    }
+
+    return product;
   }
 
   @Patch(':id')

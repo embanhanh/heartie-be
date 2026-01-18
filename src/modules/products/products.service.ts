@@ -1523,7 +1523,6 @@ export class ProductsService extends BaseService<Product> {
     if (!tikiIds || tikiIds.length === 0) {
       return [];
     }
-    console.log('findByTikiIds', tikiIds);
 
     const products = await this.productRepo.find({
       where: { tikiId: In(tikiIds) },
@@ -1538,8 +1537,6 @@ export class ProductsService extends BaseService<Product> {
         ratings: true,
       },
     });
-
-    console.log('products', products);
 
     // Record product views like findOne
     for (const product of products) {
