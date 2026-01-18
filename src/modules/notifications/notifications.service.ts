@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { IsNull, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import {
   getMessaging,
@@ -13,10 +13,10 @@ import {
 import { NotificationToken } from './entities/notification-token.entity';
 import { Notification } from './entities/notification.entity';
 import { RegisterNotificationTokenDto } from './dto/register-notification-token.dto';
-import { UserRole } from '../users/entities/user.entity';
+import { User, UserRole } from '../users/entities/user.entity';
 import { FirebaseConfig } from '../../config/firebase.config';
 import { OrderStatus, Order } from '../orders/entities/order.entity';
-import { EmailService } from '../email/email.service';
+// import { EmailService } from '../email/email.service';
 
 export interface OrderCreatedAdminPayload {
   orderId: number;
@@ -62,16 +62,21 @@ export class NotificationsService {
     private readonly notificationTokenRepo: Repository<NotificationToken>,
     @InjectRepository(Notification)
     private readonly notificationRepo: Repository<Notification>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
     private readonly configService: ConfigService,
-    private readonly emailService: EmailService,
+    // private readonly emailService: EmailService,
   ) {
     this.firebaseConfig = this.configService.get<FirebaseConfig>('firebase') ?? {};
     this.initializeFirebaseMessaging();
   }
 
   async notifyUserOrderCreated(order: Order): Promise<void> {
+    this.logger.debug(
+      `[notifyUserOrderCreated] Processing orderId=${order.id}, orderNumber=${order.orderNumber}, userId=${order.userId}`,
+    );
     // Send Email
-    await this.emailService.sendOrderCreated(order);
+    // await this.emailService.sendOrderCreated(order);
 
     // Send Push Notification
     if (order.userId) {
@@ -105,6 +110,9 @@ export class NotificationsService {
     userId: number,
     dto: RegisterNotificationTokenDto,
   ): Promise<NotificationToken> {
+    this.logger.debug(
+      `[registerToken] userId=${userId}, token=${dto.token.substring(0, 10)}..., deviceId=${dto.deviceId}, platform=${dto.platform}`,
+    );
     await this.notificationTokenRepo.delete({ token: IsNull() });
 
     const token = dto.token.trim();
@@ -131,6 +139,9 @@ export class NotificationsService {
 
     if (existingByToken && existingByDevice) {
       if (existingByToken.id === existingByDevice.id) {
+        this.logger.debug(
+          `[registerToken] Case A: Token record matches user/device record. Updating metadata.`,
+        );
         // Case A: The existing token record IS the same as the user/device record.
         // Just update metadata.
         existingByToken.platform = platform;
@@ -140,6 +151,9 @@ export class NotificationsService {
         // userId and deviceId are already correct
         return this.notificationTokenRepo.save(existingByToken);
       } else {
+        this.logger.debug(
+          `[registerToken] Case B: Token exists (Row 1), User/Device exists (Row 2). Moving token to Row 2.`,
+        );
         // Case B: Token exists on Row 1, User/Device exists on Row 2.
         // We want User/Device (Row 2) to claim this Token.
         // Row 1 is now invalid (token moved). Delete Row 1.
@@ -154,6 +168,9 @@ export class NotificationsService {
         return this.notificationTokenRepo.save(existingByDevice);
       }
     } else if (existingByToken && !existingByDevice) {
+      this.logger.debug(
+        `[registerToken] Case C: Token exists (Row 1), but no record for this User/Device. Moving token to this User/Device context.`,
+      );
       // Case C: Token exists (Row 1), but no record for this User/Device.
       // We assume Row 1 is the record we want to "move" to this User/Device context (or it's already correct userId but different deviceId? No, different deviceId would be caught above if we searched by just userId?)
       // Actually, if deviceId is null, existingByDevice is null.
@@ -173,6 +190,9 @@ export class NotificationsService {
       existingByToken.isActive = true;
       return this.notificationTokenRepo.save(existingByToken);
     } else if (!existingByToken && existingByDevice) {
+      this.logger.debug(
+        `[registerToken] Case D: Token is new. User/Device record exists (Row 2). Updating Row 2 with new token.`,
+      );
       // Case D: Token is new (not in DB). User/Device record exists (Row 2).
       // Update Row 2 with new token.
       existingByDevice.token = token;
@@ -182,6 +202,7 @@ export class NotificationsService {
       existingByDevice.isActive = true;
       return this.notificationTokenRepo.save(existingByDevice);
     } else {
+      this.logger.debug(`[registerToken] Case E: Neither exists. Creating new record.`);
       // Case E: Neither exists. New record.
       const newEntity = this.notificationTokenRepo.create({
         userId,
@@ -197,6 +218,9 @@ export class NotificationsService {
   }
 
   async removeToken(token: string, userId?: number): Promise<boolean> {
+    this.logger.debug(
+      `[removeToken] Removing token=${token.substring(0, 10)}..., userId=${userId}`,
+    );
     const result = await this.notificationTokenRepo.delete({
       token,
       ...(userId ? { userId } : {}),
@@ -209,6 +233,7 @@ export class NotificationsService {
     page = 1,
     limit = 20,
   ): Promise<{ data: Notification[]; total: number }> {
+    this.logger.debug(`[getNotifications] Fetching for userId=${userId}, page=${page}`);
     const [data, total] = await this.notificationRepo.findAndCount({
       where: { userId },
       order: { createdAt: 'DESC' },
@@ -220,10 +245,12 @@ export class NotificationsService {
   }
 
   async markAsRead(userId: number, notificationId: number): Promise<void> {
+    this.logger.debug(`[markAsRead] userId=${userId}, notificationId=${notificationId}`);
     await this.notificationRepo.update({ id: notificationId, userId }, { readAt: new Date() });
   }
 
   async markAllAsRead(userId: number): Promise<void> {
+    this.logger.debug(`[markAllAsRead] userId=${userId}`);
     await this.notificationRepo.update({ userId, readAt: IsNull() }, { readAt: new Date() });
   }
 
@@ -233,6 +260,9 @@ export class NotificationsService {
     body: string,
     data?: Record<string, any> | null,
   ): Promise<Notification> {
+    this.logger.debug(
+      `[createNotification] Creating notification for userId=${userId}, title=${title}, body=${body}`,
+    );
     const notification = this.notificationRepo.create({
       userId,
       title,
@@ -245,25 +275,35 @@ export class NotificationsService {
   async notifyAdminsOrderCreated(
     payload: OrderCreatedAdminPayload,
   ): Promise<NotificationDispatchResult> {
-    const tokens = await this.getAdminTokens();
+    this.logger.debug(`[notifyAdminsOrderCreated] Processing payload=${JSON.stringify(payload)}`);
+    const adminUserIds = await this.getAdminUserIds();
+    this.logger.debug(`[notifyAdminsOrderCreated] Found ${adminUserIds.length} admin user IDs.`);
     const formattedAmount = this.formatCurrency(payload.totalAmount);
+    const title = 'Đơn hàng mới';
+    const body = `Đơn hàng ${payload.orderNumber} trị giá ${formattedAmount}.`;
+    const data = {
+      type: 'order_created',
+      orderId: payload.orderId,
+      orderNumber: payload.orderNumber,
+      totalAmount: payload.totalAmount,
+      userId: payload.userId ?? '',
+      link: `/admin/orders/${payload.orderId}`,
+      icon: DEFAULT_WEB_ICON,
+    };
+
+    // Persist for all admins
+    await Promise.all(
+      adminUserIds.map((userId) => this.createNotification(userId, title, body, data)),
+    );
+
+    const tokens = await this.getAdminTokens();
+    this.logger.debug(`[notifyAdminsOrderCreated] Found ${tokens.length} admin tokens.`);
 
     return this.dispatchNotification({
       tokens,
       topic: this.firebaseConfig.adminTopic,
-      notification: {
-        title: 'Đơn hàng mới',
-        body: `Đơn hàng ${payload.orderNumber} trị giá ${formattedAmount}.`,
-      },
-      data: {
-        type: 'order_created',
-        orderId: payload.orderId,
-        orderNumber: payload.orderNumber,
-        totalAmount: payload.totalAmount,
-        userId: payload.userId ?? '',
-        link: `/admin/orders/${payload.orderId}`,
-        icon: DEFAULT_WEB_ICON,
-      },
+      notification: { title, body },
+      data,
     });
   }
 
@@ -273,34 +313,47 @@ export class NotificationsService {
     publishedAt: Date;
     type: string;
   }): Promise<NotificationDispatchResult> {
+    this.logger.debug(`[notifyAdminsAdPublished] Processing payload=${JSON.stringify(payload)}`);
+    const adminUserIds = await this.getAdminUserIds();
+    this.logger.debug(`[notifyAdminsAdPublished] Found ${adminUserIds.length} admin user IDs.`);
+    const title = 'Quảng cáo đã được đăng';
+    const body = `Chiến dịch "${payload.name}" đã được đăng thành công lên Facebook.`;
+    const data = {
+      type: 'ad_published',
+      id: payload.id,
+      name: payload.name,
+      postType: payload.type,
+      link: `/admin`,
+      icon: DEFAULT_WEB_ICON,
+    };
+
+    // Persist for all admins
+    await Promise.all(
+      adminUserIds.map((userId) => this.createNotification(userId, title, body, data)),
+    );
+
     const tokens = await this.getAdminTokens();
 
     return this.dispatchNotification({
       tokens,
       topic: this.firebaseConfig.adminTopic,
-      notification: {
-        title: 'Quảng cáo đã được đăng',
-        body: `Chiến dịch "${payload.name}" đã được đăng thành công lên Facebook.`,
-      },
-      data: {
-        type: 'ad_published',
-        id: payload.id,
-        name: payload.name,
-        postType: payload.type,
-        link: `/admin`,
-        icon: DEFAULT_WEB_ICON,
-      },
+      notification: { title, body },
+      data,
     });
   }
 
   async notifyUserOrderStatusChanged(
     payload: OrderStatusChangedPayload,
-    order?: Order,
+    // order?: Order,
   ): Promise<NotificationDispatchResult> {
+    this.logger.debug(
+      `[notifyUserOrderStatusChanged] Processing Status Change: orderId=${payload.orderId}, status=${payload.status}, userId=${payload.userId}`,
+    );
+
     // Send Email if order object is provided
-    if (order) {
-      await this.emailService.sendOrderStatusChanged(order);
-    }
+    // if (order) {
+    //   await this.emailService.sendOrderStatusChanged(order);
+    // }
 
     // Persist notification
     await this.createNotification(
@@ -373,7 +426,12 @@ export class NotificationsService {
   }
 
   private async getAdminTokens(): Promise<string[]> {
-    const roles: UserRole[] = [UserRole.ADMIN, UserRole.BRANCH_MANAGER, UserRole.STAFF];
+    const roles: UserRole[] = [
+      UserRole.ADMIN,
+      UserRole.SHOP_OWNER,
+      UserRole.BRANCH_MANAGER,
+      UserRole.STAFF,
+    ];
 
     const rows = await this.notificationTokenRepo
       .createQueryBuilder('token')
@@ -385,6 +443,25 @@ export class NotificationsService {
       .getRawMany<{ token: string }>();
 
     return [...new Set(rows.map((row) => row.token).filter(Boolean))];
+  }
+
+  private async getAdminUserIds(): Promise<number[]> {
+    const roles: UserRole[] = [
+      UserRole.ADMIN,
+      UserRole.SHOP_OWNER,
+      UserRole.BRANCH_MANAGER,
+      UserRole.STAFF,
+    ];
+
+    const users = await this.userRepo.find({
+      where: {
+        isActive: true,
+        role: In(roles),
+      },
+      select: { id: true },
+    });
+
+    return users.map((u) => u.id);
   }
 
   private async getUserTokens(userId: number): Promise<string[]> {
@@ -406,6 +483,9 @@ export class NotificationsService {
     topic,
   }: DispatchOptions): Promise<NotificationDispatchResult> {
     const totalReceivers = tokens.length;
+    this.logger.debug(
+      `[dispatchNotification] Total receivers: ${totalReceivers}, Topic: ${topic ?? 'None'}`,
+    );
 
     if (!this.messaging) {
       if (totalReceivers > 0) {
@@ -433,6 +513,7 @@ export class NotificationsService {
     const invalidTokens: string[] = [];
 
     if (tokens.length) {
+      this.logger.debug(`[dispatchNotification] Dispatching to ${tokens.length} tokens...`);
       for (const chunk of this.chunk(tokens, 500)) {
         try {
           const dataForChunk = { ...sanitizedData };
@@ -456,6 +537,7 @@ export class NotificationsService {
           response.responses.forEach((singleResponse, index) => {
             if (!singleResponse.success && singleResponse.error) {
               const errorCode = singleResponse.error.code;
+              this.logger.warn(`[dispatchNotification] Send error for token: ${errorCode}`);
               errors.push(errorCode);
 
               if (this.isInvalidTokenError(errorCode)) {
@@ -482,6 +564,7 @@ export class NotificationsService {
     if (topic && topic.trim().length > 0) {
       try {
         const topicData = { ...sanitizedData };
+        this.logger.debug(`[dispatchNotification] Sending to topic: ${topic}`);
         await this.messaging.send({
           notification,
           data: topicData,
@@ -489,6 +572,7 @@ export class NotificationsService {
           webpush: this.buildWebpushConfig(notification, topicData),
         });
         topicSent = true;
+        this.logger.debug(`[dispatchNotification] Topic ${topic} sent successfully.`);
       } catch (error) {
         const message = error instanceof Error ? error.message : `${error}`;
         errors.push(message);

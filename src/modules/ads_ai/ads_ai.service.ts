@@ -407,7 +407,21 @@ export class AdsAiService extends BaseService<AdsAiCampaign> {
     this.logger.debug(`[publishNow] ID: ${id}, DTO: ${JSON.stringify(dto)}`);
     const ad = await this.getCampaignOrFail(id);
     this.ensurePublishable(ad);
-    return this.publishCampaign(ad, dto.note);
+    const result = await this.publishCampaign(ad, dto.note);
+
+    await this.notificationsService
+      .notifyAdminsAdPublished({
+        id: ad.id,
+        name: ad.name,
+        publishedAt: new Date(),
+        type: ad.postType,
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`Failed to send ad published notification: ${message}`);
+      });
+
+    return result;
   }
 
   async remove(id: number) {

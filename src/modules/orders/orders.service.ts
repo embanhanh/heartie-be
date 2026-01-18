@@ -526,7 +526,7 @@ export class OrdersService extends BaseService<Order> {
             status: saved.status,
             totalAmount: saved.totalAmount,
           },
-          updatedOrder,
+          // updatedOrder,
         );
       }
 
@@ -564,7 +564,7 @@ export class OrdersService extends BaseService<Order> {
           status: saved.status,
           totalAmount: saved.totalAmount,
         },
-        updatedOrder,
+        // updatedOrder,
       );
     }
 
@@ -973,9 +973,15 @@ export class OrdersService extends BaseService<Order> {
     }
   }
 
-  private async notifyUserOrderStatusChanged(payload: OrderStatusChangedPayload, order?: Order) {
+  private async notifyUserOrderStatusChanged(
+    payload: OrderStatusChangedPayload,
+    //  order?: Order
+  ) {
     try {
-      await this.notificationsService.notifyUserOrderStatusChanged(payload, order);
+      await this.notificationsService.notifyUserOrderStatusChanged(
+        payload,
+        // order
+      );
     } catch (error: unknown) {
       this.logNotificationError(error, 'notify user order status updated');
     }

@@ -341,6 +341,30 @@ export const ADMIN_COPILOT_TOOLS: Tool[] = [
           required: ['advertisementId', 'scheduledAt'],
         },
       },
+      {
+        name: 'generate_video_ad',
+        description:
+          'Tạo video quảng cáo chuyên nghiệp. ' +
+          'NẾU đã có nội dung bài viết hoặc thông tin sản phẩm trong ngữ cảnh hội thoại, HÃY TỰ ĐỘNG TRÍCH XUẤT để điền vào các tham số. ' +
+          'Không cần hỏi lại người dùng nếu có thể tự suy luận. ' +
+          'Chỉ cần productId (nếu có) hoặc productName (nếu có).',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            productId: { type: SchemaType.NUMBER, description: 'ID sản phẩm (nếu có)' },
+            productName: {
+              type: SchemaType.STRING,
+              description: 'Tên sản phẩm hoặc chủ đề video (tự trích xuất từ ngữ cảnh)',
+            },
+            description: {
+              type: SchemaType.STRING,
+              description: 'Mô tả ngắn gọn nội dung/kịch bản video (tự trích xuất từ ngữ cảnh)',
+            },
+            price: { type: SchemaType.STRING, description: 'Giá bán (nếu có)' },
+            promotion: { type: SchemaType.STRING, description: 'Thông tin khuyến mãi (nếu có)' },
+          },
+        },
+      },
     ],
   },
 ];

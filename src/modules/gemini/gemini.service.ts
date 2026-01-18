@@ -1,5 +1,8 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import {
   GoogleGenerativeAI,
   GenerativeModel,
@@ -380,6 +383,8 @@ export enum GeminiChatRole {
 export interface GeminiChatMessage {
   role: GeminiChatRole;
   content: string;
+  functionCall?: ToolCallParsed['functionCall'];
+  functionResponse?: ToolCallParsed['functionResponse'];
 }
 
 export interface GeminiChatOptions {
@@ -393,9 +398,13 @@ export interface GeminiChatOptions {
   responseSchema?: Schema;
 }
 
-interface ToolCallParsed {
+export interface ToolCallParsed {
   name?: string;
   args?: unknown;
+  functionCall?: {
+    name: string;
+    args: Record<string, unknown>;
+  };
   functionResponse?: {
     name: string;
     response: unknown;
@@ -538,25 +547,57 @@ Trước khi trả lời, hãy tự suy luận:
     // Convert history to Gemini format
     const sanitizedHistory: Content[] = [];
     for (const message of history) {
-      if (!message.content) continue;
+      if (!message.content && !message.functionCall && !message.functionResponse) continue;
 
       const role = message.role === GeminiChatRole.SYSTEM ? 'model' : message.role;
 
-      // Flatten tool calls/responses to text to avoid "unclosed function call" validation errors
-      // and keep context.
+      // 1. Prioritize structured function calls/responses passed in GeminiChatMessage
+      if (message.functionCall) {
+        sanitizedHistory.push({
+          role: 'model',
+          parts: [{ functionCall: message.functionCall }],
+        });
+        continue;
+      }
 
-      // Try to detect if this is a function call (JSON)
+      if (message.functionResponse) {
+        sanitizedHistory.push({
+          role: 'user', // Function response is always from 'user' (system/tool output) perspective
+          parts: [
+            {
+              functionResponse: {
+                name: message.functionResponse.name,
+                response: message.functionResponse.response as Record<string, unknown>,
+              },
+            },
+          ],
+        });
+        continue;
+      }
+
+      // 2. Fallback: Parse from content string (backward compatibility or text-based logs)
       if (role === 'model') {
         try {
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           const parsed: ToolCallParsed = JSON.parse(message.content);
 
-          if (parsed && parsed.name && parsed.args) {
+          if (parsed && parsed.functionCall) {
+            sanitizedHistory.push({
+              role: 'model',
+              parts: [{ functionCall: parsed.functionCall }],
+            });
+            continue;
+          }
+          // Legacy format support
+          if (parsed && parsed.name && parsed.args && !parsed.functionCall) {
             sanitizedHistory.push({
               role: 'model',
               parts: [
                 {
-                  text: `[System: Model called tool '${parsed.name}' with args: ${JSON.stringify(parsed.args)}]`,
+                  functionCall: {
+                    name: parsed.name,
+                    args: parsed.args as Record<string, unknown>,
+                  },
                 },
               ],
             });
@@ -567,19 +608,22 @@ Trước khi trả lời, hãy tự suy luận:
         }
       }
 
-      // Try to detect function response (user role)
       if (role === GeminiChatRole.USER) {
         try {
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           const parsed: ToolCallParsed = JSON.parse(message.content);
 
           if (parsed && parsed.functionResponse) {
-            const respName = parsed.functionResponse.name;
-
-            const respContent = JSON.stringify(parsed.functionResponse.response);
             sanitizedHistory.push({
               role: 'user',
-              parts: [{ text: `[System: Tool '${respName}' returned: ${respContent}]` }],
+              parts: [
+                {
+                  functionResponse: {
+                    name: parsed.functionResponse.name,
+                    response: parsed.functionResponse.response as Record<string, unknown>,
+                  },
+                },
+              ],
             });
             continue;
           }
@@ -589,10 +633,12 @@ Trước khi trả lời, hãy tự suy luận:
       }
 
       // Regular text
-      sanitizedHistory.push({
-        role,
-        parts: [{ text: message.content }],
-      });
+      if (message.content) {
+        sanitizedHistory.push({
+          role,
+          parts: [{ text: message.content }],
+        });
+      }
     }
 
     // Gemini requires first message to be from 'user', so skip any leading 'model' messages
@@ -794,7 +840,7 @@ Trước khi trả lời, hãy tự suy luận:
     }
 
     const modelName =
-      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-1.5-flash';
+      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-2.5-flash';
     const requestedTools = options?.tools ?? [];
     const model = this.getModel(modelName, requestedTools);
 
@@ -1356,7 +1402,7 @@ Trước khi trả lời, hãy tự suy luận:
         .filter((segment) => segment.length > 0);
 
       if (collected.length) {
-        return collected.join('\n');
+        return collected.join('');
       }
     }
 
@@ -1439,6 +1485,69 @@ Trước khi trả lời, hãy tự suy luận:
     };
 
     return { generationConfig, systemInstruction };
+  }
+
+  async generateVideo(prompt: string): Promise<Buffer> {
+    const apiKey = this.configService.get<string>('GEMINI_API_KEY');
+    if (!apiKey) {
+      throw new BadRequestException('Gemini API key is not configured');
+    }
+
+    // Sử dụng SDK mới @google/genai cho Veo
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey });
+
+    try {
+      this.logger.debug(`Starting Veo video generation for prompt: ${prompt}`);
+
+      let operation = await ai.models.generateVideos({
+        model: 'veo-3.0-generate-001',
+        prompt: prompt,
+      });
+
+      this.logger.debug('Veo operation started, polling for completion...');
+
+      // Poll until done
+      while (!operation.done) {
+        await this.delay(5000); // Wait 5s
+        operation = await ai.operations.getVideosOperation({
+          operation: operation,
+        });
+        this.logger.debug('Polling Veo status...');
+      }
+
+      if (operation.error) {
+        throw new Error(`Veo operation failed: ${JSON.stringify(operation.error)}`);
+      }
+
+      const generatedVideo = operation.response?.generatedVideos?.[0];
+      if (!generatedVideo?.video) {
+        throw new Error('No video returned in operation response');
+      }
+
+      // Download video to temp file then read buffer
+      const tempId = Math.random().toString(36).substring(7);
+      const tempPath = path.join(os.tmpdir(), `veo_temp_${tempId}.mp4`);
+
+      this.logger.debug(`Downloading Veo video to ${tempPath}`);
+
+      await ai.files.download({
+        file: generatedVideo.video,
+        downloadPath: tempPath,
+      });
+
+      const buffer = fs.readFileSync(tempPath);
+      fs.unlinkSync(tempPath); // Cleanup
+
+      return buffer;
+    } catch (error) {
+      this.logger.error(
+        'Veo video generation error',
+        error instanceof Error ? error.stack : String(error),
+      );
+      const message = error instanceof Error ? error.message : String(error);
+      throw new BadRequestException(`Veo error: ${message}`);
+    }
   }
 
   private normalizeGeminiError(error: unknown): {
