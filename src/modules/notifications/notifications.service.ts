@@ -227,7 +227,7 @@ export class NotificationsService {
     await this.notificationRepo.update({ userId, readAt: IsNull() }, { readAt: new Date() });
   }
 
-  private async createNotification(
+  async createNotification(
     userId: number,
     title: string,
     body: string,
