@@ -61,6 +61,7 @@ import { VoucherUserDetailsModule } from './modules/voucher_user_details/voucher
 import { VouchersModule } from './modules/vouchers/vouchers.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { MomoModule } from './modules/momo/momo.module';
+import { InventoryModule } from './modules/inventory/inventory.module';
 
 const BullModuleTyped = BullModule as unknown as {
   forRootAsync: (config: SharedBullAsyncConfiguration) => DynamicModule;
@@ -171,6 +172,7 @@ const BullModuleTyped = BullModule as unknown as {
     UploadModule,
     FavoritesModule,
     MomoModule,
+    InventoryModule,
   ],
   controllers: [AppController],
   providers: [AppService],
