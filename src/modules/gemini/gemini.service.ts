@@ -12,6 +12,7 @@ import {
   SchemaType,
   HarmCategory,
   HarmBlockThreshold,
+  FunctionCallingMode,
 } from '@google/generative-ai';
 import {
   AnalyzeProductReviewParams,
@@ -480,27 +481,36 @@ export class GeminiService {
 - Ngắn gọn: ≤ 8 dòng cho câu trả lời tiêu chuẩn (không tính danh sách sản phẩm).
 - Hành động: luôn có CTA tiếp theo (“Bạn muốn thêm sản phẩm A size M vào giỏ chứ?”).
 
-# CHECKOUT FLOW (STRICT)
-Luôn tuân thủ thứ tự gọi hàm và phản hồi ngắn gọn để kích hoạt UI Card:
+# CHECKOUT FLOW (STRICT - BẮT BUỘC GỌI HÀM)
+**QUAN TRỌNG NHẤT**: Mỗi bước checkout PHẢI gọi function tương ứng. KHÔNG BAO GIỜ chỉ trả lời text mà không gọi function.
 
-1.  Trigger: Khách muốn đặt hàng, mua ngay, hoặc chọn biến thể cụ thể (ví dụ: "đặt hàng các biến thể: 123...").
-    -> Action: Gọi get_my_addresses.
-    -> Response: "Vui lòng chọn địa chỉ nhận hàng bên dưới."
+## CRITICAL: Phân biệt get_my_cart vs get_my_addresses
+- **get_my_cart**: CHỈ gọi khi user hỏi "xem giỏ hàng", "cart của tôi", "trong giỏ có gì". KHÔNG gọi trong checkout flow.
+- **get_my_addresses**: Gọi khi user muốn MUA/ĐẶT HÀNG (ví dụ: "đặt hàng", "mua sản phẩm", "đặt hàng biến thể", "thanh toán", "checkout"). Đây là bước ĐẦU TIÊN của checkout flow.
 
-2.  Trigger: Khách đã chọn Address.
-    -> Action: Gọi get_payment_methods.
-    -> Response: "Vui lòng chọn phương thức thanh toán."
+## Checkout Flow Steps:
+1.  Trigger: Khách muốn đặt hàng, mua ngay, hoặc chọn biến thể cụ thể (ví dụ: "đặt hàng các biến thể: 123...", "mua sản phẩm này", "tiến hành thanh toán").
+    -> **BẮT BUỘC**: Gọi function get_my_addresses (KHÔNG PHẢI get_my_cart!).
+    -> Sau khi có kết quả: "Vui lòng chọn địa chỉ nhận hàng bên dưới."
 
-3.  Trigger: Khách đã chọn Payment.
-    -> Action: Gọi get_available_vouchers.
-    -> Response (có voucher): "Bạn có muốn áp mã giảm giá không?"
-    -> Response (không có voucher - mảng rỗng): "Hiện không có mã giảm giá khả dụng. Bạn có muốn tiến hành đặt hàng không?"
+2.  Trigger: Khách đã chọn Address (ví dụ: "chọn địa chỉ 1", "giao đến địa chỉ này", "Sử dụng địa chỉ:", hoặc nhắc đến địa chỉ cụ thể).
+    -> **BẮT BUỘC**: Gọi function get_payment_methods.
+    -> Sau khi có kết quả: "Vui lòng chọn phương thức thanh toán."
 
-4.  Trigger: Khách chọn Voucher, bỏ qua voucher, hoặc không có voucher và xác nhận đặt hàng.
-    -> Action: Gọi create_order(addressId, paymentMethod, voucherId). Nếu không có voucher thì KHÔNG truyền voucherId.
-    -> Response: Xác nhận đơn thành công.
+3.  Trigger: Khách đã chọn Payment (ví dụ: "thanh toán COD", "chuyển khoản", hoặc chọn phương thức).
+    -> **BẮT BUỘC**: Gọi function get_available_vouchers.
+    -> Sau khi có kết quả (có voucher): "Bạn có muốn áp mã giảm giá không?"
+    -> Sau khi có kết quả (không có voucher - mảng rỗng): "Hiện không có mã giảm giá khả dụng. Bạn có muốn tiến hành đặt hàng không?"
 
-*Lưu ý: KHÔNG đọc lại dữ liệu từ hàm (địa chỉ, voucher...). Frontend sẽ tự hiển thị.*
+4.  Trigger: Khách chọn Voucher, bỏ qua voucher, hoặc xác nhận đặt hàng.
+    -> **BẮT BUỘC**: Gọi function create_order(addressId, paymentMethod, voucherId). Nếu không có voucher thì KHÔNG truyền voucherId.
+    -> Sau khi có kết quả: Xác nhận đơn thành công.
+
+**TUYỆT ĐỐI KHÔNG**: 
+- Gọi get_my_cart khi user muốn đặt hàng/checkout. Phải gọi get_my_addresses!
+- Trả lời text mà KHÔNG gọi function tương ứng.
+
+*Lưu ý: KHÔNG đọc lại dữ liệu từ hàm (địa chỉ, voucher...). Frontend sẽ tự hiển thị từ metadata của function call.*
 
 # 14) Mặc định vận hành
 - Nếu ngôn ngữ người dùng là {{user_language}} khác tiếng Việt, trả lời bằng {{user_language}}.
@@ -512,10 +522,20 @@ Trước khi trả lời, hãy tự suy luận:
 2. Có hàm nào cung cấp thông tin đó không?
 3. Nếu có, hãy gọi hàm đó ngay lập tức thay vì tự trả lời.
 4. Nếu người dùng hỏi về đơn hàng mà không đưa mã đơn, hãy hỏi mã đơn hàng trước, đừng gọi hàm track_order với tham số rỗng.
-5. [QUAN TRỌNG] Logic Checkout:
-   - Nếu người dùng vừa chọn/xác nhận địa chỉ -> BẮT BUỘC gọi hàm "get_payment_methods".
-   - Nếu người dùng vừa chọn/xác nhận phương thức thanh toán -> BẮT BUỘC gọi hàm "get_available_vouchers".
-   - Nếu người dùng xác nhận đặt hàng -> BẮT BUỘC gọi hàm "create_order".
+
+## [CRITICAL] Logic Checkout - Xác định function dựa trên pattern:
+- Nếu user message chứa "Sử dụng địa chỉ:" hoặc "(ID:" hoặc "chọn địa chỉ" → BẮT BUỘC gọi "get_payment_methods". KHÔNG gọi get_my_cart!
+- Nếu user message chứa "COD" hoặc "chuyển khoản" hoặc "thanh toán" hoặc "BANK" → BẮT BUỘC gọi "get_available_vouchers". KHÔNG gọi get_my_cart!
+- Nếu user message là câu xác nhận ngắn như "có", "đồng ý", "ok", "được", "vâng", "tiếp tục", "đặt hàng", "xác nhận" và tin nhắn trước đó hỏi về đặt hàng/voucher → BẮT BUỘC gọi "create_order".
+- Nếu user message chứa "đặt hàng ngay" hoặc "xác nhận đặt hàng" hoặc "không dùng voucher" → BẮT BUỘC gọi "create_order".
+- Nếu user message chứa "đặt hàng biến thể" hoặc "mua sản phẩm" → BẮT BUỘC gọi "get_my_addresses". KHÔNG gọi get_my_cart!
+- Chỉ gọi "get_my_cart" khi user HỎI "xem giỏ hàng", "cart", "trong giỏ có gì". KHÔNG gọi get_my_cart trong checkout flow!
+
+## Context Awareness:
+Khi phân tích tin nhắn user, hãy xem xét tin nhắn TRƯỚC ĐÓ của assistant:
+- Nếu assistant vừa hỏi "Bạn có muốn tiến hành đặt hàng không?" hoặc tương tự → user trả lời "có" = gọi "create_order"
+- Nếu assistant vừa hiển thị addresses → user chọn địa chỉ = gọi "get_payment_methods"
+- Nếu assistant vừa hiển thị payment methods → user chọn payment = gọi "get_available_vouchers"
 `;
 
   constructor(private readonly configService: ConfigService) {}
@@ -618,6 +638,12 @@ Trước khi trả lời, hãy tự suy luận:
           history: validHistory,
           generationConfig,
           systemInstruction,
+          // Force Gemini to prefer function calls over text responses
+          toolConfig: {
+            functionCallingConfig: {
+              mode: FunctionCallingMode.ANY, // ANY mode forces model to call at least one function
+            },
+          },
         });
 
         const result = await chat.sendMessage(prompt);
