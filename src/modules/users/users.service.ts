@@ -20,6 +20,7 @@ import { UploadService } from '../upload/upload.service';
 import { UserCustomerGroupsService } from '../user_customer_groups/user_customer_groups.service';
 import axios from 'axios';
 import { ProductsService } from '../products/products.service';
+import { Interaction, InteractionType } from '../interactions/entities/interaction.entity';
 
 export interface TikiRecommendationItem {
   productId: number;
@@ -34,6 +35,29 @@ export interface TikiRecommendationResponse {
   count?: number;
 }
 
+// === Real-time Recommendation Types ===
+export interface SessionEvent {
+  item_id: number;
+  action: 'view' | 'click' | 'add_to_cart' | 'purchase' | 'add_to_wishlist';
+  timestamp?: number;
+}
+
+export interface RealtimeRecommendationItem {
+  productId: number;
+  score: number;
+  rank: number;
+  cluster?: number;
+}
+
+export interface RealtimeRecommendationResponse {
+  userId: number;
+  recommendations: RealtimeRecommendationItem[];
+  sessionItems: number;
+  topClusters: number[];
+  isColdStart: boolean;
+  count: number;
+}
+
 @Injectable()
 export class UsersService extends BaseService<User> {
   constructor(
@@ -41,6 +65,8 @@ export class UsersService extends BaseService<User> {
     private readonly userRepository: Repository<User>,
     private readonly uploadService: UploadService,
     private readonly userCustomerGroupsService: UserCustomerGroupsService,
+    @InjectRepository(Interaction)
+    private readonly interactionRepository: Repository<Interaction>,
     private readonly productService: ProductsService,
   ) {
     super(userRepository, 'user');
@@ -342,7 +368,7 @@ export class UsersService extends BaseService<User> {
       // console.log(user);
 
       const response = await axios.get<TikiRecommendationResponse>(
-        'http://localhost:5000/api/v1/recommendations',
+        'https://fashia-recommend-api.onrender.com/api/v1/recommendations',
         {
           params: {
             user_id: user.tikiId,
@@ -370,6 +396,173 @@ export class UsersService extends BaseService<User> {
     } catch (error) {
       console.error('Error fetching recommendations:', error);
       return [];
+    }
+  }
+
+  /**
+   * Get real-time hybrid recommendations based on recent interactions
+   * Combines ALS long-term preferences with session-based short-term intent
+   * Queries ALL interactions within the time window (cross-session)
+   *
+   * @param userId - User ID
+   * @param timeWindowMinutes - Time window in minutes to query interactions (default: 30)
+   * @param k - Number of recommendations to return (default: 10)
+   */
+  async getRealtimeRecommendations(userId: number, timeWindowMinutes: number = 30, k: number = 20) {
+    try {
+      console.log(userId);
+      const user = await this.userRepository.findOne({ where: { id: userId } });
+      if (!user) {
+        throw new NotFoundException(`User with ID ${userId} not found`);
+      }
+
+      // Query ALL recent interactions for this user (cross-session)
+      const interactions = await this.interactionRepository.find({
+        where: {
+          idUser: userId,
+        },
+        order: { createdAt: 'ASC' }, // Oldest first, let ML handle time decay
+        relations: ['product'],
+      });
+
+      console.log(`Found ${interactions.length} interactions in last ${timeWindowMinutes} minutes`);
+
+      if (interactions.length > 0) {
+        const sample = interactions[0];
+        console.log('Sample interaction:', {
+          id: sample.id,
+          type: sample.type,
+          productId: sample.idProduct,
+          hasProduct: !!sample.product,
+          tikiId: sample.product?.tikiId,
+        });
+      }
+
+      // Map InteractionType to ML action format
+      const interactionTypeToAction: Record<InteractionType, string> = {
+        [InteractionType.VIEW]: 'view',
+        [InteractionType.CLICK]: 'click',
+        [InteractionType.ADD_TO_CART]: 'add_to_cart',
+        [InteractionType.PURCHASE]: 'purchase',
+        [InteractionType.ADD_TO_WISHLIST]: 'add_to_wishlist',
+        [InteractionType.LIKE]: 'click',
+        [InteractionType.UNLIKE]: 'view',
+        [InteractionType.REMOVE_FROM_CART]: 'view',
+        [InteractionType.REMOVE_FROM_WISHLIST]: 'view',
+        [InteractionType.SHARE]: 'click',
+        [InteractionType.SEARCH]: 'view',
+        [InteractionType.FILTER]: 'view',
+        [InteractionType.COMPARE]: 'click',
+        [InteractionType.RATING]: 'purchase',
+      };
+
+      console.log(`[UsersService] Fetching recent interactions for user ${user.id || userId}...`);
+
+      // Query interactions using the injected repository
+      // ORDER: ASC so that most recent interaction is LAST (ML expects this)
+      const recentInteractions = await this.interactionRepository.find({
+        where: {
+          idUser: userId,
+        },
+        order: { createdAt: 'ASC' }, // ASC: oldest first, newest LAST (ML requirement)
+        relations: ['product'], // Need product to get tikiId for ML
+      });
+      console.log(`[UsersService] Found ${recentInteractions.length} raw interactions.`);
+
+      // Convert to session events format for ML
+      // IMPORTANT: Use tikiId (not idProduct) because ML model was trained on tikiId
+      const sessionEvents: SessionEvent[] = recentInteractions
+        .filter((i) => {
+          const tikiId = i.product?.tikiId;
+          return tikiId != null && +tikiId > 0;
+        })
+        .map((interaction) => ({
+          item_id: +interaction.product.tikiId!, // Use tikiId for ML model
+          action: interactionTypeToAction[interaction.type] as SessionEvent['action'],
+          timestamp: interaction.createdAt.getTime(),
+        }));
+
+      console.log(`Converted ${sessionEvents.length} session events for ML`);
+      if (sessionEvents.length > 0) {
+        console.log(
+          `[UsersService] Last event (most recent):`,
+          sessionEvents[sessionEvents.length - 1],
+        );
+      }
+
+      // Always call real-time endpoint (it handles empty sessions by falling back to ALS internally)
+      const response = await axios.post<RealtimeRecommendationResponse>(
+        'https://fashia-recommend-api.onrender.com/api/v1/recommendations/realtime',
+        {
+          user_id: user.tikiId ?? userId,
+          session_events: sessionEvents,
+          k: k,
+          exclude_session_items: true,
+          enable_cluster_boost: true,
+        },
+      );
+
+      const data = response.data;
+
+      if (!data.recommendations || !Array.isArray(data.recommendations)) {
+        return {
+          products: [],
+          metadata: {
+            isColdStart: data.isColdStart,
+            sessionItems: data.sessionItems,
+            topClusters: data.topClusters,
+            timeWindowMinutes: timeWindowMinutes,
+          },
+        };
+      }
+
+      const productIds = data.recommendations.map((rec) => rec.productId);
+
+      if (productIds.length === 0) {
+        return {
+          products: [],
+          metadata: {
+            isColdStart: data.isColdStart,
+            sessionItems: data.sessionItems,
+            topClusters: data.topClusters,
+            timeWindowMinutes: timeWindowMinutes,
+          },
+        };
+      }
+
+      // Fetch product details
+      const products = await this.productService.findByTikiIds(productIds);
+
+      // Attach scores and clusters to products
+      const productsWithScores = products.map((product) => {
+        const recItem = data.recommendations.find((rec) => rec.productId === product.tikiId);
+        return {
+          ...product,
+          recommendationScore: recItem?.score ?? 0,
+          cluster: recItem?.cluster,
+        };
+      });
+
+      return {
+        products: productsWithScores,
+        metadata: {
+          isColdStart: data.isColdStart,
+          sessionItems: data.sessionItems,
+          topClusters: data.topClusters,
+          timeWindowMinutes: timeWindowMinutes,
+        },
+      };
+    } catch (error) {
+      console.error('Error fetching realtime recommendations:', error);
+      return {
+        products: [],
+        metadata: {
+          isColdStart: true,
+          sessionItems: 0,
+          topClusters: [],
+          timeWindowMinutes: timeWindowMinutes,
+        },
+      };
     }
   }
 }

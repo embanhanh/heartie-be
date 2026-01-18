@@ -131,4 +131,58 @@ export class InteractionsService {
 
     return savedInteraction;
   }
+
+  async logInteraction(userId: number, productId: number, type: InteractionType): Promise<void> {
+    try {
+      // Basic validation handled by create's DB constraints/checks,
+      // but we wrap in try-catch to ensure tracking doesn't block main flow
+
+      // Get a product variant ID if needed, or if productId refers to the main product.
+      // The Interaction entity links to Product (via idProduct column, mapped as product property).
+      // NOTE: CreateInteractionDto expects 'idProduct', which seems to map to 'product' relation in entity?
+      // Let's check entity. idProduct is bigInt.
+      // Relations says @ManyToOne(() => Product ...
+      // So 'idProduct' should be the Product ID.
+
+      // Prevent duplicate logging (debounce/spam check)
+      // If same user, same product, same type, within last 60 seconds -> ignore
+      const timeThreshold = new Date(Date.now() - 60 * 1000); // 60 seconds ago
+
+      const existing = await this.interactionRepository.findOne({
+        where: {
+          idUser: userId,
+          idProduct: productId,
+          type: type,
+          createdAt: MoreThanOrEqual(timeThreshold),
+        },
+      });
+
+      if (existing) {
+        // Skip logging if recently interacted
+        return;
+      }
+
+      const interaction = this.interactionRepository.create({
+        idUser: userId,
+        idProduct: productId,
+        type: type,
+        // metadata not in entity currently
+      });
+
+      await this.interactionRepository.save(interaction);
+
+      // Also record analytics
+      this.analyticsService
+        .recordInteraction(productId, type, {
+          occurredAt: interaction.createdAt,
+        })
+        .catch((err) => console.error('Analytics error:', err));
+    } catch (error) {
+      console.warn(
+        `Failed to log interaction ${type} for user ${userId} on product ${productId}:`,
+        error,
+      );
+      // Don't throw, we don't want to break the user experience for logging failures
+    }
+  }
 }

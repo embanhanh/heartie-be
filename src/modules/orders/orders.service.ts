@@ -37,6 +37,8 @@ import { SortParam } from '../../common/dto/pagination.dto';
 import { OrdersQueryDto } from './dto/orders-query.dto';
 import { MomoService } from '../momo/momo.service';
 import { UserCustomerGroupsService } from '../user_customer_groups/user_customer_groups.service';
+import { InteractionsService } from '../interactions/interactions.service';
+import { InteractionType } from '../interactions/entities/interaction.entity';
 
 interface AutoGiftLine {
   variant: ProductVariant;
@@ -101,6 +103,7 @@ export class OrdersService extends BaseService<Order> {
     private readonly notificationsService: NotificationsService,
     private readonly momoService: MomoService,
     private readonly userCustomerGroupsService: UserCustomerGroupsService,
+    private readonly interactionsService: InteractionsService,
   ) {
     super(repo, 'order');
   }
@@ -161,6 +164,37 @@ export class OrdersService extends BaseService<Order> {
     const savedOrder = await this.repo.save(entity);
 
     await this.saveOrderItems(savedOrder.id, pricing, autoGiftLines, savedOrder.branchId);
+
+    // Track PURCHASE interactions
+    if (userId) {
+      const variantIds = [
+        ...pricing.items.map((i) => i.variantId),
+        ...autoGiftLines.map((g) => g.variant.id),
+      ];
+
+      if (variantIds.length > 0) {
+        // Bulk fetch variants with products to get product IDs
+        const variants = await this.variantRepo.find({
+          where: { id: In(variantIds) },
+          relations: ['product'],
+          select: {
+            id: true,
+            product: {
+              id: true,
+              tikiId: true,
+            },
+          },
+        });
+
+        const tikiIds = new Set(variants.map((v) => v.product?.tikiId).filter((id) => !!id));
+
+        for (const tikiId of tikiIds) {
+          if (tikiId) {
+            this.interactionsService.logInteraction(userId, +tikiId, InteractionType.PURCHASE);
+          }
+        }
+      }
+    }
 
     if (userId) {
       await this.removePurchasedCartItems(userId, dto.items);

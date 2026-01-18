@@ -20,6 +20,7 @@ import { ImageSearchModule } from '../image_search/image-search.module';
 import { UploadModule } from '../upload/upload.module';
 
 import { ProductsStatsController } from '../stats/products-stats.controller';
+import { InteractionsModule } from '../interactions/interactions.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { ProductsStatsController } from '../stats/products-stats.controller';
     ImageSearchModule,
     UploadModule,
     SemanticSearchModule,
+    InteractionsModule,
   ],
   controllers: [ProductsStatsController, ProductsController],
   providers: [ProductsService],
