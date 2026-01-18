@@ -318,12 +318,13 @@ export class MessagesService {
           throw new InternalServerErrorException('Gemini returned neither text nor function call');
         }
         // IMPORTANT: Log when Gemini returns text without calling a function
-        // This helps debug cases where function calls should have been made
         this.logger.log(`${logPrefix} Direct text response (NO function call)`);
         this.logger.debug(`${logPrefix} User message: "${content.substring(0, 100)}..."`);
         this.logger.debug(
           `${logPrefix} Gemini text response: "${firstCall.text.substring(0, 100)}..."`,
         );
+
+        // Gemini returned text without function call - just use the text as-is
         finalText = this.sanitizeMarkdown(firstCall.text);
       }
 
