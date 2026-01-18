@@ -4,13 +4,14 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from './entities/user.entity';
 import { UsersController } from './users.controller';
 import { ProductsModule } from '../products/products.module';
+import { Interaction } from '../interactions/entities/interaction.entity';
 
 import { UploadModule } from '../upload/upload.module';
 import { UserCustomerGroupsModule } from '../user_customer_groups/user_customer_groups.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User]),
+    TypeOrmModule.forFeature([User, Interaction]),
     UploadModule,
     UserCustomerGroupsModule,
     ProductsModule,

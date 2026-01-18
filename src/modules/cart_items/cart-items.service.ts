@@ -4,12 +4,18 @@ import { Repository } from 'typeorm';
 import { Cart } from '../carts/entities/cart.entity';
 import { CartItem } from './entities/cart-item.entity';
 import { AddCartItemDto, UpdateCartItemDto } from './dto/cart-item.dto';
+import { InteractionsService } from '../interactions/interactions.service';
+import { InteractionType } from '../interactions/entities/interaction.entity';
+import { ProductVariant } from '../product_variants/entities/product_variant.entity';
 
 @Injectable()
 export class CartItemsService {
   constructor(
     @InjectRepository(Cart) private readonly cartRepo: Repository<Cart>,
     @InjectRepository(CartItem) private readonly itemRepo: Repository<CartItem>,
+    @InjectRepository(ProductVariant)
+    private readonly productVariantRepo: Repository<ProductVariant>,
+    private readonly interactionsService: InteractionsService,
   ) {}
 
   private async getOrCreateCart(userId: number): Promise<Cart> {
@@ -24,6 +30,22 @@ export class CartItemsService {
   async addItem(userId: number, dto: AddCartItemDto) {
     const cart = await this.getOrCreateCart(userId);
     const quantity = Math.max(1, dto.quantity ?? 1);
+
+    // Track ADD_TO_CART interaction
+    if (userId) {
+      const variant = await this.productVariantRepo.findOne({
+        where: { id: dto.variantId },
+        relations: ['product'],
+      });
+      if (variant?.product?.tikiId) {
+        this.interactionsService.logInteraction(
+          userId,
+          +variant.product.tikiId,
+          InteractionType.ADD_TO_CART,
+        );
+      }
+    }
+
     let item = await this.itemRepo.findOne({
       where: { cartId: cart.id, variantId: dto.variantId },
     });

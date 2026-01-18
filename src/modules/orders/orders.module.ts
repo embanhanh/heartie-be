@@ -17,6 +17,7 @@ import { Product } from '../products/entities/product.entity';
 import { ProductVariantInventory } from '../inventory/entities/product-variant-inventory.entity';
 import { MomoModule } from '../momo/momo.module';
 import { UserCustomerGroupsModule } from '../user_customer_groups/user_customer_groups.module';
+import { InteractionsModule } from '../interactions/interactions.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { UserCustomerGroupsModule } from '../user_customer_groups/user_customer_
     NotificationsModule,
     MomoModule,
     UserCustomerGroupsModule,
+    InteractionsModule,
   ],
   controllers: [OrdersController],
   providers: [OrdersService],
