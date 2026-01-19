@@ -17,6 +17,7 @@ import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { OrdersQueryDto } from './dto/orders-query.dto';
+import { CancelOrderDto } from './dto/cancel-order.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../users/entities/user.entity';
 import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
@@ -96,6 +97,20 @@ export class OrdersController {
       await this.service.ensureOrderBelongsToUserOrFail(+id, user.id);
     }
     return this.service.update(+id, dto, user);
+  }
+
+  @Post(':id/cancel')
+  @Roles(UserRole.CUSTOMER)
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Cancel an order (customers only)' })
+  async cancelOrder(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: number,
+    @Body() dto: CancelOrderDto,
+  ) {
+    const user = this.getRequestUser(req);
+    const order = await this.service.findOne(+id, user);
+    return this.service.requestCancellation(order.orderNumber ?? '', user, dto.cancellationReason);
   }
 
   @Delete(':id')

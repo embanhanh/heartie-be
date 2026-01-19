@@ -150,7 +150,26 @@ export class MessagesService {
         order: { createdAt: 'ASC', id: 'ASC' },
         take: this.historyLimit,
       });
-      const history: GeminiChatMessage[] = historyEntities.map((m) => this.mapMessageToGemini(m));
+
+      // 2.1) Check if previous checkout was completed and this is a new checkout intent
+      const isNewCheckoutIntent = this.isCheckoutTrigger(content);
+      const wasCheckoutCompleted = conversation.metadata?.checkoutCompleted === true;
+
+      let history: GeminiChatMessage[] = [];
+      if (wasCheckoutCompleted && isNewCheckoutIntent) {
+        // Reset history for new checkout flow (fresh context for Gemini)
+        this.logger.log(
+          `${logPrefix} Resetting history for new checkout flow (previous checkout completed)`,
+        );
+        // Reset the checkoutCompleted flag
+        await convRepo.update(conversation.id, {
+          metadata: { ...(conversation.metadata ?? {}), checkoutCompleted: false },
+        });
+        // Keep history empty - Gemini will receive fresh context
+      } else {
+        // Normal flow - use existing history
+        history = historyEntities.map((m) => this.mapMessageToGemini(m));
+      }
 
       // 3) Lưu message của USER
       const userMessage = msgRepo.create({
@@ -266,9 +285,25 @@ export class MessagesService {
 
           // Nếu là create_order, đính kèm kết quả đặt hàng vào metadata
           if (call.name === 'create_order') {
-            const content = getToolContent() as { error?: string } | undefined;
-            if (content && !content.error) {
-              finalMetadata.orderResult = content;
+            const orderContent = getToolContent() as
+              | { error?: string; success?: boolean }
+              | undefined;
+            if (orderContent && !orderContent.error) {
+              finalMetadata.orderResult = orderContent;
+
+              // Mark checkout as completed so next checkout request uses fresh context
+              if (orderContent.success) {
+                await convRepo.update(conversation.id, {
+                  metadata: {
+                    ...(conversation.metadata ?? {}),
+                    checkoutCompleted: true,
+                    checkoutCompletedAt: new Date().toISOString(),
+                  },
+                });
+                this.logger.log(
+                  `${logPrefix} Marked checkout as completed for conversation ${conversation.id}`,
+                );
+              }
             }
           }
 
@@ -318,12 +353,13 @@ export class MessagesService {
           throw new InternalServerErrorException('Gemini returned neither text nor function call');
         }
         // IMPORTANT: Log when Gemini returns text without calling a function
-        // This helps debug cases where function calls should have been made
         this.logger.log(`${logPrefix} Direct text response (NO function call)`);
         this.logger.debug(`${logPrefix} User message: "${content.substring(0, 100)}..."`);
         this.logger.debug(
           `${logPrefix} Gemini text response: "${firstCall.text.substring(0, 100)}..."`,
         );
+
+        // Gemini returned text without function call - just use the text as-is
         finalText = this.sanitizeMarkdown(firstCall.text);
       }
 
@@ -407,6 +443,23 @@ export class MessagesService {
     }
 
     return { role: GeminiChatRole.USER, content: message.content ?? '' };
+  }
+
+  /**
+   * Check if user message indicates a new checkout/order intent
+   */
+  private isCheckoutTrigger(content: string): boolean {
+    const checkoutPatterns = [
+      /đặt\s*hàng/i,
+      /mua\s*sản\s*phẩm/i,
+      /thanh\s*toán/i,
+      /checkout/i,
+      /đặt\s*đơn/i,
+      /mua\s*ngay/i,
+      /tiến\s*hành\s*đặt/i,
+      /đặt\s*mua/i,
+    ];
+    return checkoutPatterns.some((pattern) => pattern.test(content));
   }
 
   // ------------------------- Tool Dispatcher -------------------------

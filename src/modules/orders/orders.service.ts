@@ -306,6 +306,7 @@ export class OrdersService extends BaseService<Order> {
   async requestCancellation(
     orderNumber: string,
     requester?: RequestUserContext,
+    cancellationReason?: string,
   ): Promise<{ orderNumber: string; status: OrderStatus; message: string }> {
     const order = await this.repo.findOne({ where: { orderNumber, user: { id: requester?.id } } });
 
@@ -340,6 +341,10 @@ export class OrdersService extends BaseService<Order> {
     }
 
     order.status = OrderStatus.CANCELLED;
+    order.cancelledAt = new Date();
+    if (cancellationReason) {
+      order.cancellationReason = cancellationReason;
+    }
     await this.repo.save(order);
 
     return {

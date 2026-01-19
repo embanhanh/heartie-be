@@ -93,6 +93,9 @@ export class Order {
   @Column({ type: 'timestamp with time zone', nullable: true })
   cancelledAt?: Date;
 
+  @Column({ type: 'text', nullable: true })
+  cancellationReason?: string;
+
   @CreateDateColumn({ type: 'timestamp with time zone' })
   createdAt: Date;
 
