@@ -22,8 +22,13 @@ import { UploadModule } from '../upload/upload.module';
 import { ProductsStatsController } from '../stats/products-stats.controller';
 import { InteractionsModule } from '../interactions/interactions.module';
 
+import { HttpModule } from '@nestjs/axios';
+import { ConfigModule } from '@nestjs/config';
+
 @Module({
   imports: [
+    HttpModule,
+    ConfigModule,
     TypeOrmModule.forFeature([
       Product,
       Category,

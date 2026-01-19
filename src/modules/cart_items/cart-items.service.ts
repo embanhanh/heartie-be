@@ -38,11 +38,9 @@ export class CartItemsService {
         relations: ['product'],
       });
       if (variant?.product?.tikiId) {
-        this.interactionsService.logInteraction(
-          userId,
-          +variant.product.tikiId,
-          InteractionType.ADD_TO_CART,
-        );
+        this.interactionsService
+          .logInteraction(userId, +variant.product.tikiId, InteractionType.ADD_TO_CART)
+          .catch((err) => console.error('Failed to log interaction', err));
       }
     }
 
