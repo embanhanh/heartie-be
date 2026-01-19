@@ -51,6 +51,17 @@ export class ProductQueryDto extends PaginationOptionsDto {
   categoryIds?: number[];
 
   @ApiPropertyOptional({
+    description: 'Lọc theo danh sách product ID (truyền ?ids=1,2,3 hoặc lặp lại tham số).',
+    type: [Number],
+    example: [1, 2, 3],
+  })
+  @IsOptional()
+  @Transform(({ value }) => toNumberArray(value))
+  @IsArray()
+  @IsInt({ each: true })
+  ids?: number[];
+
+  @ApiPropertyOptional({
     description: 'Lọc theo danh sách màu sắc (truyền ?colors=red,blue,green hoặc lặp lại tham số).',
     type: [String],
     example: ['red', 'blue', 'green'],

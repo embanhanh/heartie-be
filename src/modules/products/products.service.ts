@@ -413,6 +413,13 @@ export class ProductsService extends BaseService<Product> {
           });
         }
 
+        // Filter by specific product IDs
+        if (options.ids?.length) {
+          qb.andWhere('product.id IN (:...productIds)', {
+            productIds: options.ids,
+          });
+        }
+
         // Price range filter via variants
         if (typeof options.priceMin === 'number') {
           qb.andWhere(
