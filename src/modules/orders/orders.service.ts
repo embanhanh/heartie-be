@@ -190,7 +190,9 @@ export class OrdersService extends BaseService<Order> {
 
         for (const tikiId of tikiIds) {
           if (tikiId) {
-            this.interactionsService.logInteraction(userId, +tikiId, InteractionType.PURCHASE);
+            this.interactionsService
+              .logInteraction(userId, +tikiId, InteractionType.PURCHASE)
+              .catch((err) => console.error('Failed to log interaction', err));
           }
         }
       }
@@ -1058,11 +1060,12 @@ export class OrdersService extends BaseService<Order> {
 
       // If still no branchId (restore or no stock found), fallback to first branch in system
       if (!branchId) {
-        const firstBranch = await this.branchRepo.findOne({
+        const branches = await this.branchRepo.find({
           order: { id: 'ASC' },
           select: { id: true },
+          take: 1,
         });
-        branchId = firstBranch?.id ?? null;
+        branchId = branches[0]?.id ?? null;
       }
 
       if (!branchId) {
