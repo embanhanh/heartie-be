@@ -177,7 +177,9 @@ export class OrdersService extends BaseService<Order> {
 
         for (const tikiId of tikiIds) {
           if (tikiId) {
-            this.interactionsService.logInteraction(userId, +tikiId, InteractionType.PURCHASE);
+            this.interactionsService
+              .logInteraction(userId, +tikiId, InteractionType.PURCHASE)
+              .catch((err) => console.error('Failed to log interaction', err));
           }
         }
       }

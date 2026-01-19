@@ -15,8 +15,13 @@ import { SemanticSearchModule } from '../semantic_search/semantic-search.module'
 import { StatsModule } from '../stats/stats.module';
 import { InteractionsModule } from '../interactions/interactions.module';
 
+import { HttpModule } from '@nestjs/axios';
+import { ConfigModule } from '@nestjs/config';
+
 @Module({
   imports: [
+    HttpModule,
+    ConfigModule,
     TypeOrmModule.forFeature([
       Product,
       Category,

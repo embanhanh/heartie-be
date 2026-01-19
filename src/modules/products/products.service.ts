@@ -2,6 +2,9 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, QueryFailedError, Repository, SelectQueryBuilder } from 'typeorm';
 import { Product, ProductStatus } from './entities/product.entity';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
+import { firstValueFrom } from 'rxjs';
 import { Category } from 'src/modules/categories/entities/category.entity';
 import { CreateProductDto } from './dto/create-product.dto';
 import { Brand } from '../brands/entities/brand.entity';
@@ -60,6 +63,18 @@ export interface StylistCandidateProduct {
   score: number;
 }
 
+interface SimilarItem {
+  productId: number;
+  similarityScore: number;
+  rank: number;
+}
+
+interface SimilarProductsResponse {
+  productId: number;
+  similarItems: SimilarItem[];
+  count: number;
+}
+
 @Injectable()
 export class ProductsService extends BaseService<Product> {
   private readonly logger = new Logger(ProductsService.name);
@@ -75,6 +90,8 @@ export class ProductsService extends BaseService<Product> {
     private readonly branchRepo: Repository<Branch>,
     private readonly semanticSearchService: SemanticSearchService,
     private readonly statsTrackingService: StatsTrackingService,
+    private readonly httpService: HttpService,
+    private readonly configService: ConfigService,
   ) {
     super(productRepo, 'product');
   }
@@ -367,6 +384,51 @@ export class ProductsService extends BaseService<Product> {
     await this.refreshProductEmbeddingSafely(productId);
 
     return this.findOne(productId);
+  }
+  async getSimilarProducts(id: number): Promise<ProductListItem[]> {
+    try {
+      const product = await this.productRepo.findOne({ where: { id } });
+
+      if (!product?.tikiId) {
+        return [];
+      }
+
+      const recommendBaseUrl = 'http://localhost:5000/api/v1';
+      const url = `${recommendBaseUrl}/recommendations/similar/${product.tikiId}`;
+
+      const { data } = await firstValueFrom(this.httpService.get<SimilarProductsResponse>(url));
+
+      if (!data.similarItems || !Array.isArray(data.similarItems)) {
+        return [];
+      }
+
+      const similarItems = data.similarItems;
+      const tikiIds = similarItems.map((item) => item.productId);
+
+      if (!tikiIds.length) {
+        return [];
+      }
+
+      const products = await this.productRepo.find({
+        where: { tikiId: In(tikiIds) },
+        relations: {
+          brand: true,
+          category: true,
+        },
+      });
+
+      // Map products by tikiId to preserve order (if recommendation service returns ordered list)
+      const productMap = new Map(products.map((p) => [Number(p.tikiId), p]));
+      const sortedProducts = tikiIds
+        .map((tid) => productMap.get(Number(tid)))
+        .filter((p): p is Product => !!p);
+
+      return this.attachSummary(sortedProducts);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Failed to fetch similar products: ${message}`);
+      return [];
+    }
   }
 
   async findAll(options: ProductQueryDto): Promise<PaginatedResult<ProductListItem>> {

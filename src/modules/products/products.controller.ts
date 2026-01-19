@@ -131,7 +131,9 @@ export class ProductsController {
       console.log(
         `[ProductsController] Logging CLICK for User ${user.id}, TikiId ${product.tikiId}`,
       );
-      this.interactionsService.logInteraction(user.id, +product.tikiId, InteractionType.CLICK);
+      this.interactionsService
+        .logInteraction(user.id, +product.tikiId, InteractionType.CLICK)
+        .catch((err) => console.error('Failed to log interaction', err));
     } else {
       if (user?.id) {
         console.warn(
@@ -141,6 +143,11 @@ export class ProductsController {
     }
 
     return product;
+  }
+
+  @Get(':id/similar')
+  async getSimilar(@Param('id') id: string) {
+    return this.service.getSimilarProducts(+id);
   }
 
   @Patch(':id')
