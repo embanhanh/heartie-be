@@ -440,7 +440,6 @@ export class ProductsService extends BaseService<Product> {
             categoryIds: options.categoryIds,
           });
         }
-
         if (options.ids?.length) {
           qb.andWhere('product.id IN (:...ids)', {
             ids: options.ids,
@@ -455,6 +454,12 @@ export class ProductsService extends BaseService<Product> {
             );
             qb.addOrderBy('relevance_rank', 'ASC');
           }
+        }
+        // Filter by specific product IDs
+        if (options.ids?.length) {
+          qb.andWhere('product.id IN (:...productIds)', {
+            productIds: options.ids,
+          });
         }
 
         // Price range filter via variants

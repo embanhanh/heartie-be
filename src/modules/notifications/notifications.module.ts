@@ -7,8 +7,14 @@ import { ConfigModule } from '@nestjs/config';
 import { NotificationsController } from './notifications.controller';
 import { EmailModule } from '../email/email.module';
 
+import { User } from '../users/entities/user.entity';
+
 @Module({
-  imports: [ConfigModule, TypeOrmModule.forFeature([NotificationToken, Notification]), EmailModule],
+  imports: [
+    ConfigModule,
+    TypeOrmModule.forFeature([NotificationToken, Notification, User]),
+    EmailModule,
+  ],
   controllers: [NotificationsController],
   providers: [NotificationsService],
   exports: [NotificationsService],

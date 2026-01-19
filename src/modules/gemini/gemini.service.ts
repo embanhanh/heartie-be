@@ -1,5 +1,8 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import {
   GoogleGenerativeAI,
   GenerativeModel,
@@ -192,23 +195,7 @@ const GEMINI_TOOLS: Tool[] = [
           },
         },
       },
-      // 8.9. get_policy_or_faq
-      {
-        name: 'get_policy_or_faq',
-        description: 'Lấy thông tin FAQ hoặc chính sách (vận chuyển, đổi trả, ...)',
-        parameters: {
-          type: SchemaType.OBJECT,
-          properties: {
-            topic: {
-              type: SchemaType.STRING,
-              format: 'enum',
-              enum: ['shipping', 'return', 'payment', 'care', 'size_guide', 'other'],
-            },
-          },
-          required: ['topic'],
-        },
-      },
-      // 8.10. get_list_orders
+      // 8.10. get_list_orders (NOTE: get_policy_or_faq removed - FAQ info is hardcoded in system prompt)
       {
         name: 'get_list_orders',
         description: 'Lấy danh sách đơn hàng của người dùng hiện tại, có thể lọc theo trạng thái.',
@@ -381,6 +368,8 @@ export enum GeminiChatRole {
 export interface GeminiChatMessage {
   role: GeminiChatRole;
   content: string;
+  functionCall?: ToolCallParsed['functionCall'];
+  functionResponse?: ToolCallParsed['functionResponse'];
 }
 
 export interface GeminiChatOptions {
@@ -394,9 +383,13 @@ export interface GeminiChatOptions {
   responseSchema?: Schema;
 }
 
-interface ToolCallParsed {
+export interface ToolCallParsed {
   name?: string;
   args?: unknown;
+  functionCall?: {
+    name: string;
+    args: Record<string, unknown>;
+  };
   functionResponse?: {
     name: string;
     response: unknown;
@@ -474,6 +467,67 @@ export class GeminiService {
 # 10) Bảo mật & tuân thủ
 - Không hiển thị dữ liệu cá nhân nhạy cảm. Không lưu bất kỳ dữ liệu nào ngoài phạm vi cho phép của hệ thống.
 - Tuân thủ chính sách đổi/trả và bảo mật tại các đường dẫn hệ thống cung cấp.
+
+# 11) THÔNG TIN FAQ - TRẢ LỜI TRỰC TIẾP (KHÔNG CẦN GỌI HÀM)
+
+## 11.1) Chính sách đổi trả
+Fashia hỗ trợ đổi trả trong vòng 7 ngày kể từ ngày nhận hàng với các điều kiện:
+- Sản phẩm còn nguyên tem, mác, chưa qua sử dụng.
+- Sản phẩm không bị hư hỏng, bẩn, hoặc có mùi lạ.
+- Có hóa đơn mua hàng hoặc mã đơn hàng.
+- Sản phẩm khuyến mãi giảm giá trên 50% không được đổi trả.
+- Đồ lót, đồ bơi, phụ kiện cá nhân không được đổi trả vì lý do vệ sinh.
+
+Quy trình đổi trả:
+1. Liên hệ Fashia qua chatbot hoặc hotline 1900.xxxx trong vòng 7 ngày.
+2. Cung cấp mã đơn hàng và lý do đổi trả.
+3. Fashia sẽ xác nhận và gửi nhãn vận chuyển (miễn phí nếu lỗi từ shop).
+4. Gửi hàng về kho Fashia và nhận sản phẩm mới hoặc hoàn tiền trong 3-5 ngày làm việc.
+
+Lý do được chấp nhận đổi trả:
+- Sản phẩm bị lỗi sản xuất (rách, bung chỉ, sai màu).
+- Giao sai size, sai mẫu so với đơn hàng.
+- Không vừa size (được đổi 1 lần duy nhất).
+
+## 11.2) Phí vận chuyển
+- Miễn phí vận chuyển cho đơn hàng từ 500.000đ trở lên (toàn quốc).
+- Đơn hàng dưới 500.000đ:
+  - Nội thành Hồ Chí Minh, Hà Nội: 20.000đ
+  - Các tỉnh thành khác: 30.000đ
+  - Vùng sâu, vùng xa: 40.000đ
+- Thời gian giao hàng:
+  - Nội thành: 1-2 ngày làm việc
+  - Ngoại thành và các tỉnh: 3-5 ngày làm việc
+  - Vùng sâu, vùng xa: 5-7 ngày làm việc
+- Giao hàng nhanh trong ngày (nội thành HCM/HN): phụ thu 50.000đ
+
+## 11.3) Phương thức thanh toán
+Fashia hỗ trợ các phương thức thanh toán:
+- COD (thanh toán khi nhận hàng): phổ biến, không phí.
+- Chuyển khoản ngân hàng: xác nhận tự động, không phí.
+- Ví MoMo: thanh toán nhanh, không phí.
+- Thanh toán tại cửa hàng: nhận hàng và thanh toán trực tiếp.
+
+## 11.4) Bảo quản sản phẩm
+- Áo thun cotton: giặt máy ở chế độ nhẹ, phơi trong bóng râm, không dùng máy sấy.
+- Quần jeans/denim: giặt lộn trái, nước lạnh, không giặt chung với đồ sáng màu.
+- Áo khoác: giặt tay hoặc giặt khô tùy chất liệu, móc treo để tránh nhăn.
+- Đồ len/len pha: giặt tay nước lạnh, nằm phẳng khi phơi, không vắt.
+
+## 11.5) Chính sách bảo hành
+- Sản phẩm được bảo hành miễn phí 30 ngày với lỗi sản xuất (bung chỉ, phai màu bất thường).
+- Không bảo hành: hư hỏng do người dùng (rách, bẩn, sửa chữa bên ngoài).
+- Liên hệ hotline hoặc chatbot để được hỗ trợ bảo hành.
+
+## 11.6) Câu hỏi thường gặp khác
+Q: Làm sao để biết size phù hợp?
+A: Xem bảng size chi tiết trên trang sản phẩm hoặc nhờ Fia tư vấn dựa trên chiều cao, cân nặng của bạn.
+
+Q: Sản phẩm có giống hình không?
+A: Fashia cam kết hình ảnh chụp thật, màu sắc có thể chênh lệch nhẹ do ánh sáng màn hình.
+
+Q: Có thể hủy đơn hàng không?
+A: Có thể hủy đơn trước khi đơn được xác nhận. Sau khi xác nhận, vui lòng liên hệ hotline để được hỗ trợ.
 
 # 12) Tiêu chí chất lượng (để tự kiểm)
 - Liên quan: đề xuất đúng nhu cầu, lý do rõ ràng ≤ 1 câu/sản phẩm.
@@ -558,25 +612,57 @@ Khi phân tích tin nhắn user, hãy xem xét tin nhắn TRƯỚC ĐÓ của as
     // Convert history to Gemini format
     const sanitizedHistory: Content[] = [];
     for (const message of history) {
-      if (!message.content) continue;
+      if (!message.content && !message.functionCall && !message.functionResponse) continue;
 
       const role = message.role === GeminiChatRole.SYSTEM ? 'model' : message.role;
 
-      // Flatten tool calls/responses to text to avoid "unclosed function call" validation errors
-      // and keep context.
+      // 1. Prioritize structured function calls/responses passed in GeminiChatMessage
+      if (message.functionCall) {
+        sanitizedHistory.push({
+          role: 'model',
+          parts: [{ functionCall: message.functionCall }],
+        });
+        continue;
+      }
 
-      // Try to detect if this is a function call (JSON)
+      if (message.functionResponse) {
+        sanitizedHistory.push({
+          role: 'user', // Function response is always from 'user' (system/tool output) perspective
+          parts: [
+            {
+              functionResponse: {
+                name: message.functionResponse.name,
+                response: message.functionResponse.response as Record<string, unknown>,
+              },
+            },
+          ],
+        });
+        continue;
+      }
+
+      // 2. Fallback: Parse from content string (backward compatibility or text-based logs)
       if (role === 'model') {
         try {
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           const parsed: ToolCallParsed = JSON.parse(message.content);
 
-          if (parsed && parsed.name && parsed.args) {
+          if (parsed && parsed.functionCall) {
+            sanitizedHistory.push({
+              role: 'model',
+              parts: [{ functionCall: parsed.functionCall }],
+            });
+            continue;
+          }
+          // Legacy format support
+          if (parsed && parsed.name && parsed.args && !parsed.functionCall) {
             sanitizedHistory.push({
               role: 'model',
               parts: [
                 {
-                  text: `[System: Model called tool '${parsed.name}' with args: ${JSON.stringify(parsed.args)}]`,
+                  functionCall: {
+                    name: parsed.name,
+                    args: parsed.args as Record<string, unknown>,
+                  },
                 },
               ],
             });
@@ -587,19 +673,22 @@ Khi phân tích tin nhắn user, hãy xem xét tin nhắn TRƯỚC ĐÓ của as
         }
       }
 
-      // Try to detect function response (user role)
       if (role === GeminiChatRole.USER) {
         try {
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           const parsed: ToolCallParsed = JSON.parse(message.content);
 
           if (parsed && parsed.functionResponse) {
-            const respName = parsed.functionResponse.name;
-
-            const respContent = JSON.stringify(parsed.functionResponse.response);
             sanitizedHistory.push({
               role: 'user',
-              parts: [{ text: `[System: Tool '${respName}' returned: ${respContent}]` }],
+              parts: [
+                {
+                  functionResponse: {
+                    name: parsed.functionResponse.name,
+                    response: parsed.functionResponse.response as Record<string, unknown>,
+                  },
+                },
+              ],
             });
             continue;
           }
@@ -609,10 +698,12 @@ Khi phân tích tin nhắn user, hãy xem xét tin nhắn TRƯỚC ĐÓ của as
       }
 
       // Regular text
-      sanitizedHistory.push({
-        role,
-        parts: [{ text: message.content }],
-      });
+      if (message.content) {
+        sanitizedHistory.push({
+          role,
+          parts: [{ text: message.content }],
+        });
+      }
     }
 
     // Gemini requires first message to be from 'user', so skip any leading 'model' messages
@@ -820,7 +911,7 @@ Khi phân tích tin nhắn user, hãy xem xét tin nhắn TRƯỚC ĐÓ của as
     }
 
     const modelName =
-      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-1.5-flash';
+      options?.model ?? this.configService.get<string>('GEMINI_CHAT_MODEL') ?? 'gemini-2.5-flash';
     const requestedTools = options?.tools ?? [];
     const model = this.getModel(modelName, requestedTools);
 
@@ -1382,7 +1473,7 @@ Khi phân tích tin nhắn user, hãy xem xét tin nhắn TRƯỚC ĐÓ của as
         .filter((segment) => segment.length > 0);
 
       if (collected.length) {
-        return collected.join('\n');
+        return collected.join('');
       }
     }
 
@@ -1465,6 +1556,69 @@ Khi phân tích tin nhắn user, hãy xem xét tin nhắn TRƯỚC ĐÓ của as
     };
 
     return { generationConfig, systemInstruction };
+  }
+
+  async generateVideo(prompt: string): Promise<Buffer> {
+    const apiKey = this.configService.get<string>('GEMINI_API_KEY');
+    if (!apiKey) {
+      throw new BadRequestException('Gemini API key is not configured');
+    }
+
+    // Sử dụng SDK mới @google/genai cho Veo
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey });
+
+    try {
+      this.logger.debug(`Starting Veo video generation for prompt: ${prompt}`);
+
+      let operation = await ai.models.generateVideos({
+        model: 'veo-3.0-generate-001',
+        prompt: prompt,
+      });
+
+      this.logger.debug('Veo operation started, polling for completion...');
+
+      // Poll until done
+      while (!operation.done) {
+        await this.delay(5000); // Wait 5s
+        operation = await ai.operations.getVideosOperation({
+          operation: operation,
+        });
+        this.logger.debug('Polling Veo status...');
+      }
+
+      if (operation.error) {
+        throw new Error(`Veo operation failed: ${JSON.stringify(operation.error)}`);
+      }
+
+      const generatedVideo = operation.response?.generatedVideos?.[0];
+      if (!generatedVideo?.video) {
+        throw new Error('No video returned in operation response');
+      }
+
+      // Download video to temp file then read buffer
+      const tempId = Math.random().toString(36).substring(7);
+      const tempPath = path.join(os.tmpdir(), `veo_temp_${tempId}.mp4`);
+
+      this.logger.debug(`Downloading Veo video to ${tempPath}`);
+
+      await ai.files.download({
+        file: generatedVideo.video,
+        downloadPath: tempPath,
+      });
+
+      const buffer = fs.readFileSync(tempPath);
+      fs.unlinkSync(tempPath); // Cleanup
+
+      return buffer;
+    } catch (error) {
+      this.logger.error(
+        'Veo video generation error',
+        error instanceof Error ? error.stack : String(error),
+      );
+      const message = error instanceof Error ? error.message : String(error);
+      throw new BadRequestException(`Veo error: ${message}`);
+    }
   }
 
   private normalizeGeminiError(error: unknown): {

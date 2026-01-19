@@ -12,14 +12,17 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
-import { ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
+import { ApiBody, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AdsAiService } from './ads_ai.service';
+import { VideoAiService } from './video-ai.service';
 import { GenerateAdsAiDto } from './dto/generate-ads-ai.dto';
 import { CreateAdsAiDto } from './dto/create-ads-ai.dto';
 import { UpdateAdsAiDto } from './dto/update-ads-ai.dto';
 import { AdsAiQueryDto } from './dto/ads-ai-query.dto';
 import { ScheduleAdsAiDto } from './dto/schedule-ads-ai.dto';
 import { PublishAdsAiDto } from './dto/publish-ads-ai.dto';
+import { TestVideoAdDto } from './dto/test-video-ad.dto';
+import { TestVeoDto } from './dto/test-veo.dto';
 import { UploadedFile as UploadedFileType } from 'src/common/types/uploaded-file.type';
 import { createModuleMulterOptions } from 'src/common/utils/upload.util';
 
@@ -33,7 +36,10 @@ const adsUploadOptions = createModuleMulterOptions({
 export class AdsAiController {
   private readonly logger = new Logger(AdsAiController.name);
 
-  constructor(private readonly service: AdsAiService) {}
+  constructor(
+    private readonly service: AdsAiService,
+    private readonly videoAiService: VideoAiService,
+  ) {}
 
   @Post('generate')
   generate(@Body() dto: GenerateAdsAiDto) {
@@ -184,5 +190,18 @@ export class AdsAiController {
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.service.remove(Number(id));
+  }
+
+  @Post('test-video')
+  @ApiOperation({ summary: 'Test endpoint sinh video quảng cáo (Dev Only)' })
+  @ApiResponse({ status: 201, description: 'Trả về URL video' })
+  testVideo(@Body() body: TestVideoAdDto) {
+    return this.videoAiService.generateVideoAd(body);
+  }
+
+  @Post('test-veo')
+  @ApiOperation({ summary: 'Test endpoint sinh video Veo (Dev Only)' })
+  testVeo(@Body() body: TestVeoDto) {
+    return this.videoAiService.generateVideoWithVeo(body.prompt);
   }
 }

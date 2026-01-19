@@ -8,6 +8,8 @@ import { StatsModule } from '../stats/stats.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 
 import { UploadModule } from '../upload/upload.module';
+import { VideoAiService } from './video-ai.service';
+import { GeminiModule } from '../gemini/gemini.module';
 
 @Module({
   imports: [
@@ -15,9 +17,10 @@ import { UploadModule } from '../upload/upload.module';
     StatsModule,
     NotificationsModule,
     UploadModule,
+    GeminiModule,
   ],
   controllers: [AdsAiController],
-  providers: [AdsAiService],
-  exports: [AdsAiService],
+  providers: [AdsAiService, VideoAiService],
+  exports: [AdsAiService, VideoAiService],
 })
 export class AdsAiModule {}

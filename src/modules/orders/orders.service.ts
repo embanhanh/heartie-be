@@ -306,6 +306,7 @@ export class OrdersService extends BaseService<Order> {
   async requestCancellation(
     orderNumber: string,
     requester?: RequestUserContext,
+    cancellationReason?: string,
   ): Promise<{ orderNumber: string; status: OrderStatus; message: string }> {
     const order = await this.repo.findOne({ where: { orderNumber, user: { id: requester?.id } } });
 
@@ -340,6 +341,10 @@ export class OrdersService extends BaseService<Order> {
     }
 
     order.status = OrderStatus.CANCELLED;
+    order.cancelledAt = new Date();
+    if (cancellationReason) {
+      order.cancellationReason = cancellationReason;
+    }
     await this.repo.save(order);
 
     return {
@@ -526,7 +531,7 @@ export class OrdersService extends BaseService<Order> {
             status: saved.status,
             totalAmount: saved.totalAmount,
           },
-          updatedOrder,
+          // updatedOrder,
         );
       }
 
@@ -564,7 +569,7 @@ export class OrdersService extends BaseService<Order> {
           status: saved.status,
           totalAmount: saved.totalAmount,
         },
-        updatedOrder,
+        // updatedOrder,
       );
     }
 
@@ -973,9 +978,15 @@ export class OrdersService extends BaseService<Order> {
     }
   }
 
-  private async notifyUserOrderStatusChanged(payload: OrderStatusChangedPayload, order?: Order) {
+  private async notifyUserOrderStatusChanged(
+    payload: OrderStatusChangedPayload,
+    //  order?: Order
+  ) {
     try {
-      await this.notificationsService.notifyUserOrderStatusChanged(payload, order);
+      await this.notificationsService.notifyUserOrderStatusChanged(
+        payload,
+        // order
+      );
     } catch (error: unknown) {
       this.logNotificationError(error, 'notify user order status updated');
     }

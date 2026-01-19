@@ -17,6 +17,7 @@ import {
   subtractDays,
 } from '../../common/utils/data-normalization.util';
 import { AdsAiService } from '../ads_ai/ads_ai.service';
+import { VideoAiService } from '../ads_ai/video-ai.service';
 import { CreateAdsAiDto } from '../ads_ai/dto/create-ads-ai.dto';
 import { GenerateAdsAiDto } from '../ads_ai/dto/generate-ads-ai.dto';
 import { ScheduleAdsAiDto } from '../ads_ai/dto/schedule-ads-ai.dto';
@@ -60,6 +61,7 @@ import {
   AdminCopilotRevenueOverviewInput,
   AdminCopilotStockAlertsInput,
   AdminCopilotTopProductsInput,
+  AdminCopilotGenerateVideoAdInput,
 } from './types/admin-copilot-tool-inputs';
 import {
   AdminCopilotAdminContext,
@@ -97,6 +99,7 @@ export class AdminCopilotService {
 
   constructor(
     private readonly adsAiService: AdsAiService,
+    private readonly videoAiService: VideoAiService,
     private readonly geminiService: GeminiService,
     private readonly trendForecastingService: TrendForecastingService,
     private readonly configService: ConfigService,
@@ -259,12 +262,144 @@ export class AdminCopilotService {
     let toolResult: Record<string, unknown> | null = null;
 
     if (firstCall?.functionCall) {
-      const toolExecution = await this.dispatchTool(
-        firstCall.functionCall,
-        adminContext,
-        lang,
-        requestContext,
-      );
+      let effectiveRequestMeta = requestContext.requestMeta || {};
+
+      // Auto-inject last video URL from history if not present
+      if (!effectiveRequestMeta.video && historyEntities.length > 0) {
+        interface VideoMetaFile {
+          type: string;
+          url: string;
+        }
+        interface VideoMeta {
+          files?: VideoMetaFile[];
+          toolResult?: { videoUrl?: string; name?: string; content?: any };
+        }
+
+        const lastVideoMsg = historyEntities.find((msg) => {
+          const meta = msg.metadata as unknown as VideoMeta;
+          // Check persisted files
+          if (meta?.files && Array.isArray(meta.files)) {
+            const videoFile = meta.files.find((f: VideoMetaFile) => f.type === 'video' && f.url);
+            if (videoFile) return true;
+          }
+          // Check toolResult (legacy or immediate)
+          if (meta?.toolResult && typeof meta.toolResult === 'object' && meta.toolResult.videoUrl) {
+            return true;
+          }
+          return false;
+        });
+
+        if (lastVideoMsg) {
+          const meta = lastVideoMsg.metadata as unknown as VideoMeta;
+          let videoUrl: string | undefined;
+
+          if (meta?.files && Array.isArray(meta.files)) {
+            const videoFile = meta.files.find((f: VideoMetaFile) => f.type === 'video' && f.url);
+            videoUrl = videoFile?.url;
+          }
+          if (!videoUrl && meta?.toolResult && typeof meta.toolResult === 'object') {
+            videoUrl = meta.toolResult.videoUrl;
+          }
+
+          if (videoUrl) {
+            effectiveRequestMeta = { ...effectiveRequestMeta, video: videoUrl };
+            this.logger.debug(`Auto-injected video context from history: ${videoUrl}`);
+          }
+        }
+      }
+
+      // Auto-inject post campaign content from history if not present
+      if (
+        !effectiveRequestMeta.primaryText &&
+        !effectiveRequestMeta.caption &&
+        historyEntities.length > 0
+      ) {
+        interface PostCampaignMeta {
+          toolResult?: {
+            name?: string;
+            content?: {
+              posts?: Array<{
+                caption?: string;
+                headline?: string;
+                hashtags?: string[];
+                callToAction?: string;
+                tone?: string;
+                objective?: string;
+              }>;
+              drafts?: Array<{
+                caption?: string;
+                headline?: string;
+                hashtags?: string[];
+                callToAction?: string;
+                tone?: string;
+                objective?: string;
+              }>;
+            };
+          };
+          functionCall?: {
+            name?: string;
+          };
+        }
+
+        // Debug: log all messages to understand structure
+        this.logger.debug(
+          `Scanning ${historyEntities.length} history messages for post campaign content...`,
+        );
+
+        const lastPostCampaign = historyEntities
+          .slice()
+          .reverse()
+          .find((msg) => {
+            const meta = msg.metadata as unknown as PostCampaignMeta;
+
+            // Check if this is a tool result from generate_post_campaign
+            const isPostCampaignResult =
+              meta?.toolResult?.name === 'generate_post_campaign' ||
+              meta?.functionCall?.name === 'generate_post_campaign';
+
+            if (isPostCampaignResult) {
+              this.logger.debug(
+                `Found post campaign message: ${JSON.stringify(meta).slice(0, 200)}...`,
+              );
+            }
+
+            return isPostCampaignResult;
+          });
+
+        if (lastPostCampaign) {
+          const meta = lastPostCampaign.metadata as unknown as PostCampaignMeta;
+          // Try both 'posts' and 'drafts' for backward compatibility
+          const post =
+            meta?.toolResult?.content?.posts?.[0] || meta?.toolResult?.content?.drafts?.[0];
+
+          if (post) {
+            effectiveRequestMeta = {
+              ...effectiveRequestMeta,
+              primaryText: post.caption,
+              caption: post.caption,
+              headline: post.headline,
+              hashtags: post.hashtags,
+              callToAction: post.callToAction,
+              tone: post.tone,
+              objective: post.objective,
+            };
+            this.logger.debug(
+              `Auto-injected post campaign content from history (${post.caption?.slice(0, 50)}...)`,
+            );
+          } else {
+            this.logger.warn(
+              `Found post campaign message but no post content: ${JSON.stringify(meta).slice(0, 300)}`,
+            );
+          }
+        } else {
+          this.logger.debug(`No post campaign content found in history`);
+        }
+      }
+
+      const toolExecution = await this.dispatchTool(firstCall.functionCall, adminContext, lang, {
+        ...requestContext,
+        requestMeta: effectiveRequestMeta,
+      });
       const responsePayload = toolExecution.functionResponse.response as Record<string, unknown>;
       toolResult = responsePayload;
       functionCall = {
@@ -340,6 +475,28 @@ export class AdminCopilotService {
     }
     if (toolResult) {
       assistantMetadata.toolResult = toolResult;
+
+      // Special handling for video generation to persist as attachment
+      if (
+        functionCall?.name === 'generate_video_ad' &&
+        toolResult.content &&
+        typeof toolResult.content === 'object' &&
+        'videoUrl' in toolResult.content
+      ) {
+        const videoContent = toolResult.content as {
+          videoUrl: string;
+          message?: string;
+        };
+        if (videoContent.videoUrl) {
+          assistantMetadata.files = [
+            {
+              url: videoContent.videoUrl,
+              type: 'video',
+              name: 'generated-ad.mp4',
+            },
+          ];
+        }
+      }
     }
 
     const assistantMessageEntity = this.messageRepository.create({
@@ -538,27 +695,47 @@ export class AdminCopilotService {
     }
 
     if (productIds.size > 0) {
-      const uniqueIds = Array.from(productIds);
-      const products = await this.productsService.findAll({
-        ids: uniqueIds,
-        page: 1,
-        limit: uniqueIds.length || 20,
-        sorts: [],
-        filters: [],
-      });
-      if (products.data.length > 0) {
+      const uniqueIds = Array.from(productIds).slice(0, 10); // Limit to avoid too many requests
+      // Fetch individual products to get complete relations
+      const productPromises = uniqueIds.map((id) =>
+        this.productsService.findOne(id).catch(() => null),
+      );
+      const products = (await Promise.all(productPromises)).filter((p) => p !== null);
+
+      if (products.length > 0) {
         parts.push('--- PRODUCTS ---');
-        products.data.forEach((p) => {
-          const price =
-            p.priceList?.[0] || p.variants?.[0]?.price || p.originalPrice || 'Contact for price';
+        products.forEach((p) => {
+          const price = p.variants?.[0]?.price || p.originalPrice || 'Contact for price';
           parts.push(
             `ID: ${p.id} | Name: ${p.name} | Brand: ${p.brand?.name || 'N/A'} | Price: ${price} | Stock: ${p.stock}`,
           );
           if (p.description) {
-            // Truncate description to avoid token limit overflow if too long
             const desc =
               p.description.length > 200 ? p.description.slice(0, 200) + '...' : p.description;
             parts.push(`Description: ${desc}`);
+          }
+
+          // Add variants info for video context
+          if (p.variants && p.variants.length > 0) {
+            const variantInfo = p.variants.slice(0, 3).map((v) => {
+              const attrs = v.attributeValues
+                ?.map((av) => {
+                  // Safe access to value property
+                  const attrValue = av as { value?: string };
+                  return attrValue.value;
+                })
+                .filter(Boolean)
+                .join(' ');
+              return `${attrs || 'Variant'} - ${v.price} VND`;
+            });
+            parts.push(
+              `Variants: ${variantInfo.join(', ')}${p.variants.length > 3 ? ` (+${p.variants.length - 3} more)` : ''}`,
+            );
+          }
+
+          // Add images for visual context
+          if (p.images && p.images.length > 0) {
+            parts.push(`Images: ${p.images.length} photo(s) available`);
           }
         });
       }
@@ -590,13 +767,46 @@ export class AdminCopilotService {
       const validPromotions = promotions.filter((p) => p !== null);
       if (validPromotions.length > 0) {
         parts.push('--- PROMOTIONS ---');
-        validPromotions.forEach((p) => {
-          if (!p) return;
-          const discountType = p.discountType === DiscountType.PERCENT ? '%' : 'VND';
-          parts.push(
-            `ID: ${p.id} | Name: ${p.name} | Code: ${p.code || 'Auto'} | Value: ${p.discountValue}${discountType} | MinOrder: ${p.minOrderValue}`,
-          );
-          if (p.description) parts.push(`Description: ${p.description}`);
+        validPromotions.forEach((promo) => {
+          parts.push(`Name: ${promo.name}${promo.code ? ` | Code: ${promo.code}` : ''}`);
+
+          // Discount details
+          const discountText =
+            promo.discountType === DiscountType.PERCENT
+              ? `${promo.discountValue}% off`
+              : `${promo.discountValue.toLocaleString()} VND discount`;
+          parts.push(`Discount: ${discountText}`);
+
+          // Conditions
+          if (promo.minOrderValue && promo.minOrderValue > 0) {
+            parts.push(`Min Order Value: ${promo.minOrderValue.toLocaleString()} VND`);
+          }
+          if (promo.maxDiscount && promo.maxDiscount > 0) {
+            parts.push(`Max Discount: ${promo.maxDiscount.toLocaleString()} VND`);
+          }
+
+          // Usage limits
+          if (promo.usageLimit) {
+            parts.push(`Usage: ${promo.usedCount || 0}/${promo.usageLimit} times`);
+          }
+
+          // Applicable products from conditions
+          if (promo.conditions && promo.conditions.length > 0) {
+            const productNames = promo.conditions
+              .filter((c) => c.product)
+              .map((c) => `${c.product.name} (qty: ${c.quantity})`)
+              .slice(0, 5);
+            if (productNames.length > 0) {
+              parts.push(
+                `Applicable Products: ${productNames.join(', ')}${promo.conditions.length > 5 ? ` (+${promo.conditions.length - 5} more)` : ''}`,
+              );
+            }
+          }
+
+          // Validity period
+          const startDate = new Date(promo.startDate).toLocaleDateString('vi-VN');
+          const endDate = new Date(promo.endDate).toLocaleDateString('vi-VN');
+          parts.push(`Valid: ${startDate} - ${endDate}`);
         });
       }
     }
@@ -772,16 +982,33 @@ export class AdminCopilotService {
 
   private mapMessagesToGemini(messages: Message[]): GeminiChatMessage[] {
     return messages.map((message) => {
+      const metadata = message.metadata as Record<string, unknown> | undefined;
+
       if (message.role === MessageRole.ASSISTANT) {
         return {
           role: GeminiChatRole.MODEL,
           content: message.content ?? '',
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          functionCall: metadata?.functionCall as any,
         } satisfies GeminiChatMessage;
       }
+
+      const functionName =
+        metadata?.functionCall &&
+        typeof metadata.functionCall === 'object' &&
+        'name' in metadata.functionCall
+          ? (metadata.functionCall as { name: string }).name
+          : 'unknown_tool';
 
       return {
         role: GeminiChatRole.USER,
         content: message.content ?? '',
+        functionResponse: metadata?.toolResult
+          ? {
+              name: functionName,
+              response: metadata.toolResult,
+            }
+          : undefined,
       } satisfies GeminiChatMessage;
     });
   }
@@ -992,6 +1219,12 @@ export class AdminCopilotService {
         return this.handleAdsPerformance((args ?? {}) as Record<string, unknown>, context);
       case 'get_ad_details':
         return this.handleAdDetails((args ?? {}) as Record<string, unknown>, context);
+      case 'generate_video_ad':
+        return this.handleGenerateVideoAd(
+          (args ?? {}) as Record<string, unknown>,
+          context,
+          options,
+        );
       default: {
         this.logger.warn(`Unknown admin copilot tool: ${name}`);
         const errorMessage =
@@ -1636,8 +1869,16 @@ export class AdminCopilotService {
       normalizeString(raw['headline']) ??
       this.buildDefaultAdsCampaignName(context);
 
+    // IMPORTANT: Prioritize content from requestMeta (auto-injected from conversation history)
+    // over raw arguments from Gemini to preserve original post content
+    const primaryTextFromMeta =
+      normalizeString(options.requestMeta?.primaryText) ||
+      normalizeString(options.requestMeta?.caption);
     const primaryText =
-      normalizeString(raw['primaryText']) ?? normalizeString(raw['caption']) ?? undefined;
+      primaryTextFromMeta ||
+      normalizeString(raw['primaryText']) ||
+      normalizeString(raw['caption']) ||
+      undefined;
 
     const prompt =
       normalizeString(raw['prompt']) ??
@@ -1648,17 +1889,31 @@ export class AdminCopilotService {
     const description =
       normalizeString(raw['description']) ?? normalizeString(raw['subHeadline']) ?? undefined;
 
+    const callToActionFromMeta = normalizeString(options.requestMeta?.callToAction);
     const callToAction =
-      normalizeString(raw['callToAction']) ?? normalizeString(raw['cta']) ?? undefined;
+      callToActionFromMeta ||
+      normalizeString(raw['callToAction']) ||
+      normalizeString(raw['cta']) ||
+      undefined;
 
     const ctaUrl = normalizeString(raw['ctaUrl'] ?? raw['url']) ?? 'http://localhost:3000';
     const productName = normalizeString(raw['productName'] ?? raw['productFocus']);
     const targetAudience = normalizeString(raw['targetAudience']);
-    const tone = normalizeString(raw['tone']);
-    const objective = normalizeString(raw['objective']);
-    const headline = normalizeString(raw['headline']);
+
+    const toneFromMeta = normalizeString(options.requestMeta?.tone);
+    const tone = toneFromMeta || normalizeString(raw['tone']);
+
+    const objectiveFromMeta = normalizeString(options.requestMeta?.objective);
+    const objective = objectiveFromMeta || normalizeString(raw['objective']);
+
+    const headlineFromMeta = normalizeString(options.requestMeta?.headline);
+    const headline = headlineFromMeta || normalizeString(raw['headline']);
+
     let image = normalizeString(raw['image']);
-    let video = normalizeString(raw['video']);
+    // IMPORTANT: Prioritize video from requestMeta (auto-injected Cloudinary URL)
+    // over raw['video'] (which might be temporary Google Storage URL from Gemini)
+    const videoFromMeta = this.resolveVideoFromMeta(options.requestMeta);
+    const video = videoFromMeta || normalizeString(raw['video']);
     const postType = normalizeString(raw['postType']);
 
     let productId = parsePositiveInt(raw['productId'], undefined, 1);
@@ -1676,21 +1931,17 @@ export class AdminCopilotService {
         image = imageFromMeta;
       }
     }
-    if (!video) {
-      // Resolve video from meta if not provided by gemini
-      const videoFromMeta = this.resolveVideoFromMeta(options.requestMeta);
-      if (videoFromMeta) {
-        video = videoFromMeta;
-      }
-    }
 
     const scheduledAt =
       normalizeScheduleIso(raw['scheduledAt']) ?? normalizeScheduleIso(raw['schedule']);
 
+    // IMPORTANT: Prioritize hashtags from requestMeta (auto-injected from conversation history)
+    const hashtagsFromMeta = options.requestMeta?.hashtags;
     const hashtagsValue =
-      Array.isArray(raw['hashtags']) || typeof raw['hashtags'] === 'string'
+      hashtagsFromMeta ||
+      (Array.isArray(raw['hashtags']) || typeof raw['hashtags'] === 'string'
         ? raw['hashtags']
-        : undefined;
+        : undefined);
 
     const dtoInput: Record<string, unknown> = {
       name: normalizedName,
@@ -2454,5 +2705,79 @@ export class AdminCopilotService {
       return value;
     }
     return undefined;
+  }
+
+  private async handleGenerateVideoAd(
+    rawArgs: Record<string, unknown>,
+    context: AdminCopilotAdminContext,
+    options: AdminCopilotRequestContextOptions = {},
+  ): Promise<FunctionResponsePart> {
+    this.logger.debug(
+      `Handling generate video tool for product ${String(rawArgs.productName)} (admin=${context.adminUserId})`,
+    );
+
+    // Extract context from metadata (product/promotion attachments)
+    const contextEnrichment = await this.resolveContextEntities(
+      context.adminUserId,
+      options.requestMeta,
+    );
+
+    // Build base input from Gemini's args
+    const input: AdminCopilotGenerateVideoAdInput = {
+      productId: parsePositiveInt(rawArgs.productId, undefined, 1),
+      productName: normalizeString(rawArgs.productName) || '',
+      description: normalizeString(rawArgs.description) || '',
+      price:
+        typeof rawArgs.price === 'string'
+          ? rawArgs.price
+          : typeof rawArgs.price === 'number'
+            ? String(rawArgs.price)
+            : '',
+      promotion: normalizeString(rawArgs.promotion) || '',
+    };
+
+    // Enrich with context from metadata if available
+    if (contextEnrichment) {
+      // If we have product/promotion context, append it to description
+      if (!input.description || input.description.length < 50) {
+        input.description = contextEnrichment.slice(0, 500); // Use context as description
+      } else {
+        input.description += `\n\nAdditional Context:\n${contextEnrichment.slice(0, 300)}`;
+      }
+    }
+
+    const normalizedInput: AdminCopilotGenerateVideoAdInput = {
+      productId: input.productId,
+      productName: input.productName || 'Sản phẩm Fashia',
+      description: input.description || 'Sản phẩm thời trang cao cấp, thiết kế hiện đại.',
+      price: input.price || '',
+      promotion: input.promotion || '',
+    };
+
+    try {
+      const result = await this.videoAiService.generateVideoAd(normalizedInput);
+      return {
+        functionResponse: {
+          name: 'generate_video_ad',
+          response: {
+            content: {
+              videoUrl: result.url,
+              message: 'Video đã được tạo thành công.',
+            },
+          },
+        },
+      };
+    } catch (e: unknown) {
+      const error = e as Error;
+      this.logger.error(`Video generation tool failed: ${error.message}`);
+      return {
+        functionResponse: {
+          name: 'generate_video_ad',
+          response: {
+            content: { error: 'Gặp lỗi trong quá trình tạo video. Vui lòng thử lại sau.' },
+          },
+        },
+      };
+    }
   }
 }

@@ -29,6 +29,7 @@
     "migration:revert": "yarn typeorm migration:revert"
   },
   "dependencies": {
+    "@google/genai": "^1.37.0",
     "@google/generative-ai": "^0.24.1",
     "@nestjs-modules/mailer": "^2.0.2",
     "@nestjs/bullmq": "^11.0.0",

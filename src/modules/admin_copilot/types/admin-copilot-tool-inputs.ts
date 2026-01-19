@@ -44,3 +44,11 @@ export interface AdminCopilotPostCampaignInput {
   format?: 'short' | 'medium' | 'long' | 'long_form' | 'short_form';
   hashtags?: string[];
 }
+
+export interface AdminCopilotGenerateVideoAdInput {
+  productId?: number;
+  productName: string;
+  description: string;
+  price: string;
+  promotion: string;
+}
